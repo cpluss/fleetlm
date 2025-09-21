@@ -10,6 +10,8 @@ defmodule Fleetlm.Application do
     children = [
       FleetlmWeb.Telemetry,
       Fleetlm.Repo,
+      {Registry, keys: :unique, name: Fleetlm.Chat.ThreadRegistry},
+      Fleetlm.Chat.ThreadSupervisor,
       {DNSCluster, query: Application.get_env(:fleetlm, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Fleetlm.PubSub},
       # Start a worker by calling: Fleetlm.Worker.start_link(arg)

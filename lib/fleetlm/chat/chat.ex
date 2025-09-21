@@ -3,6 +3,7 @@ defmodule Fleetlm.Chat do
 
   alias Ecto.Multi
   alias Fleetlm.Repo
+  alias Fleetlm.Chat.ThreadServer
   alias Fleetlm.Chat.Threads.{Message, Participant, Thread}
 
   @default_page_size 50
@@ -360,4 +361,34 @@ defmodule Fleetlm.Chat do
   end
 
   defp clamp_limit(_), do: @default_page_size
+
+  ## Runtime helpers (per-thread GenServer layer)
+
+  def ensure_thread_runtime(thread_id) when is_binary(thread_id) do
+    ThreadServer.ensure(thread_id)
+  end
+
+  def dispatch_message(attrs, opts \\ []) when is_map(attrs) do
+    thread_id = thread_id_from_attrs(attrs)
+    ThreadServer.send_message(thread_id, attrs, opts)
+  end
+
+  def tick_thread(thread_id, participant_id, cursor \\ nil, opts \\ []) do
+    ThreadServer.tick(thread_id, participant_id, cursor, opts)
+  end
+
+  def participant_in_thread?(thread_id, participant_id)
+      when is_binary(thread_id) and is_binary(participant_id) do
+    Participant
+    |> where([p], p.thread_id == ^thread_id and p.participant_id == ^participant_id)
+    |> Repo.exists?()
+  end
+
+  defp thread_id_from_attrs(attrs) do
+    cond do
+      Map.has_key?(attrs, :thread_id) -> Map.fetch!(attrs, :thread_id)
+      Map.has_key?(attrs, "thread_id") -> Map.fetch!(attrs, "thread_id")
+      true -> raise KeyError, message: "thread_id is required"
+    end
+  end
 end
