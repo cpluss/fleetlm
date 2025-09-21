@@ -28,7 +28,7 @@ defmodule FleetlmWeb.ParticipantChannelTest do
   end
 
   test "tick returns updates when new messages arrive", %{
-    socket: socket,
+    socket: _socket,
     thread: thread,
     other_id: other_id
   } do
@@ -44,39 +44,31 @@ defmodule FleetlmWeb.ParticipantChannelTest do
         text: "hello"
       })
 
-    assert_push "thread_updated", %{"thread_id" => ^thread_id}
+    assert_push "tick", %{"updates" => [update]}
 
-    ref = push(socket, "tick", %{"threads" => [%{"thread_id" => thread_id}]})
-    assert_reply ref, :ok, %{"updates" => [update]}
+    assert update["thread_id"] == thread_id
+    assert update["last_message_preview"] == "hello"
+    assert update["sender_id"] == other_id
 
-    cursor = update["last_message_at"]
-    assert is_binary(cursor)
-
-    refute update["recent_messages"] == []
-
-    ref = push(socket, "tick", %{"threads" => [%{"thread_id" => thread_id, "cursor" => cursor}]})
-    assert_reply ref, :ok, %{"updates" => []}
+    refute_receive(%Phoenix.Socket.Message{event: "tick"}, 150)
   end
 
-  test "tick ignores foreign threads", %{socket: socket} do
-    ref =
-      push(socket, "tick", %{
-        "threads" => [%{"thread_id" => Ecto.UUID.generate(), "cursor" => DateTime.utc_now()}]
-      })
-
-    assert_reply ref, :ok, %{"updates" => []}
+  test "does not emit tick without updates" do
+    refute_receive(%Phoenix.Socket.Message{event: "tick"}, 150)
+    refute_receive(%Phoenix.Socket.Message{event: "tick"}, 150)
   end
 
-  test "push delivers thread summary events", %{participant_id: participant_id, thread: thread} do
-    topic = "participant:#{participant_id}"
-
+  test "push delivers thread summary events", %{
+    participant_id: participant_id,
+    thread: thread,
+    socket: socket
+  } do
     thread_id = thread.id
     now = DateTime.utc_now()
     encoded_now = DateTime.to_iso8601(now)
 
-    Phoenix.PubSub.broadcast(
-      Fleetlm.PubSub,
-      topic,
+    send(
+      socket.channel_pid,
       {:thread_updated,
        %{
          thread_id: thread_id,
@@ -87,12 +79,18 @@ defmodule FleetlmWeb.ParticipantChannelTest do
        }}
     )
 
-    assert_push "thread_updated", %{
-      "thread_id" => ^thread_id,
-      "last_message_preview" => "ping",
-      "participant_id" => ^participant_id,
-      "last_message_at" => ^encoded_now
-    }
+    assert_push "tick",
+                %{
+                  "updates" => [
+                    %{
+                      "thread_id" => ^thread_id,
+                      "last_message_preview" => "ping",
+                      "participant_id" => ^participant_id,
+                      "last_message_at" => ^encoded_now
+                    }
+                  ]
+                },
+                300
   end
 
   test "refuses join for mismatched participant" do

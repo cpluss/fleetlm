@@ -11,6 +11,8 @@ config :fleetlm,
   ecto_repos: [Fleetlm.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+config :fleetlm, :participant_tick_interval_ms, 1_000
+
 # Configures the endpoint
 config :fleetlm, FleetlmWeb.Endpoint,
   url: [host: "localhost"],

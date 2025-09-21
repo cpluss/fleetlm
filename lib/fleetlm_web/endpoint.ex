@@ -12,7 +12,7 @@ defmodule FleetlmWeb.Endpoint do
   ]
 
   socket "/socket", FleetlmWeb.UserSocket,
-    websocket: [compress: true],
+    websocket: [compress: true, timeout: 120_000],
     longpoll: false
 
   socket "/live", Phoenix.LiveView.Socket,

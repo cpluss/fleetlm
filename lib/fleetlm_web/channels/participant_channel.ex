@@ -5,6 +5,7 @@ defmodule FleetlmWeb.ParticipantChannel do
   alias Phoenix.PubSub
 
   @pubsub Fleetlm.PubSub
+  @tick_interval Application.compile_env(:fleetlm, :participant_tick_interval_ms, 1_000)
 
   @impl true
   def join("participant:" <> participant_id, _params, socket) do
@@ -16,45 +17,42 @@ defmodule FleetlmWeb.ParticipantChannel do
         |> Chat.list_threads_for_participant()
         |> Enum.map(&serialize_participant_thread/1)
 
-      {:ok, %{"threads" => threads}, socket}
+      {:ok, %{"threads" => threads},
+       socket
+       |> assign(:pending_updates, %{})
+       |> assign(:tick_timer, schedule_tick())}
     else
       {:error, %{reason: "unauthorized"}}
     end
   end
 
   @impl true
-  def handle_in("tick", payload, socket) do
-    participant_id = socket.assigns.participant_id
+  def handle_info({:thread_updated, summary}, socket) do
+    updates = socket.assigns.pending_updates
+    serialized = serialize_summary(summary)
+    updates = Map.put(updates, serialized["thread_id"], serialized)
 
-    entries = Map.get(payload, "threads", [])
-
-    updates =
-      entries
-      |> Enum.reduce([], fn entry, acc ->
-        case Map.fetch(entry, "thread_id") do
-          :error ->
-            acc
-
-          {:ok, thread_id} ->
-            cursor = Map.get(entry, "cursor")
-
-            case Chat.tick_thread(thread_id, participant_id, cursor) do
-              {:updated, payload} -> [serialize_tick(payload) | acc]
-              :idle -> acc
-              {:error, :not_participant} -> acc
-              {:error, _} -> acc
-            end
-        end
-      end)
-      |> Enum.reverse()
-
-    {:reply, {:ok, %{"updates" => updates}}, socket}
+    {:noreply, assign(socket, :pending_updates, updates)}
   end
 
   @impl true
-  def handle_info({:thread_updated, summary}, socket) do
-    push(socket, "thread_updated", serialize_summary(summary))
-    {:noreply, socket}
+  def handle_info(:deliver_tick, socket) do
+    updates = socket.assigns.pending_updates
+
+    socket = assign(socket, :tick_timer, schedule_tick())
+
+    if map_size(updates) > 0 do
+      push(socket, "tick", %{"updates" => Map.values(updates)})
+      {:noreply, assign(socket, :pending_updates, %{})}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  @impl true
+  def terminate(_reason, socket) do
+    if timer = socket.assigns[:tick_timer], do: Process.cancel_timer(timer)
+    :ok
   end
 
   defp serialize_participant_thread(participant) do
@@ -80,15 +78,6 @@ defmodule FleetlmWeb.ParticipantChannel do
 
   defp serialize_thread(nil), do: nil
 
-  defp serialize_tick(%{recent_messages: messages} = payload) do
-    %{
-      "thread_id" => payload.thread_id,
-      "participant_id" => payload.participant_id,
-      "last_message_at" => encode_datetime(payload.last_message_at),
-      "recent_messages" => Enum.map(messages, &serialize_message/1)
-    }
-  end
-
   defp serialize_summary(summary) do
     summary
     |> Map.take([
@@ -104,21 +93,12 @@ defmodule FleetlmWeb.ParticipantChannel do
     end)
   end
 
-  defp serialize_message(message) do
-    %{
-      "id" => message.id,
-      "thread_id" => message.thread_id,
-      "sender_id" => message.sender_id,
-      "role" => message.role,
-      "kind" => message.kind,
-      "text" => message.text,
-      "metadata" => message.metadata,
-      "created_at" => encode_datetime(message.created_at)
-    }
-  end
-
   defp encode_datetime(nil), do: nil
   defp encode_datetime(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
   defp encode_datetime(%NaiveDateTime{} = naive), do: NaiveDateTime.to_iso8601(naive)
   defp encode_datetime(value) when is_binary(value), do: value
+
+  defp schedule_tick do
+    Process.send_after(self(), :deliver_tick, @tick_interval)
+  end
 end
