@@ -6,17 +6,21 @@ defmodule FleetlmWeb.MessagingFlowTest do
   @tick_timeout 300
 
   setup do
-    a = Ecto.UUID.generate()
-    b = Ecto.UUID.generate()
-    thread = Chat.ensure_dm!(a, b)
+    participant_a = Ecto.UUID.generate()
+    participant_b = Ecto.UUID.generate()
+    thread = Chat.ensure_dm!(participant_a, participant_b)
     {:ok, thread_server} = Chat.ensure_thread_runtime(thread.id)
     Ecto.Adapters.SQL.Sandbox.allow(Fleetlm.Repo, self(), thread_server)
 
-    {:ok, thread: thread, a: a, b: b, thread_id: thread.id}
+    {:ok, thread_id: thread.id, participant_a: participant_a, participant_b: participant_b}
   end
 
-  test "late joiner receives backlog and live updates", %{thread_id: thread_id, a: a, b: b} do
-    {_, _a_part} = join_participant(a)
+  test "late joiner receives backlog and live updates", %{
+    thread_id: thread_id,
+    participant_a: a,
+    participant_b: b
+  } do
+    {_, _a_part_socket} = join_participant(a)
     {a_thread_reply, a_thread_socket} = join_thread(a, thread_id)
     assert a_thread_reply == %{"messages" => []}
 
@@ -24,7 +28,7 @@ defmodule FleetlmWeb.MessagingFlowTest do
     assert_reply ref, :ok, %{"text" => "foo", "sender_id" => ^a}
     assert_push "message", %{"thread_id" => ^thread_id, "text" => "foo", "sender_id" => ^a}
 
-    {b_part_reply, _b_part} = join_participant(b)
+    {b_part_reply, _b_part_socket} = join_participant(b)
     assert_thread_metadata(b_part_reply, thread_id, "foo")
 
     {b_thread_reply, b_thread_socket} = join_thread(b, thread_id)
@@ -49,13 +53,19 @@ defmodule FleetlmWeb.MessagingFlowTest do
 
   defp join_participant(participant_id) do
     socket = socket(FleetlmWeb.UserSocket, nil, %{participant_id: participant_id})
-    {:ok, reply, socket} = subscribe_and_join(socket, FleetlmWeb.ParticipantChannel, "participant:#{participant_id}")
+
+    {:ok, reply, socket} =
+      subscribe_and_join(socket, FleetlmWeb.ParticipantChannel, "participant:#{participant_id}")
+
     {reply, socket}
   end
 
   defp join_thread(participant_id, thread_id) do
     socket = socket(FleetlmWeb.UserSocket, nil, %{participant_id: participant_id})
-    {:ok, reply, socket} = subscribe_and_join(socket, FleetlmWeb.ThreadChannel, "thread:#{thread_id}")
+
+    {:ok, reply, socket} =
+      subscribe_and_join(socket, FleetlmWeb.ThreadChannel, "thread:#{thread_id}")
+
     {reply, socket}
   end
 
@@ -66,7 +76,6 @@ defmodule FleetlmWeb.MessagingFlowTest do
   end
 
   defp collect_tick_updates(count), do: collect_tick_updates(count, [])
-
   defp collect_tick_updates(0, acc), do: acc
 
   defp collect_tick_updates(count, acc) do

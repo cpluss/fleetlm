@@ -34,6 +34,7 @@ defmodule Fleetlm.TestClient do
 
       {:error, {:already_started, _}} ->
         IO.puts("Client already running for #{participant_id}, reusing process")
+
         case Socket.whereis(participant_id) do
           nil -> Mix.raise("client process not found")
           pid -> input_loop(pid)
