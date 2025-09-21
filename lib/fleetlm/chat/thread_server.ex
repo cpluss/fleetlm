@@ -7,10 +7,12 @@ defmodule Fleetlm.Chat.ThreadServer do
 
   import Ecto.Query
 
+  alias Fleetlm.Cache
   alias Fleetlm.Chat
   alias Fleetlm.Chat.ThreadSupervisor
   alias Fleetlm.Chat.Threads.{Message, Participant, Thread}
   alias Fleetlm.Repo
+  alias Fleetlm.Telemetry
   alias Phoenix.PubSub
 
   @registry Fleetlm.Chat.ThreadRegistry
@@ -25,7 +27,7 @@ defmodule Fleetlm.Chat.ThreadServer do
       id: {__MODULE__, thread_id},
       start: {__MODULE__, :start_link, [[thread_id: thread_id]]},
       restart: :temporary,
-      shutdown: 5_000,
+      shutdown: 10_000,  # Increased shutdown time for graceful cleanup
       type: :worker
     }
   end
@@ -76,14 +78,12 @@ defmodule Fleetlm.Chat.ThreadServer do
         {:stop, :not_found}
     end
 
-    messages = Chat.list_thread_messages(thread_id, limit: @cache_limit)
-    participants = fetch_participant_ids(thread_id)
+    # Warm the cache with recent messages and participants
+    warm_cache(thread_id)
 
     state = %{
       thread_id: thread_id,
-      messages: messages,
-      participants: MapSet.new(participants),
-      last_message_at: last_message_at(messages)
+      last_active_at: DateTime.utc_now()
     }
 
     {:ok, state}
@@ -91,19 +91,28 @@ defmodule Fleetlm.Chat.ThreadServer do
 
   @impl true
   def handle_call({:send_message, attrs, opts}, _from, state) do
+    start_time = System.monotonic_time(:millisecond)
     attrs = Map.put_new(attrs, :thread_id, state.thread_id)
 
     case Chat.send_message(attrs, opts) do
       {:ok, %Message{} = message} ->
-        state =
-          state
-          |> cache_message(message)
-          |> refresh_participants()
+        # Update caches
+        Cache.add_message(state.thread_id, message)
+        Cache.update_thread_meta(state.thread_id, message)
+        refresh_participants_cache(state.thread_id)
 
         broadcast_thread(message)
         broadcast_participants(state, message)
 
-        {:reply, {:ok, message}, %{state | last_message_at: message.created_at}}
+        duration = System.monotonic_time(:millisecond) - start_time
+        Telemetry.emit_message_sent(
+          state.thread_id,
+          message.sender_id,
+          message.role,
+          duration
+        )
+
+        {:reply, {:ok, message}, %{state | last_active_at: DateTime.utc_now()}}
 
       {:error, _step, reason} ->
         {:reply, {:error, reason}, state}
@@ -112,18 +121,25 @@ defmodule Fleetlm.Chat.ThreadServer do
 
   def handle_call({:tick, participant_id, cursor}, _from, state) do
     cursor = normalize_cursor(cursor)
-    {state, member?} = ensure_participant_cached(state, participant_id)
+
+    # Check if participant is in thread using cache
+    participants = Cache.get_participants(state.thread_id) || refresh_participants_cache(state.thread_id)
+    member? = participant_id in participants
 
     if member? do
-      cond do
-        is_nil(state.last_message_at) ->
+      case Cache.get_thread_meta(state.thread_id) do
+        nil ->
           {:reply, :idle, state}
 
-        is_nil(cursor) or DateTime.compare(state.last_message_at, cursor) == :gt ->
-          payload = tick_payload(state, participant_id)
-          {:reply, {:updated, payload}, state}
+        %{last_message_at: last_message_at} when not is_nil(last_message_at) ->
+          if is_nil(cursor) or DateTime.compare(last_message_at, cursor) == :gt do
+            payload = tick_payload(state.thread_id, participant_id)
+            {:reply, {:updated, payload}, %{state | last_active_at: DateTime.utc_now()}}
+          else
+            {:reply, :idle, state}
+          end
 
-        true ->
+        _ ->
           {:reply, :idle, state}
       end
     else
@@ -140,29 +156,44 @@ defmodule Fleetlm.Chat.ThreadServer do
     {:noreply, state}
   end
 
+  @impl true
+  def terminate(reason, state) do
+    Logger.debug("ThreadServer terminating for thread #{state.thread_id}: #{inspect(reason)}")
+
+    # Optionally save state or perform cleanup here
+    # For now, we rely on the distributed cache for persistence
+
+    :ok
+  end
+
   ## Helpers
 
   defp via_tuple(thread_id), do: {:via, Registry, {@registry, thread_id}}
 
   defp call_timeout(opts), do: Keyword.get(opts, :timeout, @default_timeout)
 
-  defp cache_message(state, message) do
-    messages = [message | state.messages] |> Enum.take(@cache_limit)
-    %{state | messages: messages}
-  end
+  defp warm_cache(thread_id) do
+    # Warm message cache
+    messages = Chat.list_thread_messages(thread_id, limit: @cache_limit)
+    Cache.cache_messages(thread_id, messages)
 
-  defp refresh_participants(state) do
-    participants = fetch_participant_ids(state.thread_id)
-    %{state | participants: MapSet.new(participants)}
-  end
+    # Warm participants cache
+    participants = fetch_participant_ids(thread_id)
+    Cache.cache_participants(thread_id, participants)
 
-  defp ensure_participant_cached(state, participant_id) do
-    if MapSet.member?(state.participants, participant_id) do
-      {state, true}
-    else
-      state = refresh_participants(state)
-      {state, MapSet.member?(state.participants, participant_id)}
+    # Warm thread metadata
+    if messages != [] do
+      message = List.first(messages)
+      Cache.update_thread_meta(thread_id, message)
     end
+
+    :ok
+  end
+
+  defp refresh_participants_cache(thread_id) do
+    participants = fetch_participant_ids(thread_id)
+    Cache.cache_participants(thread_id, participants)
+    participants
   end
 
   defp fetch_participant_ids(thread_id) do
@@ -184,26 +215,29 @@ defmodule Fleetlm.Chat.ThreadServer do
       sender_id: message.sender_id
     }
 
-    Enum.each(state.participants, fn participant_id ->
+    participants = Cache.get_participants(state.thread_id) || []
+
+    Enum.each(participants, fn participant_id ->
       summary = Map.put(base_summary, :participant_id, participant_id)
       PubSub.broadcast(@pubsub, participant_topic(participant_id), {:thread_updated, summary})
     end)
   end
 
-  defp tick_payload(state, participant_id) do
+  defp tick_payload(thread_id, participant_id) do
+    meta = Cache.get_thread_meta(thread_id)
+    recent_messages = Cache.get_messages(thread_id, 5) || []
+
     %{
-      thread_id: state.thread_id,
+      thread_id: thread_id,
       participant_id: participant_id,
-      last_message_at: state.last_message_at,
-      recent_messages: Enum.take(state.messages, 5)
+      last_message_at: meta && meta.last_message_at,
+      recent_messages: recent_messages
     }
   end
 
   defp thread_topic(thread_id), do: "thread:" <> thread_id
   defp participant_topic(participant_id), do: "participant:" <> participant_id
 
-  defp last_message_at([]), do: nil
-  defp last_message_at([message | _]), do: message.created_at
 
   defp normalize_cursor(nil), do: nil
 

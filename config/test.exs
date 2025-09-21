@@ -37,3 +37,6 @@ config :phoenix_live_view,
   enable_expensive_runtime_checks: true
 
 config :fleetlm, :participant_tick_interval_ms, 100
+
+# Use local PubSub for tests to avoid Redis dependency
+config :fleetlm, :pubsub_adapter, :local

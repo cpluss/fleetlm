@@ -1,6 +1,7 @@
 defmodule FleetlmWeb.ThreadChannel do
   use FleetlmWeb, :channel
 
+  alias Fleetlm.Cache
   alias Fleetlm.Chat
   alias Phoenix.PubSub
 
@@ -15,11 +16,18 @@ defmodule FleetlmWeb.ThreadChannel do
          {:ok, _pid} <- Chat.ensure_thread_runtime(thread_id) do
       :ok = PubSub.subscribe(@pubsub, "thread:" <> thread_id)
 
-      history =
-        thread_id
-        |> Chat.list_thread_messages(limit: @history_limit)
-        |> Enum.reverse()
-        |> Enum.map(&serialize_message/1)
+      # Try cache first, fallback to database
+      history = case Cache.get_messages(thread_id, @history_limit) do
+        nil ->
+          thread_id
+          |> Chat.list_thread_messages(limit: @history_limit)
+          |> Enum.reverse()
+
+        cached_messages ->
+          cached_messages |> Enum.reverse()
+      end
+
+      history = Enum.map(history, &serialize_message/1)
 
       {:ok, %{"messages" => history}, assign(socket, :thread_id, thread_id)}
     else

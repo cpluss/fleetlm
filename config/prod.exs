@@ -16,5 +16,8 @@ config :swoosh, local: false
 # Do not print debug messages in production
 config :logger, level: :info
 
+# Use Redis PubSub in production for horizontal scaling
+config :fleetlm, :pubsub_adapter, :redis
+
 # Runtime production configuration, including reading
 # of environment variables, is done on config/runtime.exs.

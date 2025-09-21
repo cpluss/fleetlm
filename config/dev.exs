@@ -8,7 +8,9 @@ config :fleetlm, Fleetlm.Repo,
   database: "fleetlm_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
-  pool_size: 10
+  pool_size: 10,
+  queue_target: 5000,
+  queue_interval: 1000
 
 # For development, we disable any cache and enable
 # debugging and code reloading.
@@ -86,3 +88,6 @@ config :phoenix_live_view,
 
 # Disable swoosh api client as it is only required for production adapters.
 config :swoosh, :api_client, false
+
+# Use local PubSub for development (change to :redis for testing horizontal scaling)
+config :fleetlm, :pubsub_adapter, :local

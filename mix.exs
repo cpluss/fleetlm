@@ -66,7 +66,10 @@ defmodule Fleetlm.MixProject do
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      {:websockex, "~> 0.4"}
+      {:websockex, "~> 0.4"},
+      {:phoenix_pubsub_redis, "~> 3.0"},
+      {:redix, "~> 1.5"},
+      {:cachex, "~> 3.6"}
     ]
   end
 
