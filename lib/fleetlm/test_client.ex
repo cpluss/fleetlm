@@ -4,7 +4,7 @@ defmodule Fleetlm.TestClient do
 
   Usage:
 
-      mix run scripts/test_client.exs -- participant_id=<uuid>
+      mix run scripts/test_client.exs -- --participant-id <uuid>
 
   Starts a websocket connection, joins the participant channel, and
   automatically subscribes to threads as metadata updates arrive.
@@ -13,14 +13,22 @@ defmodule Fleetlm.TestClient do
   alias Fleetlm.TestClient.Socket
 
   def main(args) do
-    {opts, _, _} =
+    {opts, rest, _} =
       OptionParser.parse(args,
         switches: [participant_id: :string, url: :string],
         aliases: [p: :participant_id, u: :url]
       )
 
-    participant_id = opts[:participant_id] || Ecto.UUID.generate()
-    base_url = opts[:url] || "ws://localhost:4000/socket/websocket"
+    extras = parse_positional_args(rest)
+
+    participant_id =
+      opts[:participant_id] || Map.get(extras, "participant_id") ||
+        System.get_env("PARTICIPANT_ID") || Ecto.UUID.generate()
+
+    base_url =
+      opts[:url] || Map.get(extras, "url") ||
+        System.get_env("TEST_CLIENT_SOCKET_URL") ||
+        "ws://localhost:4000/socket/websocket"
 
     url = build_url(base_url, participant_id)
 
@@ -121,6 +129,25 @@ defmodule Fleetlm.TestClient do
   defp handle_command(cmd, _client) do
     IO.puts("unknown command: #{cmd}")
   end
+
+  defp parse_positional_args(args) do
+    {acc, awaiting} =
+      Enum.reduce(args, {%{}, nil}, fn
+        arg, {map, nil} ->
+          case String.split(arg, "=", parts: 2) do
+            [key, value] -> {Map.put(map, key, value), nil}
+            _ -> {map, arg}
+          end
+
+        arg, {map, key} ->
+          {Map.put(map, key, arg), nil}
+      end)
+
+    case awaiting do
+      nil -> acc
+      _ -> acc
+    end
+  end
 end
 
 defmodule Fleetlm.TestClient.Socket do
@@ -158,8 +185,8 @@ defmodule Fleetlm.TestClient.Socket do
 
   @impl true
   def handle_connect(_conn, state) do
-    {state, join_frame} = join_participant(state)
-    {:reply, [join_frame], schedule_heartbeat(state)}
+    send(self(), :join_participant)
+    {:ok, schedule_heartbeat(state)}
   end
 
   @impl true
@@ -177,7 +204,7 @@ defmodule Fleetlm.TestClient.Socket do
   @impl true
   def handle_cast({:send_message, thread_id, text}, state) do
     {state, frame} = push_message(state, thread_id, text)
-    {:reply, [frame], state}
+    reply_with_frames(state, [frame])
   end
 
   def handle_cast({:list, caller}, state) do
@@ -211,9 +238,19 @@ defmodule Fleetlm.TestClient.Socket do
   end
 
   @impl true
+  def handle_info(:join_participant, state) do
+    {state, frame} = join_participant(state)
+    reply_with_frames(state, [frame])
+  end
+
+  @impl true
   def handle_info(:heartbeat, state) do
     {state, frame} = heartbeat(state)
-    {:reply, [frame], schedule_heartbeat(state)}
+    reply_with_frames(schedule_heartbeat(state), [frame])
+  end
+
+  def handle_info({:send_frames, frames}, state) do
+    reply_with_frames(state, frames)
   end
 
   def handle_info(msg, state) do
@@ -271,7 +308,7 @@ defmodule Fleetlm.TestClient.Socket do
 
   defp process_message(%{"topic" => topic, "event" => "tick", "payload" => payload}, state) do
     {state, frames} = handle_tick(topic, payload, state)
-    {:reply, frames, state}
+    reply_with_frames(state, frames)
   end
 
   defp process_message(%{"topic" => topic, "event" => "message", "payload" => payload}, state) do
@@ -298,7 +335,7 @@ defmodule Fleetlm.TestClient.Socket do
     end)
 
     {state, frames} = ensure_thread_joins(state, Map.keys(threads))
-    {:reply, frames, %{state | threads: threads}}
+    reply_with_frames(%{state | threads: threads}, frames)
   end
 
   defp handle_reply(
@@ -397,5 +434,14 @@ defmodule Fleetlm.TestClient.Socket do
       "payload" => payload,
       "ref" => ref
     })
+  end
+
+  defp reply_with_frames(state, []), do: {:ok, state}
+
+  defp reply_with_frames(state, [frame]), do: {:reply, frame, state}
+
+  defp reply_with_frames(state, [frame | rest]) do
+    send(self(), {:send_frames, rest})
+    {:reply, frame, state}
   end
 end
