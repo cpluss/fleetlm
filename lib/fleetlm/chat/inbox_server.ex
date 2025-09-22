@@ -7,6 +7,7 @@ defmodule Fleetlm.Chat.InboxServer do
   use GenServer
 
   alias Fleetlm.Chat.{DmKey, Event, Events, Storage}
+  alias Fleetlm.Telemetry.RuntimeCounters
 
   @registry Fleetlm.Chat.InboxRegistry
   @flush_interval 200
@@ -61,14 +62,23 @@ defmodule Fleetlm.Chat.InboxServer do
         })
       end)
 
-    {:ok,
-     %{
-       participant_id: participant_id,
-       conversations: conversations,
-       pending: %{},
-       flush_ref: nil,
-       idle_ref: schedule_idle()
-     }}
+    state = %{
+      participant_id: participant_id,
+      conversations: conversations,
+      pending: %{},
+      flush_ref: nil,
+      idle_ref: schedule_idle(),
+      stopped_reason: nil
+    }
+
+    active = RuntimeCounters.increment(:inboxes_active, 1)
+    emit_active(participant_id, active)
+
+    :telemetry.execute([:fleetlm, :inbox, :started], %{count: 1}, %{
+      participant_id: participant_id
+    })
+
+    {:ok, state}
   end
 
   @impl true
@@ -165,13 +175,14 @@ defmodule Fleetlm.Chat.InboxServer do
 
   @impl true
   def handle_info(:idle_timeout, state) do
-    {:stop, :normal, state}
+    {:stop, :normal, %{state | stopped_reason: :idle}}
   end
 
   @impl true
-  def terminate(_reason, state) do
+  def terminate(reason, state) do
     if state.flush_ref, do: Process.cancel_timer(state.flush_ref)
     if state[:idle_ref], do: Process.cancel_timer(state.idle_ref)
+    emit_stopped(state, state[:stopped_reason] || normalize_reason(reason))
     :ok
   end
 
@@ -258,4 +269,24 @@ defmodule Fleetlm.Chat.InboxServer do
   end
 
   defp cancel_idle(state), do: %{state | idle_ref: nil}
+
+  defp emit_stopped(state, reason) do
+    active = RuntimeCounters.increment(:inboxes_active, -1)
+    emit_active(state.participant_id, active)
+
+    :telemetry.execute([:fleetlm, :inbox, :stopped], %{count: 1}, %{
+      participant_id: state.participant_id,
+      reason: reason
+    })
+  end
+
+  defp emit_active(participant_id, count) do
+    :telemetry.execute([:fleetlm, :inbox, :active], %{count: count}, %{
+      participant_id: participant_id
+    })
+  end
+
+  defp normalize_reason({:shutdown, inner}), do: normalize_reason(inner)
+  defp normalize_reason(:normal), do: :normal
+  defp normalize_reason(reason), do: reason
 end

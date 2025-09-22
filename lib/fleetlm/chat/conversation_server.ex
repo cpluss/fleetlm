@@ -8,6 +8,7 @@ defmodule Fleetlm.Chat.ConversationServer do
   use GenServer
 
   alias Fleetlm.Chat.{DmKey, Event, Events, InboxServer, Storage}
+  alias Fleetlm.Telemetry.RuntimeCounters
 
   @tail_limit 100
   @registry Fleetlm.Chat.ConversationRegistry
@@ -58,8 +59,13 @@ defmodule Fleetlm.Chat.ConversationServer do
     state = %{
       dm: dm,
       tail: events,
-      idle_ref: schedule_idle()
+      idle_ref: schedule_idle(),
+      stopped_reason: nil
     }
+
+    active = RuntimeCounters.increment(:conversations_active, 1)
+    emit_active(dm.key, active)
+    :telemetry.execute([:fleetlm, :conversation, :started], %{count: 1}, %{dm_key: dm.key})
 
     {:ok, state}
   end
@@ -135,12 +141,13 @@ defmodule Fleetlm.Chat.ConversationServer do
 
   @impl true
   def handle_info(:idle_timeout, state) do
-    {:stop, :normal, state}
+    {:stop, :normal, %{state | stopped_reason: :idle}}
   end
 
   @impl true
-  def terminate(_reason, state) do
+  def terminate(reason, state) do
     if state[:idle_ref], do: Process.cancel_timer(state.idle_ref)
+    emit_stopped(state, state[:stopped_reason] || normalize_reason(reason))
     :ok
   end
 
@@ -176,6 +183,24 @@ defmodule Fleetlm.Chat.ConversationServer do
     InboxServer.record_message(state.dm.first, state.dm.key, event)
     InboxServer.record_message(state.dm.second, state.dm.key, event)
   end
+
+  defp emit_stopped(state, reason) do
+    active = RuntimeCounters.increment(:conversations_active, -1)
+    emit_active(state.dm.key, active)
+
+    :telemetry.execute([:fleetlm, :conversation, :stopped], %{count: 1}, %{
+      dm_key: state.dm.key,
+      reason: reason
+    })
+  end
+
+  defp emit_active(dm_key, count) do
+    :telemetry.execute([:fleetlm, :conversation, :active], %{count: count}, %{dm_key: dm_key})
+  end
+
+  defp normalize_reason({:shutdown, inner}), do: normalize_reason(inner)
+  defp normalize_reason(:normal), do: :normal
+  defp normalize_reason(reason), do: reason
 
   defp normalize_text(text) when is_binary(text) do
     trimmed = String.trim(text)

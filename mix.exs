@@ -69,7 +69,10 @@ defmodule Fleetlm.MixProject do
       {:websockex, "~> 0.4"},
       {:phoenix_pubsub_redis, "~> 3.0"},
       {:redix, "~> 1.5"},
-      {:cachex, "~> 3.6"}
+      {:opentelemetry_api, "~> 1.3"},
+      {:opentelemetry, "~> 1.3"},
+      {:opentelemetry_exporter, "~> 1.7"},
+      {:telemetry_metrics_prometheus_core, "~> 1.2"}
     ]
   end
 

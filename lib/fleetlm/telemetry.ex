@@ -10,21 +10,21 @@ defmodule Fleetlm.Telemetry do
   """
 
   require Logger
+  alias Telemetry.Metrics
+
+  def setup_metrics do
+    Fleetlm.Telemetry.RuntimeCounters.setup()
+    :ok
+  end
 
   def attach_handlers do
     events = [
-      # Database telemetry
       [:fleetlm, :repo, :query],
-
-      # Cache telemetry
-      [:fleetlm, :cache, :hit],
-      [:fleetlm, :cache, :miss],
-
-      # Chat telemetry
       [:fleetlm, :chat, :message, :sent],
-      [:fleetlm, :thread_server, :tick],
-
-      # PubSub telemetry
+      [:fleetlm, :conversation, :started],
+      [:fleetlm, :conversation, :stopped],
+      [:fleetlm, :inbox, :started],
+      [:fleetlm, :inbox, :stopped],
       [:fleetlm, :pubsub, :broadcast]
     ]
 
@@ -54,13 +54,6 @@ defmodule Fleetlm.Telemetry do
     end
   end
 
-  def handle_event([:fleetlm, :cache, event], measurements, metadata, _config)
-      when event in [:hit, :miss] do
-    Logger.debug("Cache #{event}: #{metadata.cache} - #{metadata.key}",
-      duration_us: measurements[:duration]
-    )
-  end
-
   def handle_event([:fleetlm, :chat, :message, :sent], measurements, metadata, _config) do
     duration_ms = measurements[:duration] || 0
 
@@ -68,16 +61,6 @@ defmodule Fleetlm.Telemetry do
       thread_id: metadata.thread_id,
       sender_id: metadata.sender_id,
       role: metadata.role
-    )
-  end
-
-  def handle_event([:fleetlm, :thread_server, :tick], measurements, metadata, _config) do
-    duration_ms = measurements[:duration] || 0
-
-    Logger.debug("ThreadServer tick: #{duration_ms}ms",
-      thread_id: metadata.thread_id,
-      participant_id: metadata.participant_id,
-      status: metadata.status
     )
   end
 
@@ -89,6 +72,9 @@ defmodule Fleetlm.Telemetry do
       event: metadata.event
     )
   end
+
+  def handle_event([:fleetlm, :conversation, _event], _measurements, _metadata, _config), do: :ok
+  def handle_event([:fleetlm, :inbox, _event], _measurements, _metadata, _config), do: :ok
 
   def handle_event(event, measurements, metadata, _config) do
     Logger.debug("Unhandled telemetry event: #{inspect(event)}",
@@ -114,17 +100,45 @@ defmodule Fleetlm.Telemetry do
     :telemetry.execute([:fleetlm, :chat, :message, :sent], measurements, metadata)
   end
 
-  def emit_thread_tick(thread_id, participant_id, status, duration_ms) do
-    measurements = %{duration: duration_ms}
-    metadata = %{thread_id: thread_id, participant_id: participant_id, status: status}
-
-    :telemetry.execute([:fleetlm, :thread_server, :tick], measurements, metadata)
-  end
-
   def emit_pubsub_broadcast(topic, event, duration_us) do
     measurements = %{duration: duration_us}
     metadata = %{topic: topic, event: event}
 
     :telemetry.execute([:fleetlm, :pubsub, :broadcast], measurements, metadata)
+  end
+
+  def metrics do
+    [
+      Metrics.counter("fleetlm_conversations_started_total",
+        event_name: [:fleetlm, :conversation, :started],
+        measurement: :count,
+        tags: [:dm_key]
+      ),
+      Metrics.counter("fleetlm_conversations_stopped_total",
+        event_name: [:fleetlm, :conversation, :stopped],
+        measurement: :count,
+        tags: [:dm_key, :reason]
+      ),
+      Metrics.last_value("fleetlm_conversations_active",
+        event_name: [:fleetlm, :conversation, :active],
+        measurement: :count,
+        tags: [:dm_key]
+      ),
+      Metrics.counter("fleetlm_inboxes_started_total",
+        event_name: [:fleetlm, :inbox, :started],
+        measurement: :count,
+        tags: [:participant_id]
+      ),
+      Metrics.counter("fleetlm_inboxes_stopped_total",
+        event_name: [:fleetlm, :inbox, :stopped],
+        measurement: :count,
+        tags: [:participant_id, :reason]
+      ),
+      Metrics.last_value("fleetlm_inboxes_active",
+        event_name: [:fleetlm, :inbox, :active],
+        measurement: :count,
+        tags: [:participant_id]
+      )
+    ]
   end
 end
