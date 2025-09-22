@@ -37,7 +37,7 @@ defmodule Fleetlm.TestClient do
     case Socket.start_link(url, participant_id: participant_id, owner: self(), name: name) do
       {:ok, pid} ->
         IO.puts("\nConnected as #{participant_id}")
-        IO.puts("Commands: list | dm <participant_id> [message] | send <thread_id> <message> | read <thread_id> | quit\n")
+        IO.puts("Commands: list | dm <participant_id> [message] | send <dm_key> <message> | read <dm_key> | quit\n")
         input_loop(pid)
 
       {:error, {:already_started, _}} ->
@@ -87,14 +87,14 @@ defmodule Fleetlm.TestClient do
   defp handle_command("", _client), do: :ok
 
   defp handle_command("help", _client) do
-    IO.puts("Commands: list | dm <participant_id> [message] | send <thread_id> <message> | read <thread_id> | quit")
+    IO.puts("Commands: list | dm <participant_id> [message] | send <dm_key> <message> | read <dm_key> | quit")
   end
 
   defp handle_command("list", client) do
     WebSockex.cast(client, {:list, self()})
 
     receive do
-      {:thread_list, rows} ->
+      {:dm_list, rows} ->
         Enum.each(rows, &IO.puts/1)
     after
       1_000 -> IO.puts("timeout waiting for list reply")
@@ -107,12 +107,12 @@ defmodule Fleetlm.TestClient do
   end
 
   defp handle_command("read " <> rest, client) do
-    thread_id = String.trim(rest)
+    dm_key = String.trim(rest)
 
-    if thread_id == "" do
-      IO.puts("usage: read <thread_id>")
+    if dm_key == "" do
+      IO.puts("usage: read <dm_key>")
     else
-      WebSockex.cast(client, {:mark_read, thread_id})
+      WebSockex.cast(client, {:mark_read, dm_key})
     end
   end
 
@@ -131,11 +131,11 @@ defmodule Fleetlm.TestClient do
 
   defp handle_command("send " <> rest, client) do
     case String.split(rest, ~r/\s+/, parts: 2) do
-      [thread_id, message] when message not in [nil, ""] ->
-        WebSockex.cast(client, {:send_message, thread_id, message})
+      [dm_key, message] when message not in [nil, ""] ->
+        WebSockex.cast(client, {:send_message, dm_key, message})
 
       _ ->
-        IO.puts("usage: send <thread_id> <message>")
+        IO.puts("usage: send <dm_key> <message>")
     end
   end
 
@@ -187,8 +187,8 @@ defmodule Fleetlm.TestClient.Socket do
       owner: owner,
       ref: 1,
       pending: %{},
-      joined_threads: MapSet.new(),
-      threads: %{},
+      joined_dms: MapSet.new(),
+      dm_threads: %{},
       unreads: %{},
       heartbeat_ref: nil
     }
@@ -220,33 +220,34 @@ defmodule Fleetlm.TestClient.Socket do
     reply_with_frames(state, [frame])
   end
 
-  def handle_cast({:send_message, thread_id, text}, state) do
-    {state, frame} = push_message(state, thread_id, text)
+  def handle_cast({:send_message, dm_key, text}, state) do
+    {state, frame} = push_message(state, dm_key, text)
     reply_with_frames(state, [frame])
   end
 
   def handle_cast({:list, caller}, state) do
     rows =
-      state.threads
-      |> Enum.map(fn {thread_id, meta} ->
-        unread = Map.get(state.unreads, thread_id, 0)
-        preview = Map.get(meta, "last_message_preview") || "(none)"
+      state.dm_threads
+      |> Enum.map(fn {dm_key, meta} ->
+        unread = Map.get(state.unreads, dm_key, 0)
+        preview = Map.get(meta, "last_message_text") || "(none)"
         timestamp = Map.get(meta, "last_message_at") || "-"
-        "#{thread_id} | unread=#{unread} | last=#{preview} @ #{timestamp}"
+        other_participant = Map.get(meta, "other_participant_id") || "?"
+        "#{dm_key} | #{other_participant} | unread=#{unread} | last=#{preview} @ #{timestamp}"
       end)
       |> Enum.sort()
 
-    send(caller, {:thread_list, rows})
+    send(caller, {:dm_list, rows})
     {:ok, state}
   end
 
-  def handle_cast({:mark_read, thread_id}, state) do
-    unreads = Map.put(state.unreads, thread_id, 0)
+  def handle_cast({:mark_read, dm_key}, state) do
+    unreads = Map.put(state.unreads, dm_key, 0)
     {:ok, %{state | unreads: unreads}}
   end
 
   def handle_cast({:get_state, caller}, state) do
-    snapshot = Map.take(state, [:threads, :unreads, :joined_threads])
+    snapshot = Map.take(state, [:dm_threads, :unreads, :joined_dms])
     send(caller, {:client_state, snapshot})
     {:ok, state}
   end
@@ -309,11 +310,11 @@ defmodule Fleetlm.TestClient.Socket do
     {state, {:text, frame}}
   end
 
-  defp push_message(state, thread_id, text) do
+  defp push_message(state, dm_key, text) do
     payload = %{"text" => text}
     {state, ref} = next_ref(state)
-    frame = encode_message("thread:#{thread_id}", "message:new", payload, ref)
-    state = put_pending(state, ref, {:push, thread_id})
+    frame = encode_message("dm:#{dm_key}", "message:new", payload, ref)
+    state = put_pending(state, ref, {:push, dm_key})
     {state, {:text, frame}}
   end
 
@@ -338,7 +339,7 @@ defmodule Fleetlm.TestClient.Socket do
   end
 
   defp process_message(%{"topic" => topic, "event" => "message", "payload" => payload}, state) do
-    handle_thread_message(topic, payload, state)
+    handle_dm_message(topic, payload, state)
   end
 
   defp process_message(%{"event" => "phx_error", "topic" => topic}, state) do
@@ -352,24 +353,24 @@ defmodule Fleetlm.TestClient.Socket do
   end
 
   defp handle_reply({:join_participant}, %{"payload" => %{"response" => response}}, state) do
-    threads = Map.new(response["threads"] || [], &{&1["thread_id"], &1})
+    dm_threads = Map.new(response["dm_threads"] || [], &{&1["dm_key"], &1})
 
-    Enum.each(threads, fn {thread_id, meta} ->
+    Enum.each(dm_threads, fn {dm_key, meta} ->
       IO.puts(
-        "Joined participant channel: thread #{thread_id} last=#{meta["last_message_preview"] || "(none)"}"
+        "Joined participant channel: DM #{dm_key} with #{meta["other_participant_id"]} last=#{meta["last_message_text"] || "(none)"}"
       )
     end)
 
-    {state, frames} = ensure_thread_joins(state, Map.keys(threads))
-    reply_with_frames(%{state | threads: threads}, frames)
+    {state, frames} = ensure_dm_joins(state, Map.keys(dm_threads))
+    reply_with_frames(%{state | dm_threads: dm_threads}, frames)
   end
 
   defp handle_reply(
-         {:join_thread, thread_id},
+         {:join_dm, dm_key},
          %{"payload" => %{"response" => %{"messages" => history}}},
          state
        ) do
-    IO.puts("History for #{thread_id}:")
+    IO.puts("History for #{dm_key}:")
 
     Enum.each(history, fn msg ->
       print_message(msg)
@@ -378,8 +379,8 @@ defmodule Fleetlm.TestClient.Socket do
     {:ok, state}
   end
 
-  defp handle_reply({:push, thread_id}, %{"payload" => %{"status" => "ok"}}, state) do
-    unreads = Map.put(state.unreads, thread_id, 0)
+  defp handle_reply({:push, dm_key}, %{"payload" => %{"status" => "ok"}}, state) do
+    unreads = Map.put(state.unreads, dm_key, 0)
     {:ok, %{state | unreads: unreads}}
   end
 
@@ -387,41 +388,51 @@ defmodule Fleetlm.TestClient.Socket do
     thread_id = response["thread_id"]
     IO.puts("✓ DM created with #{participant_id}: #{thread_id}")
 
-    # Add the new thread to our local state
-    thread_meta = %{
-      "thread_id" => thread_id,
-      "last_message_preview" => message,
+    # The thread_id from legacy API is actually a fake dm_key format
+    # We need to generate the real dm_key
+    dm_key = generate_dm_key(state.participant_id, participant_id)
+
+    # Add the new DM to our local state
+    dm_meta = %{
+      "dm_key" => dm_key,
+      "other_participant_id" => participant_id,
+      "last_message_text" => message,
       "last_message_at" => DateTime.utc_now() |> DateTime.to_iso8601()
     }
 
-    threads = Map.put(state.threads, thread_id, thread_meta)
-    unreads = Map.put(state.unreads, thread_id, 0)
+    dm_threads = Map.put(state.dm_threads, dm_key, dm_meta)
+    unreads = Map.put(state.unreads, dm_key, 0)
 
-    # Auto-join the new thread
-    {state, frames} = ensure_thread_join(%{state | threads: threads, unreads: unreads}, thread_id)
+    # Auto-join the new DM
+    {state, frames} = ensure_dm_join(%{state | dm_threads: dm_threads, unreads: unreads}, dm_key)
     reply_with_frames(state, frames)
   end
 
   defp handle_reply(_action, _message, state), do: {:ok, state}
 
+  defp generate_dm_key(participant_a, participant_b) do
+    [x, y] = Enum.sort([participant_a, participant_b])
+    "#{x}:#{y}"
+  end
+
   defp handle_tick("participant:" <> _participant, %{"updates" => updates}, state) do
     Enum.reduce(updates, {state, []}, fn update, {st, frames} ->
-      thread_id = update["thread_id"]
-      # IO.puts("[tick] #{thread_id} :: #{update["last_message_preview"]}")
+      dm_key = update["dm_key"] || update[:dm_key]
+      # IO.puts("[tick] #{dm_key} :: #{update["last_message_text"]}")
 
-      threads = Map.put(st.threads, thread_id, update)
-      unread = unread_increment(st, thread_id, update)
-      unreads = Map.put(st.unreads, thread_id, unread)
+      dm_threads = Map.put(st.dm_threads, dm_key, update)
+      unread = unread_increment(st, dm_key, update)
+      unreads = Map.put(st.unreads, dm_key, unread)
 
-      {st, extra} = ensure_thread_join(%{st | threads: threads, unreads: unreads}, thread_id)
+      {st, extra} = ensure_dm_join(%{st | dm_threads: dm_threads, unreads: unreads}, dm_key)
       {st, frames ++ extra}
     end)
   end
 
   defp handle_tick(_topic, _payload, state), do: {state, []}
 
-  defp unread_increment(state, thread_id, %{"sender_id" => sender_id}) do
-    current = Map.get(state.unreads, thread_id, 0)
+  defp unread_increment(state, dm_key, %{"sender_id" => sender_id}) do
+    current = Map.get(state.unreads, dm_key, 0)
 
     if sender_id == state.participant_id do
       0
@@ -430,37 +441,48 @@ defmodule Fleetlm.TestClient.Socket do
     end
   end
 
-  defp handle_thread_message("thread:" <> thread_id, payload, state) do
+  defp unread_increment(state, dm_key, update) when is_map(update) do
+    sender_id = update["sender_id"] || update[:sender_id]
+    current = Map.get(state.unreads, dm_key, 0)
+
+    if sender_id == state.participant_id do
+      0
+    else
+      current + 1
+    end
+  end
+
+  defp handle_dm_message("dm:" <> dm_key, payload, state) do
     print_message(payload)
 
     unreads =
       if payload["sender_id"] == state.participant_id do
-        Map.put(state.unreads, thread_id, 0)
+        Map.put(state.unreads, dm_key, 0)
       else
-        Map.update(state.unreads, thread_id, 1, &(&1 + 1))
+        Map.update(state.unreads, dm_key, 1, &(&1 + 1))
       end
 
     {:ok, %{state | unreads: unreads}}
   end
 
-  defp ensure_thread_joins(state, thread_ids) do
-    Enum.reduce(thread_ids, {state, []}, fn thread_id, {st, frames} ->
-      {st, frame} = ensure_thread_join(st, thread_id)
+  defp ensure_dm_joins(state, dm_keys) do
+    Enum.reduce(dm_keys, {state, []}, fn dm_key, {st, frames} ->
+      {st, frame} = ensure_dm_join(st, dm_key)
       {st, frames ++ frame}
     end)
   end
 
-  defp ensure_thread_join(state, thread_id) do
-    if MapSet.member?(state.joined_threads, thread_id) do
+  defp ensure_dm_join(state, dm_key) do
+    if MapSet.member?(state.joined_dms, dm_key) do
       {state, []}
     else
       {state, ref} = next_ref(state)
-      frame = encode_message("thread:#{thread_id}", "phx_join", %{}, ref)
+      frame = encode_message("dm:#{dm_key}", "phx_join", %{}, ref)
 
       state = %{
         state
-        | pending: Map.put(state.pending, ref, {:join_thread, thread_id}),
-          joined_threads: MapSet.put(state.joined_threads, thread_id)
+        | pending: Map.put(state.pending, ref, {:join_dm, dm_key}),
+          joined_dms: MapSet.put(state.joined_dms, dm_key)
       }
 
       {state, [{:text, frame}]}

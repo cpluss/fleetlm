@@ -62,8 +62,27 @@ defmodule FleetlmWeb.ThreadChannel do
 
         case Chat.dispatch_message(attrs) do
           {:ok, message} ->
-            # Broadcast to DM channel using dm_key
+            # Broadcast full message to dm subscribers (opt-in)
             PubSub.broadcast(@pubsub, "dm:" <> dm_key, {:dm_message, message})
+
+            # Broadcast metadata to both participants (always)
+            # dm_key format: "user:alice:user:bob"
+            parts = String.split(dm_key, ":")
+            [type_a, id_a, type_b, id_b] = parts
+            participant_a = "#{type_a}:#{id_a}"
+            participant_b = "#{type_b}:#{id_b}"
+
+            metadata = %{
+              event: "dm_activity",
+              dm_key: dm_key,
+              last_message_at: message.created_at,
+              last_message_text: message.text,
+              sender_id: message.sender_id
+            }
+
+            PubSub.broadcast(@pubsub, "participant:" <> participant_a, {:dm_activity, metadata})
+            PubSub.broadcast(@pubsub, "participant:" <> participant_b, {:dm_activity, metadata})
+
             {:reply, {:ok, serialize_dm_message(message)}, socket}
 
           {:error, reason} ->
@@ -110,9 +129,14 @@ defmodule FleetlmWeb.ThreadChannel do
   end
 
   defp get_other_participant(dm_key, participant_id) do
-    # Split dm_key and return the participant that's not the current one
-    case String.split(dm_key, ":", parts: 2) do
-      [participant_a, participant_b] ->
+    # dm_key format: "user:alice:user:bob" (sorted participant IDs)
+    # Split on ":" and rejoin to get the two participant IDs
+    parts = String.split(dm_key, ":")
+
+    case parts do
+      [type_a, id_a, type_b, id_b] when length(parts) == 4 ->
+        participant_a = "#{type_a}:#{id_a}"
+        participant_b = "#{type_b}:#{id_b}"
         if participant_a == participant_id, do: participant_b, else: participant_a
 
       _ ->

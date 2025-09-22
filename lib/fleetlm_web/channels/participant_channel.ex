@@ -31,7 +31,7 @@ defmodule FleetlmWeb.ParticipantChannel do
     current_participant_id = socket.assigns.participant_id
 
     try do
-      thread = Chat.ensure_dm!(current_participant_id, other_participant_id)
+      dm_key = Chat.generate_dm_key(current_participant_id, other_participant_id)
 
       # Send the initial message if provided
       if message && String.trim(message) != "" do
@@ -45,7 +45,8 @@ defmodule FleetlmWeb.ParticipantChannel do
         end
       end
 
-      {:reply, {:ok, %{"thread_id" => thread.id}}, socket}
+      # Return dm_key for the new architecture
+      {:reply, {:ok, %{"dm_key" => dm_key, "thread_id" => dm_key}}, socket}
     rescue
       error ->
         {:reply, {:error, %{"reason" => "failed to create DM: #{inspect(error)}"}}, socket}
@@ -57,6 +58,15 @@ defmodule FleetlmWeb.ParticipantChannel do
     updates = socket.assigns.pending_updates
     serialized = serialize_summary(summary)
     updates = Map.put(updates, serialized["thread_id"], serialized)
+
+    {:noreply, assign(socket, :pending_updates, updates)}
+  end
+
+  @impl true
+  def handle_info({:dm_activity, metadata}, socket) do
+    updates = socket.assigns.pending_updates
+    dm_key = metadata[:dm_key] || metadata["dm_key"]
+    updates = Map.put(updates, dm_key, metadata)
 
     {:noreply, assign(socket, :pending_updates, updates)}
   end
@@ -83,6 +93,7 @@ defmodule FleetlmWeb.ParticipantChannel do
 
   defp serialize_dm_thread(dm_thread) do
     %{
+      "dm_key" => dm_thread.dm_key,
       "other_participant_id" => dm_thread.other_participant_id,
       "last_message_at" => encode_datetime(dm_thread.last_message_at),
       "last_message_text" => dm_thread.last_message_text

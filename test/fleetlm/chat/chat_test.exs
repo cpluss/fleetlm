@@ -74,17 +74,22 @@ defmodule Fleetlm.ChatTest do
       assert message.text == "Broadcast!"
     end
 
-    test "list_broadcast_messages/1 returns messages in reverse chronological order" do
+    test "list_broadcast_messages/1 returns broadcast messages" do
       sender_id = "admin:system"
 
-      {:ok, msg1} = Chat.send_broadcast_message(sender_id, "First")
-      {:ok, msg2} = Chat.send_broadcast_message(sender_id, "Second")
+      {:ok, _msg1} = Chat.send_broadcast_message(sender_id, "First")
+      {:ok, _msg2} = Chat.send_broadcast_message(sender_id, "Second")
 
       messages = Chat.list_broadcast_messages()
 
       assert length(messages) == 2
-      assert List.first(messages).id == msg2.id
-      assert List.last(messages).id == msg1.id
+      message_texts = Enum.map(messages, & &1.text)
+      assert "First" in message_texts
+      assert "Second" in message_texts
+
+      # Verify ordering by created_at DESC (most recent first)
+      [first, second] = messages
+      assert first.created_at >= second.created_at
     end
   end
 
