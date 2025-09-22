@@ -355,11 +355,19 @@ defmodule Fleetlm.TestClient.Socket do
   defp handle_reply({:join_participant}, %{"payload" => %{"response" => response}}, state) do
     dm_threads = Map.new(response["dm_threads"] || [], &{&1["dm_key"], &1})
 
-    Enum.each(dm_threads, fn {dm_key, meta} ->
-      IO.puts(
-        "Joined participant channel: DM #{dm_key} with #{meta["other_participant_id"]} last=#{meta["last_message_text"] || "(none)"}"
-      )
-    end)
+    IO.puts("✅ Subscribed to ParticipantChannel - will receive notifications for all DM activity")
+
+    if map_size(dm_threads) > 0 do
+      IO.puts("📬 Found #{map_size(dm_threads)} existing DM thread(s):")
+      Enum.each(dm_threads, fn {dm_key, meta} ->
+        IO.puts(
+          "  - DM #{dm_key} with #{meta["other_participant_id"]} last=#{meta["last_message_text"] || "(none)"}"
+        )
+      end)
+      IO.puts("🔗 Auto-subscribing to all DM threads for real-time messages...")
+    else
+      IO.puts("📭 No existing DM threads found")
+    end
 
     {state, frames} = ensure_dm_joins(state, Map.keys(dm_threads))
     reply_with_frames(%{state | dm_threads: dm_threads}, frames)
@@ -370,11 +378,16 @@ defmodule Fleetlm.TestClient.Socket do
          %{"payload" => %{"response" => %{"messages" => history}}},
          state
        ) do
-    IO.puts("History for #{dm_key}:")
+    IO.puts("✅ Subscribed to ThreadChannel for DM #{dm_key} - will receive real-time messages")
 
-    Enum.each(history, fn msg ->
-      print_message(msg)
-    end)
+    if length(history) > 0 do
+      IO.puts("📜 Message history (#{length(history)} messages):")
+      Enum.each(history, fn msg ->
+        print_message(msg)
+      end)
+    else
+      IO.puts("📭 No message history for this DM")
+    end
 
     {:ok, state}
   end
@@ -418,7 +431,14 @@ defmodule Fleetlm.TestClient.Socket do
   defp handle_tick("participant:" <> _participant, %{"updates" => updates}, state) do
     Enum.reduce(updates, {state, []}, fn update, {st, frames} ->
       dm_key = update["dm_key"] || update[:dm_key]
-      # IO.puts("[tick] #{dm_key} :: #{update["last_message_text"]}")
+      other_participant = update["other_participant_id"]
+      last_message = update["last_message_text"]
+      sender_id = update["sender_id"]
+
+      # Display notification for new messages from others
+      if sender_id && sender_id != st.participant_id do
+        IO.puts("🔔 New message in DM #{dm_key} from #{other_participant}: #{last_message}")
+      end
 
       dm_threads = Map.put(st.dm_threads, dm_key, update)
       unread = unread_increment(st, dm_key, update)
@@ -453,6 +473,11 @@ defmodule Fleetlm.TestClient.Socket do
   end
 
   defp handle_dm_message("dm:" <> dm_key, payload, state) do
+    # Display the message with DM context
+    sender_id = payload["sender_id"]
+    if sender_id != state.participant_id do
+      IO.puts("💬 [DM #{dm_key}] Real-time message:")
+    end
     print_message(payload)
 
     unreads =

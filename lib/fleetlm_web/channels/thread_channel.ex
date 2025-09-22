@@ -62,27 +62,7 @@ defmodule FleetlmWeb.ThreadChannel do
 
         case Chat.dispatch_message(attrs) do
           {:ok, message} ->
-            # Broadcast full message to dm subscribers (opt-in)
-            PubSub.broadcast(@pubsub, "dm:" <> dm_key, {:dm_message, message})
-
-            # Broadcast metadata to both participants (always)
-            # dm_key format: "user:alice:user:bob"
-            parts = String.split(dm_key, ":")
-            [type_a, id_a, type_b, id_b] = parts
-            participant_a = "#{type_a}:#{id_a}"
-            participant_b = "#{type_b}:#{id_b}"
-
-            metadata = %{
-              event: "dm_activity",
-              dm_key: dm_key,
-              last_message_at: message.created_at,
-              last_message_text: message.text,
-              sender_id: message.sender_id
-            }
-
-            PubSub.broadcast(@pubsub, "participant:" <> participant_a, {:dm_activity, metadata})
-            PubSub.broadcast(@pubsub, "participant:" <> participant_b, {:dm_activity, metadata})
-
+            # PubSub broadcasting is now handled by Chat.Events automatically
             {:reply, {:ok, serialize_dm_message(message)}, socket}
 
           {:error, reason} ->
@@ -98,8 +78,7 @@ defmodule FleetlmWeb.ThreadChannel do
 
         case Chat.dispatch_message(attrs) do
           {:ok, message} ->
-            # Broadcast to all listeners
-            PubSub.broadcast(@pubsub, "broadcast", {:broadcast_message, message})
+            # PubSub broadcasting is now handled by Chat.Events automatically
             {:reply, {:ok, serialize_broadcast_message(message)}, socket}
 
           {:error, reason} ->

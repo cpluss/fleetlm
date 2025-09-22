@@ -11,7 +11,7 @@ defmodule Fleetlm.Chat.DmMessage do
     field :text, :string
     field :metadata, :map
     field :shard_key, :integer
-    field :created_at, :utc_datetime_usec
+    field :created_at, :utc_datetime_usec, autogenerate: {DateTime, :utc_now, []}
   end
 
   def changeset(message, attrs) do

@@ -61,6 +61,84 @@ defmodule FleetlmWeb.ParticipantChannelTest do
       assert update[:event] == "dm_activity"
     end
 
+    test "dm:create notifies both participants about new DM thread", %{user_b: user_b} do
+      user_c = "user:charlie"  # New user for this test
+
+      # Connect both participants to their channels
+      {:ok, socket_b} = connect(FleetlmWeb.UserSocket, %{"participant_id" => user_b})
+      {:ok, _reply_b, socket_b} = subscribe_and_join(socket_b, ParticipantChannel, "participant:#{user_b}")
+
+      {:ok, socket_c} = connect(FleetlmWeb.UserSocket, %{"participant_id" => user_c})
+      {:ok, _reply_c, socket_c} = subscribe_and_join(socket_c, ParticipantChannel, "participant:#{user_c}")
+
+      # User B creates a new DM with user C
+      ref = push(socket_b, "dm:create", %{"participant_id" => user_c, "message" => "Hello Charlie!"})
+      assert_reply ref, :ok, reply
+
+      expected_dm_key = Chat.generate_dm_key(user_b, user_c)
+      assert %{"dm_key" => ^expected_dm_key} = reply
+
+      # Both participants should receive dm_activity notifications
+      # Wait for tick interval to deliver notifications
+      :timer.sleep(1100)
+
+      # User B should get notification about the DM they created
+      assert_push "tick", %{"updates" => updates_b}, 2000
+      assert length(updates_b) == 1
+      update_b = List.first(updates_b)
+      assert update_b[:dm_key] == expected_dm_key
+      assert update_b[:sender_id] == user_b
+      assert update_b[:last_message_text] == "Hello Charlie!"
+      assert update_b[:other_participant_id] == user_c
+
+      # User C should get notification about the new DM (need to use socket_c here)
+      assert_push "tick", %{"updates" => updates_c}, 2000
+      assert length(updates_c) == 1
+      update_c = List.first(updates_c)
+      assert update_c[:dm_key] == expected_dm_key
+      assert update_c[:sender_id] == user_b
+      assert update_c[:last_message_text] == "Hello Charlie!"
+      assert update_c[:other_participant_id] == user_b  # Swapped for recipient
+    end
+
+    test "dm:create without message still notifies both participants", %{user_a: user_a} do
+      user_d = "user:david"
+
+      # Connect both participants
+      {:ok, socket_a} = connect(FleetlmWeb.UserSocket, %{"participant_id" => user_a})
+      {:ok, _reply_a, socket_a} = subscribe_and_join(socket_a, ParticipantChannel, "participant:#{user_a}")
+
+      {:ok, socket_d} = connect(FleetlmWeb.UserSocket, %{"participant_id" => user_d})
+      {:ok, _reply_d, socket_d} = subscribe_and_join(socket_d, ParticipantChannel, "participant:#{user_d}")
+
+      # User A creates DM without initial message
+      ref = push(socket_a, "dm:create", %{"participant_id" => user_d, "message" => ""})
+      assert_reply ref, :ok, reply
+
+      expected_dm_key = Chat.generate_dm_key(user_a, user_d)
+      assert %{"dm_key" => ^expected_dm_key} = reply
+
+      # Wait for tick notifications
+      :timer.sleep(1100)
+
+      # Both should get notifications even without a message
+      assert_push "tick", %{"updates" => updates_a}, 2000
+      assert length(updates_a) == 1
+      update_a = List.first(updates_a)
+      assert update_a[:dm_key] == expected_dm_key
+      assert update_a[:sender_id] == user_a
+      assert update_a[:last_message_text] == nil
+      assert update_a[:other_participant_id] == user_d
+
+      assert_push "tick", %{"updates" => updates_d}, 2000
+      assert length(updates_d) == 1
+      update_d = List.first(updates_d)
+      assert update_d[:dm_key] == expected_dm_key
+      assert update_d[:sender_id] == user_a
+      assert update_d[:last_message_text] == nil
+      assert update_d[:other_participant_id] == user_a
+    end
+
     test "unauthorized participant cannot join others' channels" do
       user_c = "user:charlie"
 

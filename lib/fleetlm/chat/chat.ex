@@ -13,6 +13,30 @@ defmodule Fleetlm.Chat do
     DmMessage.generate_dm_key(participant_a, participant_b)
   end
 
+  def create_dm(sender_id, recipient_id, initial_message \\ nil) do
+    dm_key = generate_dm_key(sender_id, recipient_id)
+
+    # Send initial message if provided
+    result = if initial_message && String.trim(initial_message) != "" do
+      send_dm_message(sender_id, recipient_id, initial_message)
+    else
+      {:ok, nil}
+    end
+
+    case result do
+      {:ok, message} ->
+        # Only broadcast DM creation if there's no initial message
+        # (send_dm_message already handles broadcasting when there is a message)
+        if message == nil do
+          Fleetlm.Chat.Events.broadcast_dm_created(dm_key, sender_id, recipient_id, nil)
+        end
+        {:ok, %{dm_key: dm_key, initial_message: message}}
+
+      error ->
+        error
+    end
+  end
+
   def send_dm_message(sender_id, recipient_id, text, metadata \\ %{}) do
     attrs = %{
       sender_id: sender_id,
@@ -21,9 +45,17 @@ defmodule Fleetlm.Chat do
       metadata: metadata
     }
 
-    %DmMessage{}
-    |> DmMessage.changeset(attrs)
-    |> Repo.insert()
+    case %DmMessage{}
+         |> DmMessage.changeset(attrs)
+         |> Repo.insert() do
+      {:ok, message} = result ->
+        # Emit domain event for real-time notifications
+        Fleetlm.Chat.Events.broadcast_dm_message(message)
+        result
+
+      error ->
+        error
+    end
   end
 
   def get_dm_conversation(user_a_id, user_b_id, opts \\ []) do
@@ -101,9 +133,17 @@ defmodule Fleetlm.Chat do
       metadata: metadata
     }
 
-    %BroadcastMessage{}
-    |> BroadcastMessage.changeset(attrs)
-    |> Repo.insert()
+    case %BroadcastMessage{}
+         |> BroadcastMessage.changeset(attrs)
+         |> Repo.insert() do
+      {:ok, message} = result ->
+        # Emit domain event for real-time notifications
+        Fleetlm.Chat.Events.broadcast_broadcast_message(message)
+        result
+
+      error ->
+        error
+    end
   end
 
   def list_broadcast_messages(opts \\ []) do

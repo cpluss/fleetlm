@@ -30,26 +30,12 @@ defmodule FleetlmWeb.ParticipantChannel do
   def handle_in("dm:create", %{"participant_id" => other_participant_id, "message" => message}, socket) do
     current_participant_id = socket.assigns.participant_id
 
-    try do
-      dm_key = Chat.generate_dm_key(current_participant_id, other_participant_id)
+    case Chat.create_dm(current_participant_id, other_participant_id, message) do
+      {:ok, %{dm_key: dm_key}} ->
+        {:reply, {:ok, %{"dm_key" => dm_key, "thread_id" => dm_key}}, socket}
 
-      # Send the initial message if provided
-      if message && String.trim(message) != "" do
-        case Chat.dispatch_message(%{
-               sender_id: current_participant_id,
-               recipient_id: other_participant_id,
-               text: message
-             }) do
-          {:ok, _message} -> :ok
-          {:error, _} -> :ok  # Continue even if message sending fails
-        end
-      end
-
-      # Return dm_key for the new architecture
-      {:reply, {:ok, %{"dm_key" => dm_key, "thread_id" => dm_key}}, socket}
-    rescue
-      error ->
-        {:reply, {:error, %{"reason" => "failed to create DM: #{inspect(error)}"}}, socket}
+      {:error, reason} ->
+        {:reply, {:error, %{"reason" => "failed to create DM: #{inspect(reason)}"}}, socket}
     end
   end
 
