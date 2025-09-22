@@ -5,14 +5,14 @@ defmodule Fleetlm.Chat.ConversationServer do
   process per conversation. The servers are aggressively recycled after a period of inactivity.
   """
 
-  use GenServer
+  use GenServer, restart: :transient
 
   alias Fleetlm.Chat.{DmKey, Event, Events, InboxServer, Storage}
   alias Fleetlm.Telemetry.RuntimeCounters
 
   @tail_limit 100
   @registry Fleetlm.Chat.ConversationRegistry
-  @idle_timeout Application.compile_env(:fleetlm, :conversation_idle_ms, 30_000)
+  @idle_timeout Application.compile_env(:fleetlm, :conversation_idle_ms, 180_000)
 
   ## Public API
 

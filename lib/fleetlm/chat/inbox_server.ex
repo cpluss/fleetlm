@@ -4,14 +4,14 @@ defmodule Fleetlm.Chat.InboxServer do
   such as unread counts and last message previews.
   """
 
-  use GenServer
+  use GenServer, restart: :transient
 
   alias Fleetlm.Chat.{DmKey, Event, Events, Storage}
   alias Fleetlm.Telemetry.RuntimeCounters
 
   @registry Fleetlm.Chat.InboxRegistry
   @flush_interval 200
-  @idle_timeout Application.compile_env(:fleetlm, :inbox_idle_ms, 30_000)
+  @idle_timeout Application.compile_env(:fleetlm, :inbox_idle_ms, 180_000)
 
   ## Public API
 
