@@ -22,9 +22,7 @@ defmodule Fleetlm.Repo.Migrations.ParticipantIdsToText do
              name: "dm_messages_recipient_created"
            )
 
-    create index(:dm_messages, [:sender_id, :created_at],
-             name: "dm_messages_sender_created"
-           )
+    create index(:dm_messages, [:sender_id, :created_at], name: "dm_messages_sender_created")
 
     # Recreate conversation index
     execute """

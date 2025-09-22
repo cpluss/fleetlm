@@ -22,9 +22,7 @@ defmodule Fleetlm.Repo.Migrations.AddDmKey do
     end
 
     # Create dm_key index for fast conversation lookups
-    create index(:dm_messages, [:dm_key, :created_at],
-             name: "dm_messages_dm_key_created_desc"
-           )
+    create index(:dm_messages, [:dm_key, :created_at], name: "dm_messages_dm_key_created_desc")
 
     # Drop the old conversation index since dm_key replaces it
     drop_if_exists index(:dm_messages, [], name: "dm_messages_conversation_created")

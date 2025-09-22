@@ -25,6 +25,7 @@ defmodule Fleetlm.Application do
          name: :cache_circuit_breaker, failure_threshold: 3, recovery_time: 10_000},
         id: :cache_circuit_breaker
       ),
+      Fleetlm.Chat.Supervisor,
       {DNSCluster, query: Application.get_env(:fleetlm, :dns_cluster_query) || :ignore},
       pubsub_spec(),
       # Start a worker by calling: Fleetlm.Worker.start_link(arg)

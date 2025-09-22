@@ -12,7 +12,11 @@ defmodule FleetlmWeb.ThreadChannelTest do
       {:ok, user_a: user_a, user_b: user_b, dm_key: dm_key}
     end
 
-    test "joining a DM channel returns message history", %{user_a: user_a, user_b: user_b, dm_key: dm_key} do
+    test "joining a DM channel returns message history", %{
+      user_a: user_a,
+      user_b: user_b,
+      dm_key: dm_key
+    } do
       # Pre-populate some messages
       {:ok, _} = Chat.send_dm_message(user_a, user_b, "Message 1")
       {:ok, _} = Chat.send_dm_message(user_b, user_a, "Message 2")

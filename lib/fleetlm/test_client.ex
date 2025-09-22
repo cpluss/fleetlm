@@ -37,7 +37,11 @@ defmodule Fleetlm.TestClient do
     case Socket.start_link(url, participant_id: participant_id, owner: self(), name: name) do
       {:ok, pid} ->
         IO.puts("\nConnected as #{participant_id}")
-        IO.puts("Commands: list | dm <participant_id> [message] | send <dm_key> <message> | read <dm_key> | quit\n")
+
+        IO.puts(
+          "Commands: list | dm <participant_id> [message] | send <dm_key> <message> | read <dm_key> | quit\n"
+        )
+
         input_loop(pid)
 
       {:error, {:already_started, _}} ->
@@ -87,7 +91,9 @@ defmodule Fleetlm.TestClient do
   defp handle_command("", _client), do: :ok
 
   defp handle_command("help", _client) do
-    IO.puts("Commands: list | dm <participant_id> [message] | send <dm_key> <message> | read <dm_key> | quit")
+    IO.puts(
+      "Commands: list | dm <participant_id> [message] | send <dm_key> <message> | read <dm_key> | quit"
+    )
   end
 
   defp handle_command("list", client) do
@@ -121,7 +127,8 @@ defmodule Fleetlm.TestClient do
       [participant_id] when participant_id not in [nil, ""] ->
         WebSockex.cast(client, {:create_dm, participant_id, nil})
 
-      [participant_id, message] when participant_id not in [nil, ""] and message not in [nil, ""] ->
+      [participant_id, message]
+      when participant_id not in [nil, ""] and message not in [nil, ""] ->
         WebSockex.cast(client, {:create_dm, participant_id, message})
 
       _ ->
@@ -359,11 +366,13 @@ defmodule Fleetlm.TestClient.Socket do
 
     if map_size(dm_threads) > 0 do
       IO.puts("📬 Found #{map_size(dm_threads)} existing DM thread(s):")
+
       Enum.each(dm_threads, fn {dm_key, meta} ->
         IO.puts(
           "  - DM #{dm_key} with #{meta["other_participant_id"]} last=#{meta["last_message_text"] || "(none)"}"
         )
       end)
+
       IO.puts("🔗 Auto-subscribing to all DM threads for real-time messages...")
     else
       IO.puts("📭 No existing DM threads found")
@@ -382,6 +391,7 @@ defmodule Fleetlm.TestClient.Socket do
 
     if length(history) > 0 do
       IO.puts("📜 Message history (#{length(history)} messages):")
+
       Enum.each(history, fn msg ->
         print_message(msg)
       end)
@@ -397,7 +407,11 @@ defmodule Fleetlm.TestClient.Socket do
     {:ok, %{state | unreads: unreads}}
   end
 
-  defp handle_reply({:create_dm, participant_id, message}, %{"payload" => %{"response" => response}}, state) do
+  defp handle_reply(
+         {:create_dm, participant_id, message},
+         %{"payload" => %{"response" => response}},
+         state
+       ) do
     thread_id = response["thread_id"]
     IO.puts("✓ DM created with #{participant_id}: #{thread_id}")
 
@@ -475,9 +489,11 @@ defmodule Fleetlm.TestClient.Socket do
   defp handle_dm_message("dm:" <> dm_key, payload, state) do
     # Display the message with DM context
     sender_id = payload["sender_id"]
+
     if sender_id != state.participant_id do
       IO.puts("💬 [DM #{dm_key}] Real-time message:")
     end
+
     print_message(payload)
 
     unreads =

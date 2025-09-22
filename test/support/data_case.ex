@@ -29,6 +29,7 @@ defmodule Fleetlm.DataCase do
 
   setup tags do
     Fleetlm.DataCase.setup_sandbox(tags)
+    Fleetlm.Chat.TestRuntime.reset()
     :ok
   end
 
