@@ -84,9 +84,22 @@ defmodule Fleetlm.Chat do
   def send_message(attrs, opts \\ []) when is_map(attrs) do
     attrs = normalize_message_attrs(attrs)
 
-    thread_id = fetch_required!(attrs, :thread_id)
-    sender_id = fetch_required!(attrs, :sender_id)
-    role = attrs |> Map.get(:role, "user") |> to_string()
+    with {:ok, thread_id} <- Map.fetch(attrs, :thread_id),
+         {:ok, sender_id} <- Map.fetch(attrs, :sender_id) do
+      role = attrs |> Map.get(:role, "user") |> to_string()
+      send_message_with_validated_attrs(attrs, thread_id, sender_id, role, opts)
+    else
+      :error ->
+        missing_key = cond do
+          not Map.has_key?(attrs, :thread_id) -> :thread_id
+          not Map.has_key?(attrs, :sender_id) -> :sender_id
+          true -> :unknown
+        end
+        {:error, :validation, "required key #{inspect(missing_key)} not found"}
+    end
+  end
+
+  defp send_message_with_validated_attrs(attrs, thread_id, sender_id, role, opts) do
 
     message_attrs =
       attrs
@@ -286,12 +299,6 @@ defmodule Fleetlm.Chat do
     end)
   end
 
-  defp fetch_required!(attrs, key) do
-    case Map.fetch(attrs, key) do
-      {:ok, value} -> value
-      :error -> raise KeyError, message: "required key #{inspect(key)} not found"
-    end
-  end
 
   defp shard_for(thread_id, opts) do
     modulus =

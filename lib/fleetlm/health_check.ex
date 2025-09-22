@@ -48,7 +48,7 @@ defmodule Fleetlm.HealthCheck do
       test_key = "health_check_#{:rand.uniform(1000)}"
 
       case Cache.cache_thread_meta(test_key, %{test: true}) do
-        :ok ->
+        {:ok, _} ->
           case Cache.get_thread_meta(test_key) do
             %{test: true} ->
               Cache.invalidate_thread_meta(test_key)
