@@ -37,7 +37,7 @@ defmodule Fleetlm.TestClient do
     case Socket.start_link(url, participant_id: participant_id, owner: self(), name: name) do
       {:ok, pid} ->
         IO.puts("\nConnected as #{participant_id}")
-        IO.puts("Commands: list | send <thread_id> <message> | read <thread_id> | quit\n")
+        IO.puts("Commands: list | dm <participant_id> [message] | send <thread_id> <message> | read <thread_id> | quit\n")
         input_loop(pid)
 
       {:error, {:already_started, _}} ->
@@ -87,7 +87,7 @@ defmodule Fleetlm.TestClient do
   defp handle_command("", _client), do: :ok
 
   defp handle_command("help", _client) do
-    IO.puts("Commands: list | send <thread_id> <message> | read <thread_id> | quit")
+    IO.puts("Commands: list | dm <participant_id> [message] | send <thread_id> <message> | read <thread_id> | quit")
   end
 
   defp handle_command("list", client) do
@@ -113,6 +113,19 @@ defmodule Fleetlm.TestClient do
       IO.puts("usage: read <thread_id>")
     else
       WebSockex.cast(client, {:mark_read, thread_id})
+    end
+  end
+
+  defp handle_command("dm " <> rest, client) do
+    case String.split(rest, ~r/\s+/, parts: 2) do
+      [participant_id] when participant_id not in [nil, ""] ->
+        WebSockex.cast(client, {:create_dm, participant_id, nil})
+
+      [participant_id, message] when participant_id not in [nil, ""] and message not in [nil, ""] ->
+        WebSockex.cast(client, {:create_dm, participant_id, message})
+
+      _ ->
+        IO.puts("usage: dm <participant_id> [message]")
     end
   end
 
@@ -202,6 +215,11 @@ defmodule Fleetlm.TestClient.Socket do
   end
 
   @impl true
+  def handle_cast({:create_dm, participant_id, message}, state) do
+    {state, frame} = create_dm(state, participant_id, message)
+    reply_with_frames(state, [frame])
+  end
+
   def handle_cast({:send_message, thread_id, text}, state) do
     {state, frame} = push_message(state, thread_id, text)
     reply_with_frames(state, [frame])
@@ -283,6 +301,14 @@ defmodule Fleetlm.TestClient.Socket do
     {state, {:text, frame}}
   end
 
+  defp create_dm(state, participant_id, message) do
+    payload = %{"participant_id" => participant_id, "message" => message}
+    {state, ref} = next_ref(state)
+    frame = encode_message("participant:#{state.participant_id}", "dm:create", payload, ref)
+    state = put_pending(state, ref, {:create_dm, participant_id, message})
+    {state, {:text, frame}}
+  end
+
   defp push_message(state, thread_id, text) do
     payload = %{"text" => text}
     {state, ref} = next_ref(state)
@@ -357,12 +383,31 @@ defmodule Fleetlm.TestClient.Socket do
     {:ok, %{state | unreads: unreads}}
   end
 
+  defp handle_reply({:create_dm, participant_id, message}, %{"payload" => %{"response" => response}}, state) do
+    thread_id = response["thread_id"]
+    IO.puts("✓ DM created with #{participant_id}: #{thread_id}")
+
+    # Add the new thread to our local state
+    thread_meta = %{
+      "thread_id" => thread_id,
+      "last_message_preview" => message,
+      "last_message_at" => DateTime.utc_now() |> DateTime.to_iso8601()
+    }
+
+    threads = Map.put(state.threads, thread_id, thread_meta)
+    unreads = Map.put(state.unreads, thread_id, 0)
+
+    # Auto-join the new thread
+    {state, frames} = ensure_thread_join(%{state | threads: threads, unreads: unreads}, thread_id)
+    reply_with_frames(state, frames)
+  end
+
   defp handle_reply(_action, _message, state), do: {:ok, state}
 
   defp handle_tick("participant:" <> _participant, %{"updates" => updates}, state) do
     Enum.reduce(updates, {state, []}, fn update, {st, frames} ->
       thread_id = update["thread_id"]
-      IO.puts("[tick] #{thread_id} :: #{update["last_message_preview"]}")
+      # IO.puts("[tick] #{thread_id} :: #{update["last_message_preview"]}")
 
       threads = Map.put(st.threads, thread_id, update)
       unread = unread_increment(st, thread_id, update)

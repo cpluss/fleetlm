@@ -27,6 +27,33 @@ defmodule FleetlmWeb.ParticipantChannel do
   end
 
   @impl true
+  def handle_in("dm:create", %{"participant_id" => other_participant_id, "message" => message}, socket) do
+    current_participant_id = socket.assigns.participant_id
+
+    try do
+      thread = Chat.ensure_dm!(current_participant_id, other_participant_id)
+
+      # Send the initial message if provided
+      if message && String.trim(message) != "" do
+        case Chat.dispatch_message(%{
+               thread_id: thread.id,
+               sender_id: current_participant_id,
+               text: message,
+               role: "user"
+             }) do
+          {:ok, _message} -> :ok
+          {:error, _} -> :ok  # Continue even if message sending fails
+        end
+      end
+
+      {:reply, {:ok, %{"thread_id" => thread.id}}, socket}
+    rescue
+      error ->
+        {:reply, {:error, %{"reason" => "failed to create DM: #{inspect(error)}"}}, socket}
+    end
+  end
+
+  @impl true
   def handle_info({:thread_updated, summary}, socket) do
     updates = socket.assigns.pending_updates
     serialized = serialize_summary(summary)
