@@ -6,7 +6,7 @@ defmodule Fleetlm.Chat.Storage do
 
   import Ecto.Query, warn: false
 
-  alias Fleetlm.{CircuitBreaker, Repo}
+  alias Fleetlm.Repo
   alias Fleetlm.Chat.{DmMessage, BroadcastMessage, DmKey}
 
   @default_history_limit 50
@@ -33,14 +33,11 @@ defmodule Fleetlm.Chat.Storage do
   def list_dm_tail(dm_key, opts \\ []) do
     limit = Keyword.get(opts, :limit, @default_history_limit)
 
-    execute(fn ->
-      DmMessage
-      |> where([m], m.dm_key == ^dm_key)
-      |> order_by([m], desc: m.created_at)
-      |> limit(^limit)
-      |> Repo.all()
-    end)
-    |> unwrap_or([])
+    DmMessage
+    |> where([m], m.dm_key == ^dm_key)
+    |> order_by([m], desc: m.created_at)
+    |> limit(^limit)
+    |> Repo.all()
   end
 
   @spec list_dm_threads(String.t(), keyword()) :: [map()]
@@ -105,13 +102,10 @@ defmodule Fleetlm.Chat.Storage do
   def list_broadcast_messages(opts \\ []) do
     limit = Keyword.get(opts, :limit, 50)
 
-    execute(fn ->
-      BroadcastMessage
-      |> order_by([m], desc: m.created_at)
-      |> limit(^limit)
-      |> Repo.all()
-    end)
-    |> unwrap_or([])
+    BroadcastMessage
+    |> order_by([m], desc: m.created_at)
+    |> limit(^limit)
+    |> Repo.all()
   end
 
   @spec participants_for_dm(String.t()) :: {String.t(), String.t()}
@@ -121,18 +115,5 @@ defmodule Fleetlm.Chat.Storage do
     |> then(&{&1.first, &1.second})
   end
 
-  defp execute(fun) when is_function(fun, 0) do
-    case CircuitBreaker.call(:db_circuit_breaker, fun, :infinity) do
-      {:ok, {:ok, result}} -> {:ok, result}
-      {:ok, {:error, reason}} -> {:error, reason}
-      {:ok, result} -> {:ok, result}
-      {:error, {:exit, _} = exit} -> {:error, exit}
-      {:error, error} -> {:error, error}
-    end
-  catch
-    :exit, reason -> {:error, {:exit, reason}}
-  end
-
-  defp unwrap_or({:ok, result}, _default), do: result
-  defp unwrap_or({:error, _}, default), do: default
+  defp execute(fun) when is_function(fun, 0), do: fun.()
 end

@@ -16,12 +16,19 @@ defmodule Fleetlm.Chat.InboxSupervisor do
   def ensure_started(participant_id) do
     case Registry.lookup(Fleetlm.Chat.InboxRegistry, participant_id) do
       [{pid, _}] ->
-        {:ok, pid}
+        case ensure_ready(pid) do
+          {:ok, _} ->
+            {:ok, pid}
+
+          {:error, _reason} ->
+            DynamicSupervisor.terminate_child(__MODULE__, pid)
+            ensure_started(participant_id)
+        end
 
       [] ->
         case DynamicSupervisor.start_child(__MODULE__, {InboxServer, participant_id}) do
-          {:ok, pid} -> {:ok, pid}
-          {:error, {:already_started, pid}} -> {:ok, pid}
+          {:ok, pid} -> ensure_ready(pid)
+          {:error, {:already_started, pid}} -> ensure_ready(pid)
           other -> other
         end
     end
@@ -30,5 +37,22 @@ defmodule Fleetlm.Chat.InboxSupervisor do
   @impl true
   def init(_arg) do
     DynamicSupervisor.init(strategy: :one_for_one)
+  end
+
+  defp ensure_ready(pid, attempts \\ 20)
+  defp ensure_ready(_pid, 0), do: {:error, :not_ready}
+
+  defp ensure_ready(pid, attempts) do
+    try do
+      GenServer.call(pid, :ping)
+      {:ok, pid}
+    catch
+      :exit, {:noproc, _} ->
+        Process.sleep(25)
+        ensure_ready(pid, attempts - 1)
+
+      :exit, reason ->
+        {:error, reason}
+    end
   end
 end

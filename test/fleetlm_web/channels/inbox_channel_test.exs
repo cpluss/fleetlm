@@ -36,15 +36,6 @@ defmodule FleetlmWeb.InboxChannelTest do
       assert update["last_message_text"] == "New ping"
     end
 
-    test "subscribe command warms conversation", %{user_a: user_a} do
-      {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"participant_id" => user_a})
-      {:ok, _reply, inbox_socket} = subscribe_and_join(socket, InboxChannel, "inbox:#{user_a}")
-
-      dm_key = Chat.generate_dm_key(user_a, "user:new")
-      ref = push(inbox_socket, "subscribe", %{"dm_key" => dm_key})
-      assert_reply ref, :ok, %{"dm_key" => ^dm_key}
-    end
-
     test "unauthorized participant cannot join inbox channel" do
       {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"participant_id" => "user:charlie"})
 

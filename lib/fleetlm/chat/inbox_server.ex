@@ -1,7 +1,7 @@
 defmodule Fleetlm.Chat.InboxServer do
   @moduledoc """
-  Per-participant GenServer that tracks DM inbox metadata such as unread counts
-  and last message previews.
+  We maintain an inbox per connected participant. This is responsible for tracking the inbox metadata
+  such as unread counts and last message previews.
   """
 
   use GenServer
@@ -79,6 +79,11 @@ defmodule Fleetlm.Chat.InboxServer do
       |> Enum.sort_by(&{&1.last_message_at || ~N[0000-01-01 00:00:00], &1.dm_key}, :desc)
 
     {:reply, activities, reschedule_idle(state)}
+  end
+
+  @impl true
+  def handle_call(:ping, _from, state) do
+    {:reply, :pong, state}
   end
 
   @impl true

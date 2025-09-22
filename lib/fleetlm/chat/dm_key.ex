@@ -1,6 +1,7 @@
 defmodule Fleetlm.Chat.DmKey do
   @moduledoc """
-  Utilities for working with DM keys.
+  We use deterministic direct messaging keys to identify conversations between two participants. This
+  allows us to recognise the conversation regardless of who messages who.
 
   DM keys are normalized identifiers that encode the two participants in a
   direct conversation. They have the format "type_a:id_a:type_b:id_b" with

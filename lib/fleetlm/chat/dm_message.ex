@@ -1,4 +1,8 @@
 defmodule Fleetlm.Chat.DmMessage do
+  @moduledoc """
+  A direct message between two participants.
+  """
+
   use Ecto.Schema
   import Ecto.Changeset
 
@@ -13,6 +17,8 @@ defmodule Fleetlm.Chat.DmMessage do
     field :shard_key, :integer
     field :created_at, :utc_datetime_usec, autogenerate: {DateTime, :utc_now, []}
   end
+
+  @type t :: %__MODULE__{}
 
   def changeset(message, attrs) do
     message
@@ -70,7 +76,9 @@ defmodule Fleetlm.Chat.DmMessage do
     end
   end
 
-  # Public function for generating dm_key
+  @doc """
+  Generate a dm_key from two participant identifiers.
+  """
   def generate_dm_key(participant_a, participant_b) do
     [x, y] = Enum.sort([participant_a, participant_b])
     "#{x}:#{y}"

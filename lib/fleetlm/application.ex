@@ -13,18 +13,6 @@ defmodule Fleetlm.Application do
     children = [
       FleetlmWeb.Telemetry,
       Fleetlm.Repo,
-      Fleetlm.Cache,
-      # Circuit breakers for reliability
-      Supervisor.child_spec(
-        {Fleetlm.CircuitBreaker,
-         name: :db_circuit_breaker, failure_threshold: 5, recovery_time: 30_000},
-        id: :db_circuit_breaker
-      ),
-      Supervisor.child_spec(
-        {Fleetlm.CircuitBreaker,
-         name: :cache_circuit_breaker, failure_threshold: 3, recovery_time: 10_000},
-        id: :cache_circuit_breaker
-      ),
       Fleetlm.Chat.Supervisor,
       {DNSCluster, query: Application.get_env(:fleetlm, :dns_cluster_query) || :ignore},
       pubsub_spec(),

@@ -1,7 +1,7 @@
 defmodule Fleetlm.Chat.Dispatcher do
   @moduledoc """
-  Entry point for chat commands. Transports call into this module which
-  coordinates the chat runtime processes.
+  The dispatcher is the primary entry point to interact with the chat runtime. It allows us to
+  open conversations, send messages, and get conversation history in one canonical locatian & way.
   """
 
   alias Fleetlm.Chat.{

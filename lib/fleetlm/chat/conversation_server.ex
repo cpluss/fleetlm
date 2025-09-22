@@ -1,12 +1,12 @@
 defmodule Fleetlm.Chat.ConversationServer do
   @moduledoc """
-  Per-conversation GenServer responsible for serialising DM writes and emitting
-  domain events.
+  We maintain a per-conversation server that is responsible for serialising direct messages and emitting
+  domain events. This allows us to scale the number of conversations we can support by having a single
+  process per conversation. The servers are aggressively recycled after a period of inactivity.
   """
 
   use GenServer
 
-  alias Fleetlm.Cache
   alias Fleetlm.Chat.{DmKey, Event, Events, InboxServer, Storage}
 
   @tail_limit 100
@@ -124,6 +124,11 @@ defmodule Fleetlm.Chat.ConversationServer do
   end
 
   @impl true
+  def handle_call(:ping, _from, state) do
+    {:reply, :pong, state}
+  end
+
+  @impl true
   def handle_cast(:heartbeat, state) do
     {:noreply, reschedule_idle(state)}
   end
@@ -144,7 +149,6 @@ defmodule Fleetlm.Chat.ConversationServer do
   defp do_send_message(text, sender_id, recipient_id, metadata, state) do
     case Storage.persist_dm_message(state.dm.key, sender_id, recipient_id, text, metadata) do
       {:ok, message} ->
-        Cache.add_dm_message(message)
         event = Event.DmMessage.from_message(message)
         new_state = put_in(state.tail, update_tail(state.tail, event))
 

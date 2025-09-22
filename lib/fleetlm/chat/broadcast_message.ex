@@ -11,6 +11,8 @@ defmodule Fleetlm.Chat.BroadcastMessage do
     field :created_at, :utc_datetime_usec, autogenerate: {DateTime, :utc_now, []}
   end
 
+  @type t :: %__MODULE__{}
+
   def changeset(message, attrs) do
     message
     |> cast(attrs, [:sender_id, :text, :metadata])

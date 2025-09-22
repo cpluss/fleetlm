@@ -36,15 +36,18 @@ defmodule FleetlmWeb.ConversationChannelTest do
       {:ok, socket_b} = connect(FleetlmWeb.UserSocket, %{"participant_id" => user_b})
       {:ok, _reply, socket_b} = subscribe_and_join(socket_b, ConversationChannel, "conversation")
 
-      push(socket_a, "conversation:subscribe", %{"dm_key" => dm_key})
-      push(socket_b, "conversation:subscribe", %{"dm_key" => dm_key})
+      ref_a = push(socket_a, "conversation:subscribe", %{"dm_key" => dm_key})
+      assert_reply ref_a, :ok, %{"dm_key" => ^dm_key, "messages" => _}
+
+      ref_b = push(socket_b, "conversation:subscribe", %{"dm_key" => dm_key})
+      assert_reply ref_b, :ok, %{"dm_key" => ^dm_key, "messages" => _}
 
       {:ok, _} = Chat.send_dm_message(user_a, user_b, "Hello from A")
 
       assert_receive %Phoenix.Socket.Message{
-               event: "message",
-               payload: %{"sender_id" => ^user_a, "text" => "Hello from A"}
-             }
+        event: "message",
+        payload: %{"sender_id" => ^user_a, "text" => "Hello from A"}
+      }
     end
 
     test "broadcast conversations can be subscribed to" do
