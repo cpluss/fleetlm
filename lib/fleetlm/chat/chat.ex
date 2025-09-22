@@ -1,338 +1,169 @@
 defmodule Fleetlm.Chat do
   import Ecto.Query, warn: false
 
-  alias Ecto.Multi
   alias Fleetlm.Repo
-  alias Fleetlm.Chat.ThreadServer
-  alias Fleetlm.Chat.Threads.{Message, Participant, Thread}
+  alias Fleetlm.Chat.{DmMessage, BroadcastMessage}
 
-  @default_page_size 50
+  @default_page_size 40
   @max_page_size 200
-  @default_shard_modulus 1024
-  @message_keys [:thread_id, :sender_id, :role, :kind, :text, :metadata]
 
-  # Build DM key for two participants (unordered), "a:b"
-  def dm_key(a, b) do
-    [x, y] = Enum.sort([a, b])
-    "#{x}:#{y}"
+  ## DM Operations
+
+  def send_dm_message(sender_id, recipient_id, text, metadata \\ %{}) do
+    attrs = %{
+      sender_id: sender_id,
+      recipient_id: recipient_id,
+      text: text,
+      metadata: metadata
+    }
+
+    %DmMessage{}
+    |> DmMessage.changeset(attrs)
+    |> Repo.insert()
   end
 
-  def ensure_dm!(a_id, b_id, opts \\ []) do
-    roles = Keyword.get(opts, :roles)
-    {a_role, b_role} = normalize_roles(roles)
-
-    key = dm_key(a_id, b_id)
-
-    Repo.transaction(fn ->
-      case Repo.get_by(Thread, dm_key: key) do
-        %Thread{} = thread ->
-          ensure_thread_participant!(thread, a_id, a_role)
-          ensure_thread_participant!(thread, b_id, b_role)
-          thread
-
-        nil ->
-          thread =
-            %Thread{}
-            |> Thread.changeset(%{dm_key: key, kind: "dm"})
-            |> Repo.insert!()
-
-          ensure_thread_participant!(thread, a_id, a_role)
-          ensure_thread_participant!(thread, b_id, b_role)
-
-          thread
-      end
-    end)
-    |> case do
-      {:ok, thread} -> thread
-      {:error, reason} -> raise(reason)
-    end
-  end
-
-  def get_or_create_dm!(a_id, b_id), do: ensure_dm!(a_id, b_id)
-
-  def get_thread!(id, opts \\ []) do
-    Thread
-    |> maybe_preload(opts[:preload])
-    |> Repo.get!(id)
-  end
-
-  def list_thread_messages(thread_id, opts \\ []) do
+  def get_dm_conversation(user_a_id, user_b_id, opts \\ []) do
     limit = limit_from_opts(opts)
 
-    Message
-    |> where([m], m.thread_id == ^thread_id)
-    |> order_by([m], desc: m.created_at, desc: m.id)
+    DmMessage
+    |> where([m],
+        (m.sender_id == ^user_a_id and m.recipient_id == ^user_b_id) or
+        (m.sender_id == ^user_b_id and m.recipient_id == ^user_a_id)
+      )
+    |> order_by([m], desc: m.created_at)
     |> maybe_before(opts[:before])
     |> maybe_after(opts[:after])
     |> limit(^limit)
     |> Repo.all()
   end
 
-  def list_threads_for_participant(participant_id, opts \\ []) do
+  def get_dm_threads_for_user(user_id, opts \\ []) do
     limit = limit_from_opts(opts)
 
-    Participant
-    |> where([p], p.participant_id == ^participant_id)
-    |> join(:inner, [p], t in assoc(p, :thread))
-    |> order_by([p, _t], desc: p.last_message_at, desc: p.joined_at)
-    |> maybe_before_participant(opts[:before])
-    |> preload([p, t], thread: t)
+    # Get distinct conversations with last message timestamp
+    query = """
+    WITH conversations AS (
+      SELECT
+        CASE WHEN sender_id = $1 THEN recipient_id ELSE sender_id END as other_participant_id,
+        created_at,
+        text
+      FROM dm_messages
+      WHERE sender_id = $1 OR recipient_id = $1
+    ),
+    latest_messages AS (
+      SELECT
+        other_participant_id,
+        MAX(created_at) as last_message_at
+      FROM conversations
+      GROUP BY other_participant_id
+    )
+    SELECT
+      lm.other_participant_id,
+      lm.last_message_at,
+      c.text as last_message_text
+    FROM latest_messages lm
+    JOIN conversations c ON c.other_participant_id = lm.other_participant_id
+                        AND c.created_at = lm.last_message_at
+    ORDER BY lm.last_message_at DESC
+    LIMIT $2
+    """
+
+    case Repo.query(query, [user_id, limit]) do
+      {:ok, result} ->
+        Enum.map(result.rows, fn [other_participant_id, last_message_at, last_message_text] ->
+          %{
+            other_participant_id: other_participant_id,
+            last_message_at: last_message_at,
+            last_message_text: last_message_text
+          }
+        end)
+
+      {:error, _} ->
+        []
+    end
+  end
+
+  ## Broadcast Operations
+
+  def send_broadcast_message(sender_id, text, metadata \\ %{}) do
+    attrs = %{
+      sender_id: sender_id,
+      text: text,
+      metadata: metadata
+    }
+
+    %BroadcastMessage{}
+    |> BroadcastMessage.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  def list_broadcast_messages(opts \\ []) do
+    limit = limit_from_opts(opts)
+
+    BroadcastMessage
+    |> order_by([m], desc: m.created_at)
+    |> maybe_before_broadcast(opts[:before])
+    |> maybe_after_broadcast(opts[:after])
     |> limit(^limit)
     |> Repo.all()
   end
 
-  def send_message(attrs, opts \\ []) when is_map(attrs) do
-    attrs = normalize_message_attrs(attrs)
+  ## Message Dispatching (for ThreadServer compatibility)
 
-    with {:ok, thread_id} <- Map.fetch(attrs, :thread_id),
-         {:ok, sender_id} <- Map.fetch(attrs, :sender_id) do
-      role = attrs |> Map.get(:role, "user") |> to_string()
-      send_message_with_validated_attrs(attrs, thread_id, sender_id, role, opts)
-    else
-      :error ->
-        missing_key =
-          cond do
-            not Map.has_key?(attrs, :thread_id) -> :thread_id
-            not Map.has_key?(attrs, :sender_id) -> :sender_id
-            true -> :unknown
-          end
+  def dispatch_message(attrs, _opts \\ []) do
+    case determine_message_type(attrs) do
+      {:dm, sender_id, recipient_id} ->
+        send_dm_message(sender_id, recipient_id, attrs[:text] || attrs["text"], attrs[:metadata] || attrs["metadata"] || %{})
 
-        {:error, :validation, "required key #{inspect(missing_key)} not found"}
+      {:broadcast, sender_id} ->
+        send_broadcast_message(sender_id, attrs[:text] || attrs["text"], attrs[:metadata] || attrs["metadata"] || %{})
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
-  defp send_message_with_validated_attrs(attrs, thread_id, sender_id, role, opts) do
-    message_attrs =
-      attrs
-      |> Map.put(:thread_id, thread_id)
-      |> Map.put(:sender_id, sender_id)
-      |> Map.put(:role, role)
-      |> Map.put(:shard_key, shard_for(thread_id, opts))
+  defp determine_message_type(attrs) do
+    sender_id = attrs[:sender_id] || attrs["sender_id"]
+    recipient_id = attrs[:recipient_id] || attrs["recipient_id"]
 
-    Multi.new()
-    |> Multi.run(:thread, fn _, _ -> fetch_thread(thread_id) end)
-    |> Multi.run(:sender, fn _, %{thread: thread} ->
-      ensure_thread_participant(thread, sender_id, role)
-    end)
-    |> Multi.insert(:message, Message.changeset(%Message{}, message_attrs))
-    |> Multi.run(:touch_sender, fn _, %{message: message} ->
-      touch_sender(thread_id, sender_id, message)
-    end)
-    |> Multi.run(:touch_recipients, fn _, %{message: message} ->
-      touch_recipients(thread_id, sender_id, message)
-    end)
-    |> Repo.transaction()
-    |> case do
-      {:ok, %{message: message}} -> {:ok, message}
-      {:error, step, reason, _changes} -> {:error, step, reason}
+    cond do
+      sender_id && recipient_id ->
+        {:dm, sender_id, recipient_id}
+
+      sender_id && !recipient_id ->
+        {:broadcast, sender_id}
+
+      true ->
+        {:error, "missing sender_id or invalid message type"}
     end
   end
 
-  def ack_read(thread_id, participant_id, cursor \\ DateTime.utc_now()) do
-    cursor = normalize_datetime!(cursor)
-
-    Repo.transaction(fn ->
-      case Repo.get_by(Participant, thread_id: thread_id, participant_id: participant_id) do
-        nil ->
-          {:error, :not_found}
-
-        %Participant{} = participant ->
-          maybe_update_read_cursor(participant, cursor)
-      end
-    end)
-    |> case do
-      {:ok, {:ok, participant}} -> {:ok, participant}
-      {:ok, {:noop, participant}} -> {:ok, participant}
-      {:ok, {:error, _} = error} -> error
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp normalize_roles({a_role, b_role}), do: {to_string(a_role), to_string(b_role)}
-  defp normalize_roles([a_role, b_role]), do: {to_string(a_role), to_string(b_role)}
-  defp normalize_roles(role) when is_binary(role), do: {role, role}
-  defp normalize_roles(nil), do: {"user", "user"}
-  defp normalize_roles(_), do: raise(ArgumentError, "expected roles to be {a, b} or [a, b]")
-
-  defp fetch_thread(id) do
-    case Repo.get(Thread, id) do
-      %Thread{} = thread -> {:ok, thread}
-      nil -> {:error, :not_found}
-    end
-  end
-
-  defp ensure_thread_participant(thread, participant_id, role) do
-    {:ok, ensure_thread_participant!(thread, participant_id, role)}
-  end
-
-  defp ensure_thread_participant!(%Thread{} = thread, participant_id, role) do
-    changes = %{
-      thread_id: thread.id,
-      participant_id: participant_id,
-      role: role
-    }
-
-    Repo.insert!(
-      Participant.changeset(%Participant{}, changes),
-      on_conflict: [set: [role: role]],
-      conflict_target: [:thread_id, :participant_id],
-      returning: true
-    )
-  end
-
-  defp touch_sender(thread_id, sender_id, message) do
-    update_fields = [
-      last_message_at: message.created_at,
-      last_message_preview: message.text,
-      read_cursor_at: message.created_at
-    ]
-
-    {count, _} =
-      Participant
-      |> where([p], p.thread_id == ^thread_id and p.participant_id == ^sender_id)
-      |> Repo.update_all(set: update_fields)
-
-    if count == 0, do: {:error, :participant_missing}, else: {:ok, count}
-  end
-
-  defp touch_recipients(thread_id, sender_id, message) do
-    update_fields = [
-      last_message_at: message.created_at,
-      last_message_preview: message.text
-    ]
-
-    Participant
-    |> where([p], p.thread_id == ^thread_id and p.participant_id != ^sender_id)
-    |> Repo.update_all(set: update_fields)
-
-    {:ok, :updated}
-  end
-
-  defp maybe_update_read_cursor(%Participant{} = participant, %DateTime{} = cursor) do
-    cursor = DateTime.truncate(cursor, :microsecond)
-
-    case participant.read_cursor_at do
-      nil ->
-        participant
-        |> Participant.changeset(%{read_cursor_at: cursor})
-        |> Repo.update()
-
-      %DateTime{} = existing ->
-        if DateTime.compare(existing, cursor) == :lt do
-          participant
-          |> Participant.changeset(%{read_cursor_at: cursor})
-          |> Repo.update()
-        else
-          {:noop, participant}
-        end
-    end
-  end
-
-  defp maybe_preload(queryable, nil), do: queryable
-  defp maybe_preload(queryable, preload), do: preload(queryable, ^List.wrap(preload))
+  ## Helper functions
 
   defp maybe_before(query, nil), do: query
-
   defp maybe_before(query, cursor) do
-    {created_at, id} = normalize_message_cursor(cursor)
-
-    case id do
-      nil ->
-        where(query, [m], m.created_at < ^created_at)
-
-      _ ->
-        where(
-          query,
-          [m],
-          m.created_at < ^created_at or (m.created_at == ^created_at and m.id < ^id)
-        )
-    end
+    created_at = normalize_datetime!(cursor)
+    where(query, [m], m.created_at < ^created_at)
   end
 
   defp maybe_after(query, nil), do: query
-
   defp maybe_after(query, cursor) do
-    {created_at, id} = normalize_message_cursor(cursor)
-
-    case id do
-      nil ->
-        where(query, [m], m.created_at > ^created_at)
-
-      _ ->
-        where(
-          query,
-          [m],
-          m.created_at > ^created_at or (m.created_at == ^created_at and m.id > ^id)
-        )
-    end
+    created_at = normalize_datetime!(cursor)
+    where(query, [m], m.created_at > ^created_at)
   end
 
-  defp maybe_before_participant(query, nil), do: query
-
-  defp maybe_before_participant(query, cursor) do
-    timestamp = normalize_datetime!(cursor)
-
-    where(
-      query,
-      [p, _t],
-      fragment("coalesce(?, ?) < ?", p.last_message_at, p.joined_at, ^timestamp)
-    )
+  defp maybe_before_broadcast(query, nil), do: query
+  defp maybe_before_broadcast(query, cursor) do
+    created_at = normalize_datetime!(cursor)
+    where(query, [m], m.created_at < ^created_at)
   end
 
-  defp normalize_message_attrs(attrs) do
-    Enum.reduce(attrs, %{}, fn
-      {key, value}, acc when is_atom(key) and key in @message_keys ->
-        Map.put(acc, key, value)
-
-      {key, value}, acc when is_binary(key) ->
-        case key do
-          "thread_id" -> Map.put(acc, :thread_id, value)
-          "sender_id" -> Map.put(acc, :sender_id, value)
-          "role" -> Map.put(acc, :role, value)
-          "kind" -> Map.put(acc, :kind, value)
-          "text" -> Map.put(acc, :text, value)
-          "metadata" -> Map.put(acc, :metadata, value)
-          _ -> acc
-        end
-
-      _, acc ->
-        acc
-    end)
+  defp maybe_after_broadcast(query, nil), do: query
+  defp maybe_after_broadcast(query, cursor) do
+    created_at = normalize_datetime!(cursor)
+    where(query, [m], m.created_at > ^created_at)
   end
-
-  defp shard_for(thread_id, opts) do
-    modulus =
-      opts
-      |> Keyword.get(:shard_modulus, @default_shard_modulus)
-      |> normalize_modulus()
-
-    :erlang.phash2(thread_id, modulus)
-  end
-
-  defp normalize_modulus(modulus) when is_integer(modulus) and modulus > 0 do
-    min(modulus, 65_536)
-  end
-
-  defp normalize_modulus(_), do: @default_shard_modulus
-
-  defp normalize_message_cursor(%{created_at: created_at, id: id}) do
-    {normalize_datetime!(created_at), id}
-  end
-
-  defp normalize_message_cursor(%{created_at: created_at}) do
-    {normalize_datetime!(created_at), nil}
-  end
-
-  defp normalize_message_cursor(%DateTime{} = created_at),
-    do: {normalize_datetime!(created_at), nil}
-
-  defp normalize_message_cursor(%NaiveDateTime{} = created_at),
-    do: {normalize_datetime!(created_at), nil}
-
-  defp normalize_message_cursor(value) when is_binary(value),
-    do: {normalize_datetime!(value), nil}
-
-  defp normalize_message_cursor(_), do: raise(ArgumentError, "invalid cursor")
 
   defp normalize_datetime!(%DateTime{} = datetime) do
     DateTime.truncate(datetime, :microsecond)
@@ -369,33 +200,20 @@ defmodule Fleetlm.Chat do
 
   defp clamp_limit(_), do: @default_page_size
 
-  ## Runtime helpers (per-thread GenServer layer)
+  ## Runtime helpers (simplified for new schema)
 
-  def ensure_thread_runtime(thread_id) when is_binary(thread_id) do
-    ThreadServer.ensure(thread_id)
+  def ensure_thread_runtime(_thread_id), do: :ok
+
+  # Legacy compatibility for existing code
+  def ensure_dm!(sender_id, recipient_id, _opts \\ []) do
+    # Return a fake thread struct for compatibility
+    %{id: dm_thread_id(sender_id, recipient_id), kind: "dm"}
   end
 
-  def dispatch_message(attrs, opts \\ []) when is_map(attrs) do
-    thread_id = thread_id_from_attrs(attrs)
-    ThreadServer.send_message(thread_id, attrs, opts)
-  end
+  def get_or_create_dm!(sender_id, recipient_id), do: ensure_dm!(sender_id, recipient_id)
 
-  def tick_thread(thread_id, participant_id, cursor \\ nil, opts \\ []) do
-    ThreadServer.tick(thread_id, participant_id, cursor, opts)
-  end
-
-  def participant_in_thread?(thread_id, participant_id)
-      when is_binary(thread_id) and is_binary(participant_id) do
-    Participant
-    |> where([p], p.thread_id == ^thread_id and p.participant_id == ^participant_id)
-    |> Repo.exists?()
-  end
-
-  defp thread_id_from_attrs(attrs) do
-    cond do
-      Map.has_key?(attrs, :thread_id) -> Map.fetch!(attrs, :thread_id)
-      Map.has_key?(attrs, "thread_id") -> Map.fetch!(attrs, "thread_id")
-      true -> raise KeyError, message: "thread_id is required"
-    end
+  defp dm_thread_id(a, b) do
+    [x, y] = Enum.sort([a, b])
+    "dm:#{x}:#{y}"
   end
 end

@@ -3,18 +3,16 @@ defmodule Fleetlm.Cache do
   Cache layer for FleetLM using Cachex.
 
   Provides distributed caching for:
-  - Recent messages (per thread)
-  - Thread participants
-  - Thread metadata
+  - Recent DM messages (per conversation)
+  - Recent broadcast messages
   """
 
-  alias Fleetlm.Chat.Threads.{Message, Participant}
+  alias Fleetlm.Chat.{DmMessage, BroadcastMessage}
   alias Fleetlm.Telemetry
 
   # Cache names
-  @messages_cache :fleetlm_messages
-  @participants_cache :fleetlm_participants
-  @thread_meta_cache :fleetlm_thread_meta
+  @dm_messages_cache :fleetlm_dm_messages
+  @broadcast_messages_cache :fleetlm_broadcast_messages
 
   def child_spec(_opts) do
     %{
@@ -26,151 +24,130 @@ defmodule Fleetlm.Cache do
 
   def start_link do
     children = [
-      # Messages cache: TTL 1 hour, LRU with 10k max entries per thread
+      # DM messages cache: TTL 1 hour, LRU with 10k max entries
       Supervisor.child_spec(
-        {Cachex, name: @messages_cache, limit: 10_000},
-        id: :messages_cache
+        {Cachex, name: @dm_messages_cache, limit: 10_000},
+        id: :dm_messages_cache
       ),
 
-      # Participants cache: TTL 30 minutes, smaller cache for participant lists
+      # Broadcast messages cache: TTL 30 minutes, smaller cache
       Supervisor.child_spec(
-        {Cachex, name: @participants_cache, limit: 5_000},
-        id: :participants_cache
-      ),
-
-      # Thread metadata cache: TTL 15 minutes, for last_message_at etc
-      Supervisor.child_spec(
-        {Cachex, name: @thread_meta_cache, limit: 5_000},
-        id: :thread_meta_cache
+        {Cachex, name: @broadcast_messages_cache, limit: 5_000},
+        id: :broadcast_messages_cache
       )
     ]
 
     Supervisor.start_link(children, strategy: :one_for_one, name: __MODULE__)
   end
 
-  ## Messages Cache
+  ## DM Messages Cache
 
-  @doc "Cache recent messages for a thread"
-  def cache_messages(thread_id, messages) when is_list(messages) do
-    key = messages_key(thread_id)
-    Cachex.put(@messages_cache, key, messages, ttl: :timer.hours(1))
+  @doc "Cache recent DM messages for a conversation"
+  def cache_dm_messages(user_a_id, user_b_id, messages) when is_list(messages) do
+    key = dm_messages_key(user_a_id, user_b_id)
+    Cachex.put(@dm_messages_cache, key, messages, ttl: :timer.hours(1))
   end
 
-  @doc "Get cached messages for a thread"
-  def get_messages(thread_id, limit \\ 40) do
-    key = messages_key(thread_id)
+  @doc "Get cached DM messages for a conversation"
+  def get_dm_messages(user_a_id, user_b_id, limit \\ 40) do
+    key = dm_messages_key(user_a_id, user_b_id)
     start_time = System.monotonic_time(:microsecond)
 
     result =
-      case Cachex.get(@messages_cache, key) do
+      case Cachex.get(@dm_messages_cache, key) do
         {:ok, nil} ->
-          Telemetry.emit_cache_event(:miss, @messages_cache, key, time_diff(start_time))
+          Telemetry.emit_cache_event(:miss, @dm_messages_cache, key, time_diff(start_time))
           nil
 
         {:ok, messages} ->
-          Telemetry.emit_cache_event(:hit, @messages_cache, key, time_diff(start_time))
+          Telemetry.emit_cache_event(:hit, @dm_messages_cache, key, time_diff(start_time))
           Enum.take(messages, limit)
 
         {:error, _} ->
-          Telemetry.emit_cache_event(:miss, @messages_cache, key, time_diff(start_time))
+          Telemetry.emit_cache_event(:miss, @dm_messages_cache, key, time_diff(start_time))
           nil
       end
 
     result
   end
 
-  @doc "Add a single message to thread cache"
-  def add_message(thread_id, %Message{} = message) do
-    key = messages_key(thread_id)
+  @doc "Add a single DM message to conversation cache"
+  def add_dm_message(%DmMessage{} = message) do
+    key = dm_messages_key(message.sender_id, message.recipient_id)
 
-    case Cachex.get(@messages_cache, key) do
+    case Cachex.get(@dm_messages_cache, key) do
       {:ok, nil} ->
-        Cachex.put(@messages_cache, key, [message], ttl: :timer.hours(1))
+        Cachex.put(@dm_messages_cache, key, [message], ttl: :timer.hours(1))
 
       {:ok, existing_messages} ->
         # Prepend new message and limit to reasonable size
         updated = [message | existing_messages] |> Enum.take(100)
-        Cachex.put(@messages_cache, key, updated, ttl: :timer.hours(1))
+        Cachex.put(@dm_messages_cache, key, updated, ttl: :timer.hours(1))
 
       {:error, _} ->
         :error
     end
   end
 
-  @doc "Invalidate message cache for a thread"
-  def invalidate_messages(thread_id) do
-    key = messages_key(thread_id)
-    Cachex.del(@messages_cache, key)
+  @doc "Invalidate DM message cache for a conversation"
+  def invalidate_dm_messages(user_a_id, user_b_id) do
+    key = dm_messages_key(user_a_id, user_b_id)
+    Cachex.del(@dm_messages_cache, key)
   end
 
-  ## Participants Cache
+  ## Broadcast Messages Cache
 
-  @doc "Cache participants for a thread"
-  def cache_participants(thread_id, participants) when is_list(participants) do
-    key = participants_key(thread_id)
-
-    participant_ids =
-      Enum.map(participants, fn
-        %Participant{participant_id: id} -> id
-        id when is_binary(id) -> id
-      end)
-
-    Cachex.put(@participants_cache, key, participant_ids, ttl: :timer.minutes(30))
+  @doc "Cache recent broadcast messages"
+  def cache_broadcast_messages(messages) when is_list(messages) do
+    key = "broadcast_messages"
+    Cachex.put(@broadcast_messages_cache, key, messages, ttl: :timer.minutes(30))
   end
 
-  @doc "Get cached participant IDs for a thread"
-  def get_participants(thread_id) do
-    key = participants_key(thread_id)
+  @doc "Get cached broadcast messages"
+  def get_broadcast_messages(limit \\ 40) do
+    key = "broadcast_messages"
+    start_time = System.monotonic_time(:microsecond)
 
-    case Cachex.get(@participants_cache, key) do
-      {:ok, nil} -> nil
-      {:ok, participant_ids} -> participant_ids
-      {:error, _} -> nil
+    result =
+      case Cachex.get(@broadcast_messages_cache, key) do
+        {:ok, nil} ->
+          Telemetry.emit_cache_event(:miss, @broadcast_messages_cache, key, time_diff(start_time))
+          nil
+
+        {:ok, messages} ->
+          Telemetry.emit_cache_event(:hit, @broadcast_messages_cache, key, time_diff(start_time))
+          Enum.take(messages, limit)
+
+        {:error, _} ->
+          Telemetry.emit_cache_event(:miss, @broadcast_messages_cache, key, time_diff(start_time))
+          nil
+      end
+
+    result
+  end
+
+  @doc "Add a single broadcast message to cache"
+  def add_broadcast_message(%BroadcastMessage{} = message) do
+    key = "broadcast_messages"
+
+    case Cachex.get(@broadcast_messages_cache, key) do
+      {:ok, nil} ->
+        Cachex.put(@broadcast_messages_cache, key, [message], ttl: :timer.minutes(30))
+
+      {:ok, existing_messages} ->
+        # Prepend new message and limit to reasonable size
+        updated = [message | existing_messages] |> Enum.take(100)
+        Cachex.put(@broadcast_messages_cache, key, updated, ttl: :timer.minutes(30))
+
+      {:error, _} ->
+        :error
     end
   end
 
-  @doc "Invalidate participants cache for a thread"
-  def invalidate_participants(thread_id) do
-    key = participants_key(thread_id)
-    Cachex.del(@participants_cache, key)
-  end
-
-  ## Thread Metadata Cache
-
-  @doc "Cache thread metadata (last_message_at, etc)"
-  def cache_thread_meta(thread_id, meta) when is_map(meta) do
-    key = thread_meta_key(thread_id)
-    Cachex.put(@thread_meta_cache, key, meta, ttl: :timer.minutes(15))
-  end
-
-  @doc "Get cached thread metadata"
-  def get_thread_meta(thread_id) do
-    key = thread_meta_key(thread_id)
-
-    case Cachex.get(@thread_meta_cache, key) do
-      {:ok, nil} -> nil
-      {:ok, meta} -> meta
-      {:error, _} -> nil
-    end
-  end
-
-  @doc "Update thread metadata with new message info"
-  def update_thread_meta(thread_id, %Message{} = message) do
-    key = thread_meta_key(thread_id)
-
-    meta = %{
-      last_message_at: message.created_at,
-      last_message_preview: message.text,
-      sender_id: message.sender_id
-    }
-
-    Cachex.put(@thread_meta_cache, key, meta, ttl: :timer.minutes(15))
-  end
-
-  @doc "Invalidate thread metadata cache"
-  def invalidate_thread_meta(thread_id) do
-    key = thread_meta_key(thread_id)
-    Cachex.del(@thread_meta_cache, key)
+  @doc "Invalidate broadcast message cache"
+  def invalidate_broadcast_messages do
+    key = "broadcast_messages"
+    Cachex.del(@broadcast_messages_cache, key)
   end
 
   ## Cache Statistics
@@ -178,17 +155,17 @@ defmodule Fleetlm.Cache do
   @doc "Get cache statistics for monitoring"
   def stats do
     %{
-      messages: cache_stats(@messages_cache),
-      participants: cache_stats(@participants_cache),
-      thread_meta: cache_stats(@thread_meta_cache)
+      dm_messages: cache_stats(@dm_messages_cache),
+      broadcast_messages: cache_stats(@broadcast_messages_cache)
     }
   end
 
   ## Private Functions
 
-  defp messages_key(thread_id), do: "messages:#{thread_id}"
-  defp participants_key(thread_id), do: "participants:#{thread_id}"
-  defp thread_meta_key(thread_id), do: "meta:#{thread_id}"
+  defp dm_messages_key(user_a_id, user_b_id) do
+    [a, b] = Enum.sort([user_a_id, user_b_id])
+    "dm_messages:#{a}:#{b}"
+  end
 
   defp cache_stats(cache_name) do
     case Cachex.stats(cache_name) do
@@ -200,4 +177,10 @@ defmodule Fleetlm.Cache do
   defp time_diff(start_time) do
     System.monotonic_time(:microsecond) - start_time
   end
+
+  # Legacy compatibility functions - do nothing but don't break
+  def get_messages(_thread_id, _limit \\ 40), do: nil
+  def add_message(_thread_id, _message), do: :ok
+  def cache_participants(_thread_id, _participants), do: :ok
+  def get_participants(_thread_id), do: nil
 end

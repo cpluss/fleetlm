@@ -12,12 +12,12 @@ defmodule FleetlmWeb.ParticipantChannel do
     if participant_id == socket.assigns.participant_id do
       :ok = PubSub.subscribe(@pubsub, "participant:" <> participant_id)
 
-      threads =
+      dm_threads =
         participant_id
-        |> Chat.list_threads_for_participant()
-        |> Enum.map(&serialize_participant_thread/1)
+        |> Chat.get_dm_threads_for_user()
+        |> Enum.map(&serialize_dm_thread/1)
 
-      {:ok, %{"threads" => threads},
+      {:ok, %{"dm_threads" => dm_threads},
        socket
        |> assign(:pending_updates, %{})
        |> assign(:tick_timer, schedule_tick())}
@@ -36,10 +36,9 @@ defmodule FleetlmWeb.ParticipantChannel do
       # Send the initial message if provided
       if message && String.trim(message) != "" do
         case Chat.dispatch_message(%{
-               thread_id: thread.id,
                sender_id: current_participant_id,
-               text: message,
-               role: "user"
+               recipient_id: other_participant_id,
+               text: message
              }) do
           {:ok, _message} -> :ok
           {:error, _} -> :ok  # Continue even if message sending fails
@@ -82,28 +81,13 @@ defmodule FleetlmWeb.ParticipantChannel do
     :ok
   end
 
-  defp serialize_participant_thread(participant) do
+  defp serialize_dm_thread(dm_thread) do
     %{
-      "thread_id" => participant.thread_id,
-      "role" => participant.role,
-      "joined_at" => encode_datetime(participant.joined_at),
-      "last_message_at" => encode_datetime(participant.last_message_at),
-      "last_message_preview" => participant.last_message_preview,
-      "read_cursor_at" => encode_datetime(participant.read_cursor_at),
-      "thread" => serialize_thread(participant.thread)
+      "other_participant_id" => dm_thread.other_participant_id,
+      "last_message_at" => encode_datetime(dm_thread.last_message_at),
+      "last_message_text" => dm_thread.last_message_text
     }
   end
-
-  defp serialize_thread(%Fleetlm.Chat.Threads.Thread{} = thread) do
-    %{
-      "id" => thread.id,
-      "kind" => thread.kind,
-      "dm_key" => thread.dm_key,
-      "created_at" => encode_datetime(thread.created_at)
-    }
-  end
-
-  defp serialize_thread(nil), do: nil
 
   defp serialize_summary(summary) do
     summary

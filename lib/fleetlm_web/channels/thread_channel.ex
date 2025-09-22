@@ -1,7 +1,6 @@
 defmodule FleetlmWeb.ThreadChannel do
   use FleetlmWeb, :channel
 
-  alias Fleetlm.Cache
   alias Fleetlm.Chat
   alias Phoenix.PubSub
 
@@ -9,63 +8,131 @@ defmodule FleetlmWeb.ThreadChannel do
   @history_limit 40
 
   @impl true
-  def join("thread:" <> thread_id, _params, socket) do
+  def join("dm:" <> dm_participants, _params, socket) do
     participant_id = socket.assigns.participant_id
 
-    with true <- Chat.participant_in_thread?(thread_id, participant_id),
-         {:ok, _pid} <- Chat.ensure_thread_runtime(thread_id) do
-      :ok = PubSub.subscribe(@pubsub, "thread:" <> thread_id)
+    case parse_dm_participants(dm_participants) do
+      {:ok, user_a, user_b} when participant_id in [user_a, user_b] ->
+        :ok = PubSub.subscribe(@pubsub, "dm:" <> dm_participants)
 
-      # Try cache first, fallback to database
-      history =
-        case Cache.get_messages(thread_id, @history_limit) do
-          nil ->
-            thread_id
-            |> Chat.list_thread_messages(limit: @history_limit)
-            |> Enum.reverse()
+        # Get conversation history
+        history =
+          user_a
+          |> Chat.get_dm_conversation(user_b, limit: @history_limit)
+          |> Enum.reverse()
+          |> Enum.map(&serialize_dm_message/1)
 
-          cached_messages ->
-            cached_messages |> Enum.reverse()
-        end
+        other_participant_id = if participant_id == user_a, do: user_b, else: user_a
 
-      history = Enum.map(history, &serialize_message/1)
+        {:ok, %{"messages" => history, "other_participant_id" => other_participant_id},
+         assign(socket, :dm_participants, {user_a, user_b})}
 
-      {:ok, %{"messages" => history}, assign(socket, :thread_id, thread_id)}
-    else
-      false -> {:error, %{reason: "unauthorized"}}
-      {:error, reason} -> {:error, %{reason: inspect(reason)}}
+      {:ok, _user_a, _user_b} ->
+        {:error, %{reason: "unauthorized"}}
+
+      {:error, reason} ->
+        {:error, %{reason: reason}}
     end
+  end
+
+  @impl true
+  def join("broadcast", _params, socket) do
+    :ok = PubSub.subscribe(@pubsub, "broadcast")
+
+    # Get recent broadcast messages
+    history =
+      Chat.list_broadcast_messages(limit: @history_limit)
+      |> Enum.reverse()
+      |> Enum.map(&serialize_broadcast_message/1)
+
+    {:ok, %{"messages" => history}, assign(socket, :broadcast, true)}
   end
 
   @impl true
   def handle_in("message:new", payload, socket) do
-    attrs =
-      payload
-      |> Map.put("thread_id", socket.assigns.thread_id)
-      |> Map.put("sender_id", socket.assigns.participant_id)
+    sender_id = socket.assigns.participant_id
 
-    case Chat.dispatch_message(attrs) do
-      {:ok, message} ->
-        {:reply, {:ok, serialize_message(message)}, socket}
+    cond do
+      socket.assigns[:dm_participants] ->
+        {user_a, user_b} = socket.assigns.dm_participants
+        recipient_id = if sender_id == user_a, do: user_b, else: user_a
 
-      {:error, reason} ->
-        {:reply, {:error, %{reason: inspect(reason)}}, socket}
+        attrs = %{
+          sender_id: sender_id,
+          recipient_id: recipient_id,
+          text: payload["text"],
+          metadata: payload["metadata"] || %{}
+        }
+
+        case Chat.dispatch_message(attrs) do
+          {:ok, message} ->
+            # Broadcast to DM channel
+            PubSub.broadcast(@pubsub, "dm:#{user_a}|#{user_b}", {:dm_message, message})
+            {:reply, {:ok, serialize_dm_message(message)}, socket}
+
+          {:error, reason} ->
+            {:reply, {:error, %{reason: inspect(reason)}}, socket}
+        end
+
+      socket.assigns[:broadcast] ->
+        attrs = %{
+          sender_id: sender_id,
+          text: payload["text"],
+          metadata: payload["metadata"] || %{}
+        }
+
+        case Chat.dispatch_message(attrs) do
+          {:ok, message} ->
+            # Broadcast to all listeners
+            PubSub.broadcast(@pubsub, "broadcast", {:broadcast_message, message})
+            {:reply, {:ok, serialize_broadcast_message(message)}, socket}
+
+          {:error, reason} ->
+            {:reply, {:error, %{reason: inspect(reason)}}, socket}
+        end
+
+      true ->
+        {:reply, {:error, %{reason: "invalid channel type"}}, socket}
     end
   end
 
   @impl true
-  def handle_info({:thread_message, message}, socket) do
-    push(socket, "message", serialize_message(message))
+  def handle_info({:dm_message, message}, socket) do
+    push(socket, "message", serialize_dm_message(message))
     {:noreply, socket}
   end
 
-  defp serialize_message(message) do
+  @impl true
+  def handle_info({:broadcast_message, message}, socket) do
+    push(socket, "message", serialize_broadcast_message(message))
+    {:noreply, socket}
+  end
+
+  defp parse_dm_participants(participants_string) do
+    case String.split(participants_string, "|", parts: 2) do
+      [user_a, user_b] when user_a != user_b ->
+        {:ok, user_a, user_b}
+
+      _ ->
+        {:error, "invalid DM participants format, expected 'user_a|user_b'"}
+    end
+  end
+
+  defp serialize_dm_message(message) do
     %{
       "id" => message.id,
-      "thread_id" => message.thread_id,
       "sender_id" => message.sender_id,
-      "role" => message.role,
-      "kind" => message.kind,
+      "recipient_id" => message.recipient_id,
+      "text" => message.text,
+      "metadata" => message.metadata,
+      "created_at" => encode_datetime(message.created_at)
+    }
+  end
+
+  defp serialize_broadcast_message(message) do
+    %{
+      "id" => message.id,
+      "sender_id" => message.sender_id,
       "text" => message.text,
       "metadata" => message.metadata,
       "created_at" => encode_datetime(message.created_at)

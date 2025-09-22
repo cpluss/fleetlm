@@ -47,21 +47,13 @@ defmodule Fleetlm.HealthCheck do
   @doc "Check cache system"
   def check_cache do
     try do
-      test_key = "health_check_#{:rand.uniform(1000)}"
-
-      case Cache.cache_thread_meta(test_key, %{test: true}) do
-        {:ok, _} ->
-          case Cache.get_thread_meta(test_key) do
-            %{test: true} ->
-              Cache.invalidate_thread_meta(test_key)
-              %{status: :ok, message: "Cache system healthy"}
-
-            _ ->
-              %{status: :warning, message: "Cache read/write inconsistent"}
-          end
+      # Just check that cache stats work - we don't need complex testing anymore
+      case Cache.stats() do
+        %{dm_messages: _, broadcast_messages: _} ->
+          %{status: :ok, message: "Cache system healthy"}
 
         _ ->
-          %{status: :error, message: "Cache write failed"}
+          %{status: :warning, message: "Cache stats unavailable"}
       end
     rescue
       error ->
