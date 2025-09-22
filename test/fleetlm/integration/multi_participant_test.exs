@@ -26,22 +26,24 @@ defmodule Fleetlm.Integration.MultiParticipantTest do
       assert agent_participation.role == "agent"
 
       # Human sends message
-      {:ok, human_message} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: human_id,
-        text: "Hello, I need help with something",
-        role: "user"
-      })
+      {:ok, human_message} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: human_id,
+          text: "Hello, I need help with something",
+          role: "user"
+        })
 
       assert human_message.role == "user"
 
       # Agent responds
-      {:ok, agent_message} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: agent_id,
-        text: "Hello! I'd be happy to help. What do you need assistance with?",
-        role: "agent"
-      })
+      {:ok, agent_message} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: agent_id,
+          text: "Hello! I'd be happy to help. What do you need assistance with?",
+          role: "agent"
+        })
 
       assert agent_message.role == "agent"
 
@@ -72,38 +74,43 @@ defmodule Fleetlm.Integration.MultiParticipantTest do
 
       # System message (e.g., conversation started) - Use a special system participant ID
       system_participant = Ecto.UUID.generate()
-      {:ok, system_msg} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: system_participant,
-        text: "Conversation started",
-        role: "system",
-        kind: "event"
-      })
+
+      {:ok, system_msg} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: system_participant,
+          text: "Conversation started",
+          role: "system",
+          kind: "event"
+        })
 
       # Human message
-      {:ok, human_msg} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: human_id,
-        text: "Hello",
-        role: "user"
-      })
+      {:ok, human_msg} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: human_id,
+          text: "Hello",
+          role: "user"
+        })
 
       # Agent response
-      {:ok, agent_msg} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: agent_id,
-        text: "Hi there!",
-        role: "agent"
-      })
+      {:ok, agent_msg} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: agent_id,
+          text: "Hi there!",
+          role: "agent"
+        })
 
       # Another system message (e.g., status update)
-      {:ok, status_msg} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: system_participant,
-        text: "Agent typing...",
-        role: "system",
-        kind: "event"
-      })
+      {:ok, status_msg} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: system_participant,
+          text: "Agent typing...",
+          role: "system",
+          kind: "event"
+        })
 
       messages = Chat.list_thread_messages(thread.id)
       assert length(messages) == 4
@@ -133,24 +140,27 @@ defmodule Fleetlm.Integration.MultiParticipantTest do
       participants = for i <- 1..5, do: {"user_#{i}", Ecto.UUID.generate()}
 
       # Create individual DM threads
-      threads = for {_name, participant_id} <- participants do
-        Chat.ensure_dm!(coordinator, participant_id)
-      end
+      threads =
+        for {_name, participant_id} <- participants do
+          Chat.ensure_dm!(coordinator, participant_id)
+        end
 
       # Start conversation in all threads
       for {thread, {name, participant_id}} <- Enum.zip(threads, participants) do
-        {:ok, _} = Chat.dispatch_message(%{
-          thread_id: thread.id,
-          sender_id: participant_id,
-          text: "Hello from #{name}!"
-        })
+        {:ok, _} =
+          Chat.dispatch_message(%{
+            thread_id: thread.id,
+            sender_id: participant_id,
+            text: "Hello from #{name}!"
+          })
 
         # Coordinator responds
-        {:ok, _} = Chat.dispatch_message(%{
-          thread_id: thread.id,
-          sender_id: coordinator,
-          text: "Hello #{name}, welcome to the group!"
-        })
+        {:ok, _} =
+          Chat.dispatch_message(%{
+            thread_id: thread.id,
+            sender_id: coordinator,
+            text: "Hello #{name}, welcome to the group!"
+          })
       end
 
       # Verify coordinator has all conversations
@@ -177,48 +187,55 @@ defmodule Fleetlm.Integration.MultiParticipantTest do
       subscribers = for _i <- 1..10, do: Ecto.UUID.generate()
 
       # Create DM threads with all subscribers
-      threads = for subscriber <- subscribers do
-        Chat.ensure_dm!(broadcaster, subscriber)
-      end
+      threads =
+        for subscriber <- subscribers do
+          Chat.ensure_dm!(broadcaster, subscriber)
+        end
 
       # Broadcaster sends same message to all threads (simulating broadcast)
       broadcast_text = "Important announcement: System maintenance tonight at 10 PM"
 
-      broadcast_tasks = for thread <- threads do
-        Task.async(fn ->
-          Chat.dispatch_message(%{
-            thread_id: thread.id,
-            sender_id: broadcaster,
-            text: broadcast_text,
-            kind: "broadcast"
-          })
-        end)
-      end
+      broadcast_tasks =
+        for thread <- threads do
+          Task.async(fn ->
+            Chat.dispatch_message(%{
+              thread_id: thread.id,
+              sender_id: broadcaster,
+              text: broadcast_text,
+              kind: "broadcast"
+            })
+          end)
+        end
 
       broadcast_results = Task.await_many(broadcast_tasks, 5000)
 
       # All broadcasts should succeed
       assert length(broadcast_results) == 10
+
       assert Enum.all?(broadcast_results, fn
-        {:ok, %Message{}} -> true
-        _ -> false
-      end)
+               {:ok, %Message{}} -> true
+               _ -> false
+             end)
 
       # Verify all subscribers received the message
       for subscriber <- subscribers do
         subscriber_threads = Chat.list_threads_for_participant(subscriber)
-        broadcast_thread = Enum.find(subscriber_threads, fn thread_data ->
-          thread_data.last_message_preview == broadcast_text
-        end)
+
+        broadcast_thread =
+          Enum.find(subscriber_threads, fn thread_data ->
+            thread_data.last_message_preview == broadcast_text
+          end)
 
         assert broadcast_thread != nil
       end
 
       # Verify broadcaster shows all outgoing messages
       broadcaster_threads = Chat.list_threads_for_participant(broadcaster)
-      broadcast_threads = Enum.filter(broadcaster_threads, fn thread_data ->
-        thread_data.last_message_preview == broadcast_text
-      end)
+
+      broadcast_threads =
+        Enum.filter(broadcaster_threads, fn thread_data ->
+          thread_data.last_message_preview == broadcast_text
+        end)
 
       assert length(broadcast_threads) == 10
     end
@@ -227,32 +244,46 @@ defmodule Fleetlm.Integration.MultiParticipantTest do
   describe "real-time channel integration" do
     test "multi-participant channel synchronization" do
       participants = for i <- 1..3, do: {"user_#{i}", Ecto.UUID.generate()}
-      [{"user_1", user1_id}, {"user_2", user2_id}, {"user_3", user3_id}] = participants
+      [{"user_1", user1_id}, {"user_2", user2_id}, {"user_3", _user3_id}] = participants
 
       # Create thread between user1 and user2
       thread = Chat.ensure_dm!(user1_id, user2_id)
 
       # All participants join channels
-      participant_sockets = for {_name, participant_id} <- participants do
-        socket = socket(FleetlmWeb.UserSocket, nil, %{participant_id: participant_id})
-        {:ok, _reply, p_socket} = subscribe_and_join(socket, FleetlmWeb.ParticipantChannel, "participant:#{participant_id}")
-        {participant_id, p_socket}
-      end
+      _participant_sockets =
+        for {_name, participant_id} <- participants do
+          socket = socket(FleetlmWeb.UserSocket, nil, %{participant_id: participant_id})
+
+          {:ok, _reply, p_socket} =
+            subscribe_and_join(
+              socket,
+              FleetlmWeb.ParticipantChannel,
+              "participant:#{participant_id}"
+            )
+
+          {participant_id, p_socket}
+        end
 
       # User1 and User2 join thread channel
-      thread_sockets = for participant_id <- [user1_id, user2_id] do
-        socket = socket(FleetlmWeb.UserSocket, nil, %{participant_id: participant_id})
-        {:ok, _reply, t_socket} = subscribe_and_join(socket, FleetlmWeb.ThreadChannel, "thread:#{thread.id}")
-        {participant_id, t_socket}
-      end
+      thread_sockets =
+        for participant_id <- [user1_id, user2_id] do
+          socket = socket(FleetlmWeb.UserSocket, nil, %{participant_id: participant_id})
+
+          {:ok, _reply, t_socket} =
+            subscribe_and_join(socket, FleetlmWeb.ThreadChannel, "thread:#{thread.id}")
+
+          {participant_id, t_socket}
+        end
 
       # User1 sends message
-      {user1_id, user1_thread_socket} = Enum.find(thread_sockets, fn {id, _} -> id == user1_id end)
+      {user1_id, user1_thread_socket} =
+        Enum.find(thread_sockets, fn {id, _} -> id == user1_id end)
 
-      ref = push(user1_thread_socket, "message:new", %{
-        "text" => "Hello from user1!",
-        "role" => "user"
-      })
+      ref =
+        push(user1_thread_socket, "message:new", %{
+          "text" => "Hello from user1!",
+          "role" => "user"
+        })
 
       assert_reply ref, :ok, %{"text" => "Hello from user1!", "sender_id" => ^user1_id}
 
@@ -276,16 +307,23 @@ defmodule Fleetlm.Integration.MultiParticipantTest do
 
     test "participant presence across multiple threads" do
       central_user = Ecto.UUID.generate()
-      other_users = for i <- 1..3, do: Ecto.UUID.generate()
+      other_users = for _i <- 1..3, do: Ecto.UUID.generate()
 
       # Create threads between central user and each other user
-      threads = for other_user <- other_users do
-        Chat.ensure_dm!(central_user, other_user)
-      end
+      threads =
+        for other_user <- other_users do
+          Chat.ensure_dm!(central_user, other_user)
+        end
 
       # Central user joins participant channel
       central_socket = socket(FleetlmWeb.UserSocket, nil, %{participant_id: central_user})
-      {:ok, join_reply, central_p_socket} = subscribe_and_join(central_socket, FleetlmWeb.ParticipantChannel, "participant:#{central_user}")
+
+      {:ok, join_reply, _central_p_socket} =
+        subscribe_and_join(
+          central_socket,
+          FleetlmWeb.ParticipantChannel,
+          "participant:#{central_user}"
+        )
 
       # Should see all threads in join reply
       assert %{"threads" => threads_data} = join_reply
@@ -299,15 +337,16 @@ defmodule Fleetlm.Integration.MultiParticipantTest do
       end
 
       # Send messages from other users concurrently
-      message_tasks = for {other_user, thread} <- Enum.zip(other_users, threads) do
-        Task.async(fn ->
-          Chat.dispatch_message(%{
-            thread_id: thread.id,
-            sender_id: other_user,
-            text: "Message from #{other_user}"
-          })
-        end)
-      end
+      message_tasks =
+        for {other_user, thread} <- Enum.zip(other_users, threads) do
+          Task.async(fn ->
+            Chat.dispatch_message(%{
+              thread_id: thread.id,
+              sender_id: other_user,
+              text: "Message from #{other_user}"
+            })
+          end)
+        end
 
       Task.await_many(message_tasks, 2000)
 
@@ -318,9 +357,10 @@ defmodule Fleetlm.Integration.MultiParticipantTest do
       updates = collect_all_tick_updates(3000)
 
       # Should have updates for all 3 threads
-      updated_thread_ids = updates
-                          |> Enum.map(& &1["thread_id"])
-                          |> Enum.uniq()
+      updated_thread_ids =
+        updates
+        |> Enum.map(& &1["thread_id"])
+        |> Enum.uniq()
 
       assert length(updated_thread_ids) >= 3
 
@@ -340,25 +380,28 @@ defmodule Fleetlm.Integration.MultiParticipantTest do
       [hub | spokes] = participants
 
       # Create all threads
-      threads = for spoke <- spokes do
-        Chat.ensure_dm!(hub, spoke)
-      end
+      threads =
+        for spoke <- spokes do
+          Chat.ensure_dm!(hub, spoke)
+        end
 
       # All participants send messages simultaneously
-      message_tasks = for {spoke, thread} <- Enum.zip(spokes, threads) do
-        Task.async(fn ->
-          start_time = System.monotonic_time(:millisecond)
+      message_tasks =
+        for {spoke, thread} <- Enum.zip(spokes, threads) do
+          Task.async(fn ->
+            start_time = System.monotonic_time(:millisecond)
 
-          {:ok, message} = Chat.dispatch_message(%{
-            thread_id: thread.id,
-            sender_id: spoke,
-            text: "Message from #{spoke}"
-          })
+            {:ok, message} =
+              Chat.dispatch_message(%{
+                thread_id: thread.id,
+                sender_id: spoke,
+                text: "Message from #{spoke}"
+              })
 
-          end_time = System.monotonic_time(:millisecond)
-          {message, end_time - start_time}
-        end)
-      end
+            end_time = System.monotonic_time(:millisecond)
+            {message, end_time - start_time}
+          end)
+        end
 
       results = Task.await_many(message_tasks, 10_000)
 
@@ -371,17 +414,20 @@ defmodule Fleetlm.Integration.MultiParticipantTest do
       max_duration = Enum.max(durations)
 
       # Performance assertions (should be reasonable for development)
-      assert avg_duration < 500  # Average under 500ms
-      assert max_duration < 2000 # Max under 2 seconds
+      # Average under 500ms
+      assert avg_duration < 500
+      # Max under 2 seconds
+      assert max_duration < 2000
 
       # Verify hub participant has all conversations
       hub_threads = Chat.list_threads_for_participant(hub)
       assert length(hub_threads) >= participant_count - 1
 
       # Verify cache efficiency - hub's threads should be cached
-      cached_count = Enum.count(hub_threads, fn thread_data ->
-        Cache.get_messages(thread_data.thread_id) != nil
-      end)
+      cached_count =
+        Enum.count(hub_threads, fn thread_data ->
+          Cache.get_messages(thread_data.thread_id) != nil
+        end)
 
       # At least some threads should be cached
       assert cached_count > 0

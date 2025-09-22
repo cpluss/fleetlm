@@ -14,11 +14,12 @@ defmodule Fleetlm.HealthCheck do
       process_count: check_process_count()
     ]
 
-    overall_status = if Enum.all?(checks, fn {_name, %{status: status}} -> status == :ok end) do
-      :healthy
-    else
-      :unhealthy
-    end
+    overall_status =
+      if Enum.all?(checks, fn {_name, %{status: status}} -> status == :ok end) do
+        :healthy
+      else
+        :unhealthy
+      end
 
     %{
       status: overall_status,
@@ -33,6 +34,7 @@ defmodule Fleetlm.HealthCheck do
       case Ecto.Adapters.SQL.query(Repo, "SELECT 1", []) do
         {:ok, _} ->
           %{status: :ok, message: "Database connection healthy"}
+
         {:error, reason} ->
           %{status: :error, message: "Database error: #{inspect(reason)}"}
       end
@@ -53,9 +55,11 @@ defmodule Fleetlm.HealthCheck do
             %{test: true} ->
               Cache.invalidate_thread_meta(test_key)
               %{status: :ok, message: "Cache system healthy"}
+
             _ ->
               %{status: :warning, message: "Cache read/write inconsistent"}
           end
+
         _ ->
           %{status: :error, message: "Cache write failed"}
       end
@@ -69,26 +73,30 @@ defmodule Fleetlm.HealthCheck do
   def check_circuit_breakers do
     breakers = [:db_circuit_breaker, :cache_circuit_breaker]
 
-    statuses = Enum.map(breakers, fn name ->
-      try do
-        status = CircuitBreaker.status(name)
-        {name, %{
-          status: if(status.state == :closed, do: :ok, else: :warning),
-          state: status.state,
-          success_rate: status.success_rate,
-          failure_count: status.failure_count
-        }}
-      rescue
-        _ ->
-          {name, %{status: :error, message: "Circuit breaker unreachable"}}
-      end
-    end)
+    statuses =
+      Enum.map(breakers, fn name ->
+        try do
+          status = CircuitBreaker.status(name)
 
-    overall = if Enum.all?(statuses, fn {_name, %{status: status}} -> status in [:ok, :warning] end) do
-      :ok
-    else
-      :error
-    end
+          {name,
+           %{
+             status: if(status.state == :closed, do: :ok, else: :warning),
+             state: status.state,
+             success_rate: status.success_rate,
+             failure_count: status.failure_count
+           }}
+        rescue
+          _ ->
+            {name, %{status: :error, message: "Circuit breaker unreachable"}}
+        end
+      end)
+
+    overall =
+      if Enum.all?(statuses, fn {_name, %{status: status}} -> status in [:ok, :warning] end) do
+        :ok
+      else
+        :error
+      end
 
     %{
       status: overall,

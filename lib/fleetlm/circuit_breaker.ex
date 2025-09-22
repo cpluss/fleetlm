@@ -68,7 +68,8 @@ defmodule Fleetlm.CircuitBreaker do
     state = %__MODULE__{
       name: Keyword.fetch!(opts, :name),
       failure_threshold: Keyword.get(opts, :failure_threshold, 5),
-      recovery_time: Keyword.get(opts, :recovery_time, 60_000), # 1 minute
+      # 1 minute
+      recovery_time: Keyword.get(opts, :recovery_time, 60_000),
       timeout: Keyword.get(opts, :timeout, 5_000)
     }
 
@@ -101,10 +102,11 @@ defmodule Fleetlm.CircuitBreaker do
 
   @impl true
   def handle_cast(:success, state) do
-    new_state = %{state |
-      success_count: state.success_count + 1,
-      failure_count: 0,
-      state: :closed
+    new_state = %{
+      state
+      | success_count: state.success_count + 1,
+        failure_count: 0,
+        state: :closed
     }
 
     {:noreply, new_state}
@@ -113,17 +115,19 @@ defmodule Fleetlm.CircuitBreaker do
   def handle_cast(:failure, state) do
     failure_count = state.failure_count + 1
 
-    new_state = %{state |
-      failure_count: failure_count,
-      last_failure_time: System.monotonic_time(:millisecond)
+    new_state = %{
+      state
+      | failure_count: failure_count,
+        last_failure_time: System.monotonic_time(:millisecond)
     }
 
-    new_state = if failure_count >= state.failure_threshold do
-      Logger.warning("Circuit breaker #{state.name} opened after #{failure_count} failures")
-      %{new_state | state: :open}
-    else
-      new_state
-    end
+    new_state =
+      if failure_count >= state.failure_threshold do
+        Logger.warning("Circuit breaker #{state.name} opened after #{failure_count} failures")
+        %{new_state | state: :open}
+      else
+        new_state
+      end
 
     {:noreply, new_state}
   end
@@ -149,7 +153,9 @@ defmodule Fleetlm.CircuitBreaker do
 
   defp should_attempt_reset?(state) do
     case state.last_failure_time do
-      nil -> true
+      nil ->
+        true
+
       last_failure ->
         elapsed = System.monotonic_time(:millisecond) - last_failure
         elapsed >= state.recovery_time

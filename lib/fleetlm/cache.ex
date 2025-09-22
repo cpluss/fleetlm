@@ -61,17 +61,20 @@ defmodule Fleetlm.Cache do
     key = messages_key(thread_id)
     start_time = System.monotonic_time(:microsecond)
 
-    result = case Cachex.get(@messages_cache, key) do
-      {:ok, nil} ->
-        Telemetry.emit_cache_event(:miss, @messages_cache, key, time_diff(start_time))
-        nil
-      {:ok, messages} ->
-        Telemetry.emit_cache_event(:hit, @messages_cache, key, time_diff(start_time))
-        Enum.take(messages, limit)
-      {:error, _} ->
-        Telemetry.emit_cache_event(:miss, @messages_cache, key, time_diff(start_time))
-        nil
-    end
+    result =
+      case Cachex.get(@messages_cache, key) do
+        {:ok, nil} ->
+          Telemetry.emit_cache_event(:miss, @messages_cache, key, time_diff(start_time))
+          nil
+
+        {:ok, messages} ->
+          Telemetry.emit_cache_event(:hit, @messages_cache, key, time_diff(start_time))
+          Enum.take(messages, limit)
+
+        {:error, _} ->
+          Telemetry.emit_cache_event(:miss, @messages_cache, key, time_diff(start_time))
+          nil
+      end
 
     result
   end
@@ -105,10 +108,13 @@ defmodule Fleetlm.Cache do
   @doc "Cache participants for a thread"
   def cache_participants(thread_id, participants) when is_list(participants) do
     key = participants_key(thread_id)
-    participant_ids = Enum.map(participants, fn
-      %Participant{participant_id: id} -> id
-      id when is_binary(id) -> id
-    end)
+
+    participant_ids =
+      Enum.map(participants, fn
+        %Participant{participant_id: id} -> id
+        id when is_binary(id) -> id
+      end)
+
     Cachex.put(@participants_cache, key, participant_ids, ttl: :timer.minutes(30))
   end
 
@@ -183,7 +189,6 @@ defmodule Fleetlm.Cache do
   defp messages_key(thread_id), do: "messages:#{thread_id}"
   defp participants_key(thread_id), do: "participants:#{thread_id}"
   defp thread_meta_key(thread_id), do: "meta:#{thread_id}"
-
 
   defp cache_stats(cache_name) do
     case Cachex.stats(cache_name) do

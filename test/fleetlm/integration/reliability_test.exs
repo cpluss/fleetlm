@@ -20,11 +20,12 @@ defmodule Fleetlm.Integration.ReliabilityTest do
       thread = Chat.ensure_dm!(participant_a, participant_b)
 
       # Normal operations should work
-      {:ok, _} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: "Normal message"
-      })
+      {:ok, _} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_a,
+          text: "Normal message"
+        })
 
       # Circuit breaker should still be closed
       status_after_success = CircuitBreaker.status(:db_circuit_breaker)
@@ -39,25 +40,29 @@ defmodule Fleetlm.Integration.ReliabilityTest do
       thread = Chat.ensure_dm!(participant_a, participant_b)
 
       # Perform many cache operations rapidly
-      cache_tasks = for i <- 1..100 do
-        Task.async(fn ->
-          case rem(i, 4) do
-            0 -> Cache.get_messages(thread.id)
-            1 -> Cache.get_participants(thread.id)
-            2 -> Cache.get_thread_meta(thread.id)
-            3 -> Cache.cache_messages(thread.id, [])
-          end
-        end)
-      end
+      cache_tasks =
+        for i <- 1..100 do
+          Task.async(fn ->
+            case rem(i, 4) do
+              0 -> Cache.get_messages(thread.id)
+              1 -> Cache.get_participants(thread.id)
+              2 -> Cache.get_thread_meta(thread.id)
+              3 -> Cache.cache_messages(thread.id, [])
+            end
+          end)
+        end
 
       results = Task.await_many(cache_tasks, 5000)
 
       # Most operations should succeed (cache operations often return nil but don't fail)
-      success_count = Enum.count(results, fn
-        result when result != nil -> true
-        nil -> true  # Cache operations may return nil but are not failures
-        _ -> false
-      end)
+      success_count =
+        Enum.count(results, fn
+          result when result != nil -> true
+          # Cache operations may return nil but are not failures
+          nil -> true
+          _ -> false
+        end)
+
       assert success_count >= 50
 
       # Cache circuit breaker should remain healthy
@@ -71,12 +76,13 @@ defmodule Fleetlm.Integration.ReliabilityTest do
       health = HealthCheck.check_all()
 
       assert health.status in [:healthy, :unhealthy]
+
       assert %{
-        database: db_check,
-        cache: cache_check,
-        circuit_breakers: cb_check,
-        process_count: proc_check
-      } = health.checks
+               database: db_check,
+               cache: cache_check,
+               circuit_breakers: cb_check,
+               process_count: proc_check
+             } = health.checks
 
       # Database should be healthy
       assert db_check.status == :ok
@@ -125,11 +131,12 @@ defmodule Fleetlm.Integration.ReliabilityTest do
       thread = Chat.ensure_dm!(participant_a, participant_b)
 
       # Send initial message
-      {:ok, _initial_message} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: "Before corruption"
-      })
+      {:ok, _initial_message} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_a,
+          text: "Before corruption"
+        })
 
       # Verify message is cached
       cached_before = Cache.get_messages(thread.id)
@@ -150,11 +157,12 @@ defmodule Fleetlm.Integration.ReliabilityTest do
       {:ok, _} = Chat.ensure_thread_runtime(thread.id)
 
       # Send new message (should work and re-populate cache)
-      {:ok, _recovery_message} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_b,
-        text: "After recovery"
-      })
+      {:ok, _recovery_message} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_b,
+          text: "After recovery"
+        })
 
       # Cache should be repopulated
       cached_after = Cache.get_messages(thread.id)
@@ -176,11 +184,12 @@ defmodule Fleetlm.Integration.ReliabilityTest do
       thread = Chat.ensure_dm!(participant_a, participant_b)
 
       # Warm up the cache first
-      {:ok, _} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: "Cache warmer"
-      })
+      {:ok, _} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_a,
+          text: "Cache warmer"
+        })
 
       # Even if database operations slow down, cached reads should work
       # (We can't easily simulate database slowness in tests, but we can verify
@@ -210,11 +219,12 @@ defmodule Fleetlm.Integration.ReliabilityTest do
       assert Process.alive?(original_pid)
 
       # Send message to populate state
-      {:ok, _} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: "Before crash"
-      })
+      {:ok, _} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_a,
+          text: "Before crash"
+        })
 
       # Kill the ThreadServer process
       Process.exit(original_pid, :kill)
@@ -229,11 +239,12 @@ defmodule Fleetlm.Integration.ReliabilityTest do
       assert Process.alive?(new_pid)
 
       # Should be able to send messages through new process
-      {:ok, recovery_message} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_b,
-        text: "After recovery"
-      })
+      {:ok, recovery_message} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_b,
+          text: "After recovery"
+        })
 
       assert recovery_message.text == "After recovery"
 
@@ -257,72 +268,77 @@ defmodule Fleetlm.Integration.ReliabilityTest do
 
       # Send messages with occasional errors mixed in
       message_count = 50
-      error_frequency = 10  # Every 10th message has potential issues
+      # Every 10th message has potential issues
+      error_frequency = 10
 
-      tasks = for i <- 1..message_count do
-        Task.async(fn ->
-          sender = if rem(i, 2) == 0, do: participant_a, else: participant_b
+      tasks =
+        for i <- 1..message_count do
+          Task.async(fn ->
+            sender = if rem(i, 2) == 0, do: participant_a, else: participant_b
 
-          try do
-            if rem(i, error_frequency) == 0 do
-              # Inject some "problematic" operations
-              case rem(div(i, error_frequency), 3) do
-                0 ->
-                  # Try to send to non-existent thread (should fail gracefully)
-                  Chat.send_message(%{
-                    thread_id: Ecto.UUID.generate(),
-                    sender_id: sender,
-                    text: "Error test #{i}"
-                  })
+            try do
+              if rem(i, error_frequency) == 0 do
+                # Inject some "problematic" operations
+                case rem(div(i, error_frequency), 3) do
+                  0 ->
+                    # Try to send to non-existent thread (should fail gracefully)
+                    Chat.send_message(%{
+                      thread_id: Ecto.UUID.generate(),
+                      sender_id: sender,
+                      text: "Error test #{i}"
+                    })
 
-                1 ->
-                  # Send message with missing required field
-                  Chat.send_message(%{
-                    thread_id: thread.id,
-                    text: "Missing sender #{i}"
-                  })
+                  1 ->
+                    # Send message with missing required field
+                    Chat.send_message(%{
+                      thread_id: thread.id,
+                      text: "Missing sender #{i}"
+                    })
 
-                2 ->
-                  # Normal message but force cache invalidation
-                  Cache.invalidate_messages(thread.id)
-                  Chat.dispatch_message(%{
-                    thread_id: thread.id,
-                    sender_id: sender,
-                    text: "Cache invalidated #{i}"
-                  })
+                  2 ->
+                    # Normal message but force cache invalidation
+                    Cache.invalidate_messages(thread.id)
+
+                    Chat.dispatch_message(%{
+                      thread_id: thread.id,
+                      sender_id: sender,
+                      text: "Cache invalidated #{i}"
+                    })
+                end
+              else
+                # Normal message
+                Chat.dispatch_message(%{
+                  thread_id: thread.id,
+                  sender_id: sender,
+                  text: "Normal message #{i}"
+                })
               end
-            else
-              # Normal message
-              Chat.dispatch_message(%{
-                thread_id: thread.id,
-                sender_id: sender,
-                text: "Normal message #{i}"
-              })
+            rescue
+              _ ->
+                {:error, :injected_error}
             end
-          rescue
-            _ ->
-              {:error, :injected_error}
-          end
-        end)
-      end
+          end)
+        end
 
       results = Task.await_many(tasks, 15_000)
 
       # Count successes and expected errors
-      successes = Enum.count(results, fn
-        {:ok, %Message{}} -> true
-        _ -> false
-      end)
+      successes =
+        Enum.count(results, fn
+          {:ok, %Message{}} -> true
+          _ -> false
+        end)
 
       # Should have more successes than failures
       assert successes > message_count * 0.7
 
       # System should still be responsive after load test
-      {:ok, final_message} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: "System still responsive"
-      })
+      {:ok, final_message} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_a,
+          text: "System still responsive"
+        })
 
       assert final_message.text == "System still responsive"
 
@@ -337,21 +353,23 @@ defmodule Fleetlm.Integration.ReliabilityTest do
       # Create many threads concurrently and send messages to each
       thread_count = 25
 
-      thread_tasks = for i <- 1..thread_count do
-        Task.async(fn ->
-          other_participant = Ecto.UUID.generate()
-          thread = Chat.ensure_dm!(base_participant, other_participant)
+      thread_tasks =
+        for i <- 1..thread_count do
+          Task.async(fn ->
+            other_participant = Ecto.UUID.generate()
+            thread = Chat.ensure_dm!(base_participant, other_participant)
 
-          # Send message immediately after thread creation
-          {:ok, message} = Chat.dispatch_message(%{
-            thread_id: thread.id,
-            sender_id: other_participant,
-            text: "Hello from thread #{i}"
-          })
+            # Send message immediately after thread creation
+            {:ok, message} =
+              Chat.dispatch_message(%{
+                thread_id: thread.id,
+                sender_id: other_participant,
+                text: "Hello from thread #{i}"
+              })
 
-          {thread, message}
-        end)
-      end
+            {thread, message}
+          end)
+        end
 
       results = Task.await_many(thread_tasks, 15_000)
 
@@ -367,8 +385,8 @@ defmodule Fleetlm.Integration.ReliabilityTest do
 
       # All messages should be valid
       assert Enum.all?(messages, fn msg ->
-        is_struct(msg, Message) and msg.text =~ "Hello from thread"
-      end)
+               is_struct(msg, Message) and msg.text =~ "Hello from thread"
+             end)
 
       # Base participant should be in all threads
       base_threads = Chat.list_threads_for_participant(base_participant)
@@ -376,7 +394,8 @@ defmodule Fleetlm.Integration.ReliabilityTest do
 
       # Memory usage should be reasonable
       memory_info = HealthCheck.get_memory_info()
-      assert memory_info.total_mb < 500  # Should be under 500MB in test environment
+      # Should be under 500MB in test environment
+      assert memory_info.total_mb < 500
     end
   end
 end

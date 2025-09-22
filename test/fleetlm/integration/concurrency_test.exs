@@ -9,7 +9,7 @@ defmodule Fleetlm.Integration.ConcurrencyTest do
   use Fleetlm.DataCase, async: false
 
   alias Fleetlm.{Cache, Chat}
-  alias Fleetlm.Chat.{ThreadServer, Threads.Message}
+  alias Fleetlm.Chat.Threads.Message
 
   @moduletag timeout: :timer.seconds(30)
 
@@ -27,19 +27,22 @@ defmodule Fleetlm.Integration.ConcurrencyTest do
       # Send 20 messages concurrently from different participants
       message_count = 20
 
-      tasks = for i <- 1..message_count do
-        sender = Enum.at(participants, rem(i, length(participants)))
+      tasks =
+        for i <- 1..message_count do
+          sender = Enum.at(participants, rem(i, length(participants)))
 
-        Task.async(fn ->
-          {:ok, message} = Chat.dispatch_message(%{
-            thread_id: thread.id,
-            sender_id: sender,
-            text: "Message #{i}",
-            role: "user"
-          })
-          {i, message}
-        end)
-      end
+          Task.async(fn ->
+            {:ok, message} =
+              Chat.dispatch_message(%{
+                thread_id: thread.id,
+                sender_id: sender,
+                text: "Message #{i}",
+                role: "user"
+              })
+
+            {i, message}
+          end)
+        end
 
       results = Task.await_many(tasks, 10_000)
       messages = Enum.map(results, fn {_i, message} -> message end)
@@ -67,29 +70,32 @@ defmodule Fleetlm.Integration.ConcurrencyTest do
       thread = Chat.ensure_dm!(participant_a, participant_b)
 
       # Try to start ThreadServer and send messages simultaneously from multiple processes
-      tasks = for i <- 1..10 do
-        Task.async(fn ->
-          # Each task tries to ensure ThreadServer and send a message
-          case Chat.ensure_thread_runtime(thread.id) do
-            {:ok, _pid} ->
-              Chat.dispatch_message(%{
-                thread_id: thread.id,
-                sender_id: if(rem(i, 2) == 0, do: participant_a, else: participant_b),
-                text: "Race message #{i}"
-              })
-            error ->
-              error
-          end
-        end)
-      end
+      tasks =
+        for i <- 1..10 do
+          Task.async(fn ->
+            # Each task tries to ensure ThreadServer and send a message
+            case Chat.ensure_thread_runtime(thread.id) do
+              {:ok, _pid} ->
+                Chat.dispatch_message(%{
+                  thread_id: thread.id,
+                  sender_id: if(rem(i, 2) == 0, do: participant_a, else: participant_b),
+                  text: "Race message #{i}"
+                })
+
+              error ->
+                error
+            end
+          end)
+        end
 
       results = Task.await_many(tasks, 5_000)
 
       # All should succeed
-      successes = Enum.count(results, fn
-        {:ok, %Message{}} -> true
-        _ -> false
-      end)
+      successes =
+        Enum.count(results, fn
+          {:ok, %Message{}} -> true
+          _ -> false
+        end)
 
       assert successes == 10
 
@@ -110,31 +116,32 @@ defmodule Fleetlm.Integration.ConcurrencyTest do
       # Perform rapid cache operations from multiple processes
       cache_operations = 50
 
-      tasks = for i <- 1..cache_operations do
-        Task.async(fn ->
-          case rem(i, 4) do
-            0 ->
-              # Send message (triggers cache updates)
-              Chat.dispatch_message(%{
-                thread_id: thread.id,
-                sender_id: participant_a,
-                text: "Cache test #{i}"
-              })
+      tasks =
+        for i <- 1..cache_operations do
+          Task.async(fn ->
+            case rem(i, 4) do
+              0 ->
+                # Send message (triggers cache updates)
+                Chat.dispatch_message(%{
+                  thread_id: thread.id,
+                  sender_id: participant_a,
+                  text: "Cache test #{i}"
+                })
 
-            1 ->
-              # Read messages (cache hit/miss)
-              Cache.get_messages(thread.id, 10)
+              1 ->
+                # Read messages (cache hit/miss)
+                Cache.get_messages(thread.id, 10)
 
-            2 ->
-              # Update participant cache
-              Cache.cache_participants(thread.id, [participant_a, participant_b])
+              2 ->
+                # Update participant cache
+                Cache.cache_participants(thread.id, [participant_a, participant_b])
 
-            3 ->
-              # Read thread metadata
-              Cache.get_thread_meta(thread.id)
-          end
-        end)
-      end
+              3 ->
+                # Read thread metadata
+                Cache.get_thread_meta(thread.id)
+            end
+          end)
+        end
 
       Task.await_many(tasks, 10_000)
 
@@ -153,8 +160,9 @@ defmodule Fleetlm.Integration.ConcurrencyTest do
       # Messages should be consistent between cache and database
       if cached_messages do
         cached_ids = Enum.map(cached_messages, & &1.id) |> MapSet.new()
-        db_ids = Enum.take(db_messages, length(cached_messages))
-                 |> Enum.map(& &1.id) |> MapSet.new()
+
+        db_ids =
+          Enum.take(db_messages, length(cached_messages)) |> Enum.map(& &1.id) |> MapSet.new()
 
         assert MapSet.subset?(cached_ids, db_ids)
       end
@@ -174,11 +182,12 @@ defmodule Fleetlm.Integration.ConcurrencyTest do
       new_participants = for _ <- 1..20, do: Ecto.UUID.generate()
 
       # Each participant tries to join by creating a DM with base participant
-      tasks = Enum.map(new_participants, fn participant ->
-        Task.async(fn ->
-          Chat.ensure_dm!(base_participant, participant)
+      tasks =
+        Enum.map(new_participants, fn participant ->
+          Task.async(fn ->
+            Chat.ensure_dm!(base_participant, participant)
+          end)
         end)
-      end)
 
       results = Task.await_many(tasks, 10_000)
 
@@ -206,25 +215,28 @@ defmodule Fleetlm.Integration.ConcurrencyTest do
       # Send a burst of 100 messages as fast as possible
       burst_size = 100
 
-      tasks = for i <- 1..burst_size do
-        Task.async(fn ->
-          sender = if rem(i, 2) == 0, do: participant_a, else: participant_b
-          Chat.dispatch_message(%{
-            thread_id: thread.id,
-            sender_id: sender,
-            text: "Burst #{i}",
-            metadata: %{sequence: i}
-          })
-        end)
-      end
+      tasks =
+        for i <- 1..burst_size do
+          Task.async(fn ->
+            sender = if rem(i, 2) == 0, do: participant_a, else: participant_b
+
+            Chat.dispatch_message(%{
+              thread_id: thread.id,
+              sender_id: sender,
+              text: "Burst #{i}",
+              metadata: %{sequence: i}
+            })
+          end)
+        end
 
       results = Task.await_many(tasks, 15_000)
 
       # All messages should succeed
-      successes = Enum.count(results, fn
-        {:ok, %Message{}} -> true
-        _ -> false
-      end)
+      successes =
+        Enum.count(results, fn
+          {:ok, %Message{}} -> true
+          _ -> false
+        end)
 
       assert successes == burst_size
 
@@ -233,17 +245,23 @@ defmodule Fleetlm.Integration.ConcurrencyTest do
       assert length(db_messages) == burst_size
 
       # Verify message sequence integrity
-      sequences = Enum.map(db_messages, fn msg ->
-        msg.metadata["sequence"]
-      end) |> Enum.filter(& &1) |> Enum.sort()
+      sequences =
+        Enum.map(db_messages, fn msg ->
+          msg.metadata["sequence"]
+        end)
+        |> Enum.filter(& &1)
+        |> Enum.sort()
 
       assert sequences == Enum.to_list(1..burst_size)
 
       # Verify participants metadata is consistent
-      final_participant_a = Chat.list_threads_for_participant(participant_a)
-                            |> Enum.find(fn p -> p.thread_id == thread.id end)
-      final_participant_b = Chat.list_threads_for_participant(participant_b)
-                            |> Enum.find(fn p -> p.thread_id == thread.id end)
+      final_participant_a =
+        Chat.list_threads_for_participant(participant_a)
+        |> Enum.find(fn p -> p.thread_id == thread.id end)
+
+      final_participant_b =
+        Chat.list_threads_for_participant(participant_b)
+        |> Enum.find(fn p -> p.thread_id == thread.id end)
 
       assert final_participant_a.last_message_preview =~ "Burst"
       assert final_participant_b.last_message_preview =~ "Burst"
@@ -259,11 +277,12 @@ defmodule Fleetlm.Integration.ConcurrencyTest do
       # Start ThreadServer and send initial message
       {:ok, initial_pid} = Chat.ensure_thread_runtime(thread.id)
 
-      {:ok, _} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: "Before crash"
-      })
+      {:ok, _} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_a,
+          text: "Before crash"
+        })
 
       # Simulate crash by killing the process
       Process.exit(initial_pid, :kill)
@@ -275,11 +294,12 @@ defmodule Fleetlm.Integration.ConcurrencyTest do
       refute Process.alive?(initial_pid)
 
       # Try to send message immediately (should restart ThreadServer)
-      {:ok, _recovery_message} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_b,
-        text: "After recovery"
-      })
+      {:ok, _recovery_message} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_b,
+          text: "After recovery"
+        })
 
       # Verify new ThreadServer is running
       {:ok, new_pid} = Chat.ensure_thread_runtime(thread.id)

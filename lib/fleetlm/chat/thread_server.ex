@@ -27,7 +27,8 @@ defmodule Fleetlm.Chat.ThreadServer do
       id: {__MODULE__, thread_id},
       start: {__MODULE__, :start_link, [[thread_id: thread_id]]},
       restart: :temporary,
-      shutdown: 10_000,  # Increased shutdown time for graceful cleanup
+      # Increased shutdown time for graceful cleanup
+      shutdown: 10_000,
       type: :worker
     }
   end
@@ -105,6 +106,7 @@ defmodule Fleetlm.Chat.ThreadServer do
         broadcast_participants(state, message)
 
         duration = System.monotonic_time(:millisecond) - start_time
+
         Telemetry.emit_message_sent(
           state.thread_id,
           message.sender_id,
@@ -123,7 +125,9 @@ defmodule Fleetlm.Chat.ThreadServer do
     cursor = normalize_cursor(cursor)
 
     # Check if participant is in thread using cache
-    participants = Cache.get_participants(state.thread_id) || refresh_participants_cache(state.thread_id)
+    participants =
+      Cache.get_participants(state.thread_id) || refresh_participants_cache(state.thread_id)
+
     member? = participant_id in participants
 
     if member? do
@@ -237,7 +241,6 @@ defmodule Fleetlm.Chat.ThreadServer do
 
   defp thread_topic(thread_id), do: "thread:" <> thread_id
   defp participant_topic(participant_id), do: "participant:" <> participant_id
-
 
   defp normalize_cursor(nil), do: nil
 

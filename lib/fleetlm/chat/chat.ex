@@ -90,17 +90,18 @@ defmodule Fleetlm.Chat do
       send_message_with_validated_attrs(attrs, thread_id, sender_id, role, opts)
     else
       :error ->
-        missing_key = cond do
-          not Map.has_key?(attrs, :thread_id) -> :thread_id
-          not Map.has_key?(attrs, :sender_id) -> :sender_id
-          true -> :unknown
-        end
+        missing_key =
+          cond do
+            not Map.has_key?(attrs, :thread_id) -> :thread_id
+            not Map.has_key?(attrs, :sender_id) -> :sender_id
+            true -> :unknown
+          end
+
         {:error, :validation, "required key #{inspect(missing_key)} not found"}
     end
   end
 
   defp send_message_with_validated_attrs(attrs, thread_id, sender_id, role, opts) do
-
     message_attrs =
       attrs
       |> Map.put(:thread_id, thread_id)
@@ -298,7 +299,6 @@ defmodule Fleetlm.Chat do
         acc
     end)
   end
-
 
   defp shard_for(thread_id, opts) do
     modulus =

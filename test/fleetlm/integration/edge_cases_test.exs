@@ -17,11 +17,12 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
       # Create a 10KB message
       very_long_text = String.duplicate("A", 10_000)
 
-      {:ok, message} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: very_long_text
-      })
+      {:ok, message} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_a,
+          text: very_long_text
+        })
 
       assert String.length(message.text) == 10_000
 
@@ -48,14 +49,17 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
         "Symbols: ©®™℠℗"
       ]
 
-      _messages = for {text, i} <- Enum.with_index(unicode_messages) do
-        {:ok, message} = Chat.dispatch_message(%{
-          thread_id: thread.id,
-          sender_id: if(rem(i, 2) == 0, do: participant_a, else: participant_b),
-          text: text
-        })
-        message
-      end
+      _messages =
+        for {text, i} <- Enum.with_index(unicode_messages) do
+          {:ok, message} =
+            Chat.dispatch_message(%{
+              thread_id: thread.id,
+              sender_id: if(rem(i, 2) == 0, do: participant_a, else: participant_b),
+              text: text
+            })
+
+          message
+        end
 
       # Verify all messages were stored correctly
       db_messages = Chat.list_thread_messages(thread.id)
@@ -79,22 +83,24 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
       edge_case_texts = ["   ", "\n\n\n", "\t\t", " \n \t "]
 
       for text <- edge_case_texts do
-        {:ok, message} = Chat.dispatch_message(%{
-          thread_id: thread.id,
-          sender_id: participant_a,
-          text: text
-        })
+        {:ok, message} =
+          Chat.dispatch_message(%{
+            thread_id: thread.id,
+            sender_id: participant_a,
+            text: text
+          })
 
         # Whitespace may be normalized to nil by the system
         assert message.text in [text, nil]
       end
 
       # Test empty string separately (may be converted to nil)
-      {:ok, empty_message} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: ""
-      })
+      {:ok, empty_message} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_a,
+          text: ""
+        })
 
       # Empty string might be stored as nil
       assert empty_message.text in ["", nil]
@@ -112,23 +118,26 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
       thread = Chat.ensure_dm!(participant_a, participant_b)
 
       # Missing sender_id
-      assert {:error, :validation, _reason} = Chat.send_message(%{
-        thread_id: thread.id,
-        text: "missing sender"
-      })
+      assert {:error, :validation, _reason} =
+               Chat.send_message(%{
+                 thread_id: thread.id,
+                 text: "missing sender"
+               })
 
       # Missing thread_id
-      assert {:error, :validation, _reason} = Chat.send_message(%{
-        sender_id: participant_a,
-        text: "missing thread"
-      })
+      assert {:error, :validation, _reason} =
+               Chat.send_message(%{
+                 sender_id: participant_a,
+                 text: "missing thread"
+               })
 
       # Invalid thread_id
-      assert {:error, :thread, :not_found} = Chat.send_message(%{
-        thread_id: Ecto.UUID.generate(),
-        sender_id: participant_a,
-        text: "invalid thread"
-      })
+      assert {:error, :thread, :not_found} =
+               Chat.send_message(%{
+                 thread_id: Ecto.UUID.generate(),
+                 sender_id: participant_a,
+                 text: "invalid thread"
+               })
     end
 
     test "handles invalid metadata gracefully" do
@@ -149,12 +158,13 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
         }
       }
 
-      {:ok, message} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: "metadata test",
-        metadata: large_metadata
-      })
+      {:ok, message} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_a,
+          text: "metadata test",
+          metadata: large_metadata
+        })
 
       assert message.metadata["data"] == String.duplicate("X", 5000)
       assert length(message.metadata["numbers"]) == 1000
@@ -171,24 +181,28 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
 
       # Valid roles should work
       valid_roles = ["user", "agent", "system"]
+
       for role <- valid_roles do
-        {:ok, message} = Chat.dispatch_message(%{
-          thread_id: thread.id,
-          sender_id: participant_a,
-          text: "role test",
-          role: role
-        })
+        {:ok, message} =
+          Chat.dispatch_message(%{
+            thread_id: thread.id,
+            sender_id: participant_a,
+            text: "role test",
+            role: role
+          })
+
         assert message.role == role
       end
 
       # Invalid role should be rejected by schema validation
       # (The Chat.send_message would fail at changeset validation)
-      assert {:error, :message, changeset} = Chat.send_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: "invalid role",
-        role: "invalid_role"
-      })
+      assert {:error, :message, changeset} =
+               Chat.send_message(%{
+                 thread_id: thread.id,
+                 sender_id: participant_a,
+                 text: "invalid role",
+                 role: "invalid_role"
+               })
 
       assert changeset.errors[:role] != nil
     end
@@ -202,9 +216,10 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
       participants = for _ <- 1..50, do: Ecto.UUID.generate()
 
       # Create threads with all participants
-      threads = for participant <- participants do
-        Chat.ensure_dm!(base_participant, participant)
-      end
+      threads =
+        for participant <- participants do
+          Chat.ensure_dm!(base_participant, participant)
+        end
 
       assert length(threads) == 50
       assert length(Enum.uniq_by(threads, & &1.id)) == 50
@@ -223,21 +238,28 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
       message_count = 100
 
       for i <- 1..message_count do
-        {:ok, _} = Chat.dispatch_message(%{
-          thread_id: thread.id,
-          sender_id: if(rem(i, 2) == 0, do: participant_a, else: participant_b),
-          text: "Message #{i}"
-        })
+        {:ok, _} =
+          Chat.dispatch_message(%{
+            thread_id: thread.id,
+            sender_id: if(rem(i, 2) == 0, do: participant_a, else: participant_b),
+            text: "Message #{i}"
+          })
       end
 
       # Test various limit scenarios
       test_cases = [
-        {1, 1},      # Single message
-        {50, 50},    # Standard page
-        {99, 99},    # Just under 100
-        {100, 100},  # Exactly 100
-        {101, 100},  # Over limit (should cap at 100)
-        {200, 100}   # Way over limit
+        # Single message
+        {1, 1},
+        # Standard page
+        {50, 50},
+        # Just under 100
+        {99, 99},
+        # Exactly 100
+        {100, 100},
+        # Over limit (should cap at 100)
+        {101, 100},
+        # Way over limit
+        {200, 100}
       ]
 
       for {requested_limit, expected_count} <- test_cases do
@@ -247,12 +269,14 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
 
       # Test pagination with cursor
       all_messages = Chat.list_thread_messages(thread.id, limit: message_count)
-      middle_message = Enum.at(all_messages, 49)  # 50th message (0-indexed)
+      # 50th message (0-indexed)
+      middle_message = Enum.at(all_messages, 49)
 
-      before_messages = Chat.list_thread_messages(thread.id,
-        before: %{created_at: middle_message.created_at, id: middle_message.id},
-        limit: 50
-      )
+      before_messages =
+        Chat.list_thread_messages(thread.id,
+          before: %{created_at: middle_message.created_at, id: middle_message.id},
+          limit: 50
+        )
 
       assert length(before_messages) == 50
 
@@ -268,21 +292,23 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
       _participant_b = Ecto.UUID.generate()
 
       # Create multiple threads to fill cache
-      threads = for i <- 1..20 do
-        other_participant = Ecto.UUID.generate()
-        thread = Chat.ensure_dm!(participant_a, other_participant)
+      threads =
+        for i <- 1..20 do
+          other_participant = Ecto.UUID.generate()
+          thread = Chat.ensure_dm!(participant_a, other_participant)
 
-        # Send messages to each thread
-        for j <- 1..10 do
-          {:ok, _} = Chat.dispatch_message(%{
-            thread_id: thread.id,
-            sender_id: participant_a,
-            text: "Thread #{i}, Message #{j}"
-          })
+          # Send messages to each thread
+          for j <- 1..10 do
+            {:ok, _} =
+              Chat.dispatch_message(%{
+                thread_id: thread.id,
+                sender_id: participant_a,
+                text: "Thread #{i}, Message #{j}"
+              })
+          end
+
+          thread
         end
-
-        thread
-      end
 
       # Verify all threads have cached data
       for thread <- threads do
@@ -308,34 +334,36 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
       thread = Chat.ensure_dm!(participant_a, participant_b)
 
       # Send initial message to populate cache
-      {:ok, _} = Chat.dispatch_message(%{
-        thread_id: thread.id,
-        sender_id: participant_a,
-        text: "Initial message"
-      })
+      {:ok, _} =
+        Chat.dispatch_message(%{
+          thread_id: thread.id,
+          sender_id: participant_a,
+          text: "Initial message"
+        })
 
       # Perform many rapid invalidations and reads
-      tasks = for i <- 1..50 do
-        Task.async(fn ->
-          case rem(i, 3) do
-            0 ->
-              Cache.invalidate_messages(thread.id)
-              Cache.invalidate_participants(thread.id)
-              Cache.invalidate_thread_meta(thread.id)
-              :invalidated
+      tasks =
+        for i <- 1..50 do
+          Task.async(fn ->
+            case rem(i, 3) do
+              0 ->
+                Cache.invalidate_messages(thread.id)
+                Cache.invalidate_participants(thread.id)
+                Cache.invalidate_thread_meta(thread.id)
+                :invalidated
 
-            1 ->
-              Cache.get_messages(thread.id)
+              1 ->
+                Cache.get_messages(thread.id)
 
-            2 ->
-              Chat.dispatch_message(%{
-                thread_id: thread.id,
-                sender_id: if(rem(i, 2) == 0, do: participant_a, else: participant_b),
-                text: "Invalidation test #{i}"
-              })
-          end
-        end)
-      end
+              2 ->
+                Chat.dispatch_message(%{
+                  thread_id: thread.id,
+                  sender_id: if(rem(i, 2) == 0, do: participant_a, else: participant_b),
+                  text: "Invalidation test #{i}"
+                })
+            end
+          end)
+        end
 
       results = Task.await_many(tasks, 10_000)
 
@@ -352,8 +380,10 @@ defmodule Fleetlm.Integration.EdgeCasesTest do
       # Cache should be in a valid state (either populated or empty, not corrupted)
       if cached_messages do
         cached_ids = Enum.map(cached_messages, & &1.id) |> MapSet.new()
-        db_ids = Enum.take(final_messages, length(cached_messages))
-                 |> Enum.map(& &1.id) |> MapSet.new()
+
+        db_ids =
+          Enum.take(final_messages, length(cached_messages)) |> Enum.map(& &1.id) |> MapSet.new()
+
         assert MapSet.subset?(cached_ids, db_ids)
       end
     end

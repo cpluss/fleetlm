@@ -17,15 +17,16 @@ defmodule FleetlmWeb.ThreadChannel do
       :ok = PubSub.subscribe(@pubsub, "thread:" <> thread_id)
 
       # Try cache first, fallback to database
-      history = case Cache.get_messages(thread_id, @history_limit) do
-        nil ->
-          thread_id
-          |> Chat.list_thread_messages(limit: @history_limit)
-          |> Enum.reverse()
+      history =
+        case Cache.get_messages(thread_id, @history_limit) do
+          nil ->
+            thread_id
+            |> Chat.list_thread_messages(limit: @history_limit)
+            |> Enum.reverse()
 
-        cached_messages ->
-          cached_messages |> Enum.reverse()
-      end
+          cached_messages ->
+            cached_messages |> Enum.reverse()
+        end
 
       history = Enum.map(history, &serialize_message/1)
 
