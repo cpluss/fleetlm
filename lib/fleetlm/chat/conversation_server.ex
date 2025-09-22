@@ -11,6 +11,7 @@ defmodule Fleetlm.Chat.ConversationServer do
 
   @tail_limit 100
   @registry Fleetlm.Chat.ConversationRegistry
+  @idle_timeout Application.compile_env(:fleetlm, :conversation_idle_ms, 30_000)
 
   ## Public API
 
@@ -26,6 +27,11 @@ defmodule Fleetlm.Chat.ConversationServer do
           {:ok, Event.DmMessage.t()} | {:error, term()}
   def send_message(dm_key, sender_id, recipient_id, text, metadata) do
     GenServer.call(via(dm_key), {:send_message, sender_id, recipient_id, text, metadata})
+  end
+
+  @spec heartbeat(String.t()) :: :ok
+  def heartbeat(dm_key) do
+    GenServer.cast(via(dm_key), :heartbeat)
   end
 
   @spec ensure_open(String.t(), String.t(), String.t(), String.t() | nil) ::
@@ -51,7 +57,8 @@ defmodule Fleetlm.Chat.ConversationServer do
 
     state = %{
       dm: dm,
-      tail: events
+      tail: events,
+      idle_ref: schedule_idle()
     }
 
     {:ok, state}
@@ -59,6 +66,8 @@ defmodule Fleetlm.Chat.ConversationServer do
 
   @impl true
   def handle_call({:ensure_open, initiator_id, other_participant_id, initial_text}, _from, state) do
+    state = reschedule_idle(state)
+
     with true <- DmKey.includes?(state.dm, initiator_id),
          true <- DmKey.includes?(state.dm, other_participant_id),
          trimmed <- normalize_text(initial_text) do
@@ -82,6 +91,7 @@ defmodule Fleetlm.Chat.ConversationServer do
 
   @impl true
   def handle_call({:send_message, sender_id, recipient_id, text, metadata}, _from, state) do
+    state = reschedule_idle(state)
     metadata = metadata || %{}
 
     with true <- DmKey.includes?(state.dm, sender_id),
@@ -110,7 +120,23 @@ defmodule Fleetlm.Chat.ConversationServer do
       |> Enum.reverse()
       |> Enum.take(limit)
 
-    {:reply, events, state}
+    {:reply, events, reschedule_idle(state)}
+  end
+
+  @impl true
+  def handle_cast(:heartbeat, state) do
+    {:noreply, reschedule_idle(state)}
+  end
+
+  @impl true
+  def handle_info(:idle_timeout, state) do
+    {:stop, :normal, state}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    if state[:idle_ref], do: Process.cancel_timer(state.idle_ref)
+    :ok
   end
 
   ## Helpers
@@ -125,7 +151,7 @@ defmodule Fleetlm.Chat.ConversationServer do
         Events.publish_dm_message(event)
         notify_inbox(state, event)
 
-        {:ok, event, new_state}
+        {:ok, event, reschedule_idle(new_state)}
 
       {:error, error} ->
         {:error, error}
@@ -153,4 +179,13 @@ defmodule Fleetlm.Chat.ConversationServer do
   end
 
   defp normalize_text(_), do: nil
+
+  defp schedule_idle do
+    Process.send_after(self(), :idle_timeout, @idle_timeout)
+  end
+
+  defp reschedule_idle(%{idle_ref: ref} = state) do
+    if ref, do: Process.cancel_timer(ref)
+    %{state | idle_ref: schedule_idle()}
+  end
 end

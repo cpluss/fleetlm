@@ -15,8 +15,15 @@ defmodule Fleetlm.Chat.ConversationSupervisor do
   @spec ensure_started(String.t()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(dm_key) do
     case Registry.lookup(Fleetlm.Chat.ConversationRegistry, dm_key) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> DynamicSupervisor.start_child(__MODULE__, {ConversationServer, dm_key})
+      [{pid, _}] ->
+        {:ok, pid}
+
+      [] ->
+        case DynamicSupervisor.start_child(__MODULE__, {ConversationServer, dm_key}) do
+          {:ok, pid} -> {:ok, pid}
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          other -> other
+        end
     end
   end
 

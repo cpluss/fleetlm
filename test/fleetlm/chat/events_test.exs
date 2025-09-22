@@ -13,6 +13,9 @@ defmodule Fleetlm.Chat.EventsTest do
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "participant:" <> user_a)
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "participant:" <> user_b)
 
+      Chat.inbox_snapshot(user_a)
+      Chat.inbox_snapshot(user_b)
+
       {:ok, event} = Chat.send_dm_message(user_a, user_b, "Hello Bob!")
 
       assert_receive {:dm_message, payload}

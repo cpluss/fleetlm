@@ -10,6 +10,7 @@ defmodule Fleetlm.Chat.InboxServer do
 
   @registry Fleetlm.Chat.InboxRegistry
   @flush_interval 200
+  @idle_timeout Application.compile_env(:fleetlm, :inbox_idle_ms, 30_000)
 
   ## Public API
 
@@ -36,6 +37,11 @@ defmodule Fleetlm.Chat.InboxServer do
     GenServer.cast(via(participant_id), {:message, dm_key, event})
   end
 
+  @spec heartbeat(String.t()) :: :ok
+  def heartbeat(participant_id) do
+    GenServer.cast(via(participant_id), :heartbeat)
+  end
+
   ## GenServer callbacks
 
   @impl true
@@ -60,7 +66,8 @@ defmodule Fleetlm.Chat.InboxServer do
        participant_id: participant_id,
        conversations: conversations,
        pending: %{},
-       flush_ref: nil
+       flush_ref: nil,
+       idle_ref: schedule_idle()
      }}
   end
 
@@ -71,7 +78,7 @@ defmodule Fleetlm.Chat.InboxServer do
       |> Enum.map(fn {dm_key, convo} -> to_activity(dm_key, state.participant_id, convo) end)
       |> Enum.sort_by(&{&1.last_message_at || ~N[0000-01-01 00:00:00], &1.dm_key}, :desc)
 
-    {:reply, activities, state}
+    {:reply, activities, reschedule_idle(state)}
   end
 
   @impl true
@@ -92,6 +99,7 @@ defmodule Fleetlm.Chat.InboxServer do
       )
 
     state = %{state | conversations: conversations}
+    state = reschedule_idle(state)
     {:noreply, schedule_flush_if_needed(state, dm_key)}
   end
 
@@ -132,7 +140,13 @@ defmodule Fleetlm.Chat.InboxServer do
       )
 
     state = %{state | conversations: conversations}
+    state = reschedule_idle(state)
     {:noreply, schedule_flush_if_needed(state, dm_key)}
+  end
+
+  @impl true
+  def handle_cast(:heartbeat, state) do
+    {:noreply, reschedule_idle(state)}
   end
 
   @impl true
@@ -141,12 +155,18 @@ defmodule Fleetlm.Chat.InboxServer do
       Events.publish_dm_activity(activity)
     end)
 
-    {:noreply, %{state | pending: %{}, flush_ref: nil}}
+    {:noreply, %{state | pending: %{}, flush_ref: nil} |> reschedule_idle()}
+  end
+
+  @impl true
+  def handle_info(:idle_timeout, state) do
+    {:stop, :normal, state}
   end
 
   @impl true
   def terminate(_reason, state) do
     if state.flush_ref, do: Process.cancel_timer(state.flush_ref)
+    if state[:idle_ref], do: Process.cancel_timer(state.idle_ref)
     :ok
   end
 
@@ -216,4 +236,21 @@ defmodule Fleetlm.Chat.InboxServer do
   defp unread_for(message, participant_id) do
     if message.sender_id == participant_id, do: 0, else: 1
   end
+
+  defp schedule_idle do
+    Process.send_after(self(), :idle_timeout, @idle_timeout)
+  end
+
+  defp reschedule_idle(state) do
+    state
+    |> cancel_idle()
+    |> Map.put(:idle_ref, schedule_idle())
+  end
+
+  defp cancel_idle(%{idle_ref: ref} = state) when is_reference(ref) do
+    Process.cancel_timer(ref)
+    %{state | idle_ref: nil}
+  end
+
+  defp cancel_idle(state), do: %{state | idle_ref: nil}
 end

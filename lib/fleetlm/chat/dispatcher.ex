@@ -27,9 +27,7 @@ defmodule Fleetlm.Chat.Dispatcher do
   def open_conversation(participant_a, participant_b, initial_text \\ nil) do
     dm_key = DmKey.build(participant_a, participant_b)
 
-    with {:ok, _pid} <- ConversationSupervisor.ensure_started(dm_key),
-         {:ok, _} <- InboxSupervisor.ensure_started(participant_a),
-         {:ok, _} <- InboxSupervisor.ensure_started(participant_b) do
+    with {:ok, _pid} <- ConversationSupervisor.ensure_started(dm_key) do
       ConversationServer.ensure_open(dm_key, participant_a, participant_b, initial_text)
     end
   end
@@ -38,9 +36,7 @@ defmodule Fleetlm.Chat.Dispatcher do
           {:ok, Fleetlm.Chat.Event.DmMessage.t()} | {:error, term()}
   def send_message(attrs) when is_map(attrs) do
     with {:ok, dm} <- resolve_dm(attrs),
-         {:ok, _pid} <- ConversationSupervisor.ensure_started(dm.key),
-         {:ok, _} <- InboxSupervisor.ensure_started(dm.first),
-         {:ok, _} <- InboxSupervisor.ensure_started(dm.second) do
+         {:ok, _pid} <- ConversationSupervisor.ensure_started(dm.key) do
       metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata") || %{}
       text = Map.get(attrs, :text) || Map.get(attrs, "text")
       sender_id = Map.fetch!(attrs, :sender_id)
@@ -64,9 +60,8 @@ defmodule Fleetlm.Chat.Dispatcher do
 
   @spec inbox_snapshot(String.t()) :: [Fleetlm.Chat.Event.DmActivity.t()]
   def inbox_snapshot(participant_id) do
-    with {:ok, _pid} <- InboxSupervisor.ensure_started(participant_id) do
-      InboxServer.snapshot(participant_id)
-    else
+    case ensure_inbox(participant_id) do
+      {:ok, _pid} -> InboxServer.snapshot(participant_id)
       {:error, reason} -> raise "failed to load inbox: #{inspect(reason)}"
     end
   end
@@ -84,6 +79,43 @@ defmodule Fleetlm.Chat.Dispatcher do
         event = Fleetlm.Chat.Event.BroadcastMessage.from_message(message)
         Fleetlm.Chat.Events.publish_broadcast_message(event)
         {:ok, event}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec ensure_conversation(String.t()) :: {:ok, DmKey.t()} | {:error, term()}
+  def ensure_conversation(dm_key) do
+    with {:ok, dm} <- resolve_dm(%{dm_key: dm_key}),
+         {:ok, _pid} <- ConversationSupervisor.ensure_started(dm.key) do
+      {:ok, dm}
+    end
+  end
+
+  @spec ensure_inbox(String.t()) :: {:ok, pid()} | {:error, term()}
+  def ensure_inbox(participant_id) do
+    InboxSupervisor.ensure_started(participant_id)
+  end
+
+  @spec heartbeat_conversation(String.t()) :: :ok | {:error, term()}
+  def heartbeat_conversation(dm_key) do
+    case ConversationSupervisor.ensure_started(dm_key) do
+      {:ok, _pid} ->
+        ConversationServer.heartbeat(dm_key)
+        :ok
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @spec heartbeat_inbox(String.t()) :: :ok | {:error, term()}
+  def heartbeat_inbox(participant_id) do
+    case InboxSupervisor.ensure_started(participant_id) do
+      {:ok, _pid} ->
+        InboxServer.heartbeat(participant_id)
+        :ok
 
       {:error, reason} ->
         {:error, reason}

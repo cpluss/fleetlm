@@ -1,10 +1,8 @@
 defmodule FleetlmWeb.UserSocket do
   use Phoenix.Socket
 
-  channel "thread:*", FleetlmWeb.ThreadChannel
-  channel "dm:*", FleetlmWeb.ThreadChannel
-  channel "broadcast", FleetlmWeb.ThreadChannel
-  channel "participant:*", FleetlmWeb.ParticipantChannel
+  channel "conversation", FleetlmWeb.ConversationChannel
+  channel "inbox:*", FleetlmWeb.InboxChannel
 
   @impl true
   def connect(%{"participant_id" => participant_id}, socket, _connect_info)

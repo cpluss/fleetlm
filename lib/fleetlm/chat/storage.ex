@@ -1,7 +1,7 @@
 defmodule Fleetlm.Chat.Storage do
   @moduledoc """
-  Data-access layer for chat commands. All database interactions flow through
-  this module and are wrapped with the circuit breaker.
+  Storage layer for all chat data. All database interactions flow through this module
+  and are wrapped in order to protect against database failures.
   """
 
   import Ecto.Query, warn: false

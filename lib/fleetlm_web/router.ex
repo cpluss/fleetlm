@@ -20,10 +20,12 @@ defmodule FleetlmWeb.Router do
     get "/", PageController, :home
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", FleetlmWeb do
-  #   pipe_through :api
-  # end
+  scope "/api", FleetlmWeb do
+    pipe_through :api
+
+    get "/conversations/:dm_key/messages", ConversationController, :index
+    post "/conversations/:dm_key/messages", ConversationController, :create
+  end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
   if Application.compile_env(:fleetlm, :dev_routes) do

@@ -15,8 +15,15 @@ defmodule Fleetlm.Chat.InboxSupervisor do
   @spec ensure_started(String.t()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(participant_id) do
     case Registry.lookup(Fleetlm.Chat.InboxRegistry, participant_id) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> DynamicSupervisor.start_child(__MODULE__, {InboxServer, participant_id})
+      [{pid, _}] ->
+        {:ok, pid}
+
+      [] ->
+        case DynamicSupervisor.start_child(__MODULE__, {InboxServer, participant_id}) do
+          {:ok, pid} -> {:ok, pid}
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          other -> other
+        end
     end
   end
 

@@ -1,4 +1,4 @@
-Enum.each(Path.wildcard(Path.join(__DIR__, "support/**/*.ex")), &Code.require_file/1)
+{:ok, _} = Application.ensure_all_started(:fleetlm)
 
 ExUnit.start()
 Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, :manual)
