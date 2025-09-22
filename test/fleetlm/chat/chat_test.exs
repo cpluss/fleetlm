@@ -52,9 +52,15 @@ defmodule Fleetlm.ChatTest do
       threads = Chat.get_dm_threads_for_user(user_a)
 
       assert length(threads) == 2
+
+      # Check that we get dm_keys and other participant IDs
+      dm_keys = Enum.map(threads, & &1.dm_key)
       participant_ids = Enum.map(threads, & &1.other_participant_id)
+
       assert user_b in participant_ids
       assert user_c in participant_ids
+      assert Chat.generate_dm_key(user_a, user_b) in dm_keys
+      assert Chat.generate_dm_key(user_a, user_c) in dm_keys
     end
   end
 

@@ -9,6 +9,10 @@ defmodule Fleetlm.Chat do
 
   ## DM Operations
 
+  def generate_dm_key(participant_a, participant_b) do
+    DmMessage.generate_dm_key(participant_a, participant_b)
+  end
+
   def send_dm_message(sender_id, recipient_id, text, metadata \\ %{}) do
     attrs = %{
       sender_id: sender_id,
@@ -24,12 +28,22 @@ defmodule Fleetlm.Chat do
 
   def get_dm_conversation(user_a_id, user_b_id, opts \\ []) do
     limit = limit_from_opts(opts)
+    dm_key = DmMessage.generate_dm_key(user_a_id, user_b_id)
 
     DmMessage
-    |> where([m],
-        (m.sender_id == ^user_a_id and m.recipient_id == ^user_b_id) or
-        (m.sender_id == ^user_b_id and m.recipient_id == ^user_a_id)
-      )
+    |> where([m], m.dm_key == ^dm_key)
+    |> order_by([m], desc: m.created_at)
+    |> maybe_before(opts[:before])
+    |> maybe_after(opts[:after])
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  def get_dm_conversation_by_key(dm_key, opts \\ []) do
+    limit = limit_from_opts(opts)
+
+    DmMessage
+    |> where([m], m.dm_key == ^dm_key)
     |> order_by([m], desc: m.created_at)
     |> maybe_before(opts[:before])
     |> maybe_after(opts[:after])
@@ -40,38 +54,33 @@ defmodule Fleetlm.Chat do
   def get_dm_threads_for_user(user_id, opts \\ []) do
     limit = limit_from_opts(opts)
 
-    # Get distinct conversations with last message timestamp
+    # Much simpler query using dm_key
     query = """
-    WITH conversations AS (
-      SELECT
-        CASE WHEN sender_id = $1 THEN recipient_id ELSE sender_id END as other_participant_id,
-        created_at,
-        text
+    WITH latest_by_dm_key AS (
+      SELECT DISTINCT
+        dm_key,
+        FIRST_VALUE(created_at) OVER (PARTITION BY dm_key ORDER BY created_at DESC) as last_message_at,
+        FIRST_VALUE(text) OVER (PARTITION BY dm_key ORDER BY created_at DESC) as last_message_text,
+        FIRST_VALUE(sender_id) OVER (PARTITION BY dm_key ORDER BY created_at DESC) as last_sender_id,
+        FIRST_VALUE(recipient_id) OVER (PARTITION BY dm_key ORDER BY created_at DESC) as last_recipient_id
       FROM dm_messages
       WHERE sender_id = $1 OR recipient_id = $1
-    ),
-    latest_messages AS (
-      SELECT
-        other_participant_id,
-        MAX(created_at) as last_message_at
-      FROM conversations
-      GROUP BY other_participant_id
     )
     SELECT
-      lm.other_participant_id,
-      lm.last_message_at,
-      c.text as last_message_text
-    FROM latest_messages lm
-    JOIN conversations c ON c.other_participant_id = lm.other_participant_id
-                        AND c.created_at = lm.last_message_at
-    ORDER BY lm.last_message_at DESC
+      dm_key,
+      CASE WHEN last_sender_id = $1 THEN last_recipient_id ELSE last_sender_id END as other_participant_id,
+      last_message_at,
+      last_message_text
+    FROM latest_by_dm_key
+    ORDER BY last_message_at DESC
     LIMIT $2
     """
 
     case Repo.query(query, [user_id, limit]) do
       {:ok, result} ->
-        Enum.map(result.rows, fn [other_participant_id, last_message_at, last_message_text] ->
+        Enum.map(result.rows, fn [dm_key, other_participant_id, last_message_at, last_message_text] ->
           %{
+            dm_key: dm_key,
             other_participant_id: other_participant_id,
             last_message_at: last_message_at,
             last_message_text: last_message_text

@@ -7,34 +7,30 @@ defmodule FleetlmWeb.ThreadChannel do
   @pubsub Fleetlm.PubSub
   @history_limit 40
 
+  # DM Channel: dm:user:alice:user:bob
   @impl true
-  def join("dm:" <> dm_participants, _params, socket) do
+  def join("dm:" <> dm_key, _params, socket) do
     participant_id = socket.assigns.participant_id
 
-    case parse_dm_participants(dm_participants) do
-      {:ok, user_a, user_b} when participant_id in [user_a, user_b] ->
-        :ok = PubSub.subscribe(@pubsub, "dm:" <> dm_participants)
+    # Verify participant is part of this DM by checking if they appear in the dm_key
+    if participant_in_dm?(participant_id, dm_key) do
+      :ok = PubSub.subscribe(@pubsub, "dm:" <> dm_key)
 
-        # Get conversation history
-        history =
-          user_a
-          |> Chat.get_dm_conversation(user_b, limit: @history_limit)
-          |> Enum.reverse()
-          |> Enum.map(&serialize_dm_message/1)
+      # Get conversation history using dm_key
+      history =
+        dm_key
+        |> Chat.get_dm_conversation_by_key(limit: @history_limit)
+        |> Enum.reverse()
+        |> Enum.map(&serialize_dm_message/1)
 
-        other_participant_id = if participant_id == user_a, do: user_b, else: user_a
-
-        {:ok, %{"messages" => history, "other_participant_id" => other_participant_id},
-         assign(socket, :dm_participants, {user_a, user_b})}
-
-      {:ok, _user_a, _user_b} ->
-        {:error, %{reason: "unauthorized"}}
-
-      {:error, reason} ->
-        {:error, %{reason: reason}}
+      {:ok, %{"messages" => history, "dm_key" => dm_key},
+       assign(socket, :dm_key, dm_key)}
+    else
+      {:error, %{reason: "unauthorized"}}
     end
   end
 
+  # Broadcast Channel: broadcast
   @impl true
   def join("broadcast", _params, socket) do
     :ok = PubSub.subscribe(@pubsub, "broadcast")
@@ -53,9 +49,9 @@ defmodule FleetlmWeb.ThreadChannel do
     sender_id = socket.assigns.participant_id
 
     cond do
-      socket.assigns[:dm_participants] ->
-        {user_a, user_b} = socket.assigns.dm_participants
-        recipient_id = if sender_id == user_a, do: user_b, else: user_a
+      socket.assigns[:dm_key] ->
+        dm_key = socket.assigns.dm_key
+        recipient_id = get_other_participant(dm_key, sender_id)
 
         attrs = %{
           sender_id: sender_id,
@@ -66,8 +62,8 @@ defmodule FleetlmWeb.ThreadChannel do
 
         case Chat.dispatch_message(attrs) do
           {:ok, message} ->
-            # Broadcast to DM channel
-            PubSub.broadcast(@pubsub, "dm:#{user_a}|#{user_b}", {:dm_message, message})
+            # Broadcast to DM channel using dm_key
+            PubSub.broadcast(@pubsub, "dm:" <> dm_key, {:dm_message, message})
             {:reply, {:ok, serialize_dm_message(message)}, socket}
 
           {:error, reason} ->
@@ -108,13 +104,19 @@ defmodule FleetlmWeb.ThreadChannel do
     {:noreply, socket}
   end
 
-  defp parse_dm_participants(participants_string) do
-    case String.split(participants_string, "|", parts: 2) do
-      [user_a, user_b] when user_a != user_b ->
-        {:ok, user_a, user_b}
+  defp participant_in_dm?(participant_id, dm_key) do
+    # dm_key format: "participant_a:participant_b" (sorted)
+    String.contains?(dm_key, participant_id)
+  end
+
+  defp get_other_participant(dm_key, participant_id) do
+    # Split dm_key and return the participant that's not the current one
+    case String.split(dm_key, ":", parts: 2) do
+      [participant_a, participant_b] ->
+        if participant_a == participant_id, do: participant_b, else: participant_a
 
       _ ->
-        {:error, "invalid DM participants format, expected 'user_a|user_b'"}
+        raise "Invalid dm_key format: #{dm_key}"
     end
   end
 
@@ -123,6 +125,7 @@ defmodule FleetlmWeb.ThreadChannel do
       "id" => message.id,
       "sender_id" => message.sender_id,
       "recipient_id" => message.recipient_id,
+      "dm_key" => message.dm_key,
       "text" => message.text,
       "metadata" => message.metadata,
       "created_at" => encode_datetime(message.created_at)
