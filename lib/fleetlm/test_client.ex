@@ -516,7 +516,8 @@ defmodule Fleetlm.TestClient do
         api_url: api_url,
         format: format,
         input_pid: input_pid,
-        closing?: false
+        closing?: false,
+        seen_message_ids: MapSet.new()
       })
 
       {:ok, :stream}
@@ -566,7 +567,16 @@ defmodule Fleetlm.TestClient do
 
         listen_loop(%{state | dm_keys: MapSet.put(state.dm_keys, dm_key)})
 
-      {:socket, {:dm_message, payload}} ->
+      {:socket, {:conversation_message, payload}} ->
+        dm_key = payload["dm_key"]
+
+        if MapSet.member?(state.dm_keys, dm_key) do
+          emit(%{event: "message.live", dm_key: dm_key, message: payload}, state.format)
+        end
+
+        listen_loop(state)
+
+      {:socket, {:inbox_message, payload}} ->
         dm_key = payload["dm_key"]
 
         if MapSet.member?(state.dm_keys, dm_key) do
@@ -629,11 +639,22 @@ defmodule Fleetlm.TestClient do
 
         chat_loop(state)
 
-      {:socket, {:dm_message, payload}} ->
+      {:socket, {:conversation_message, payload}} ->
         if payload["dm_key"] == state.dm_key do
-          emit(%{event: "message.live", dm_key: state.dm_key, message: payload}, state.format)
+          # Deduplicate by message ID to handle duplicate conversation channel messages
+          message_id = payload["id"]
+          unless MapSet.member?(state.seen_message_ids, message_id) do
+            emit(%{event: "message.live", dm_key: state.dm_key, message: payload}, state.format)
+            chat_loop(%{state | seen_message_ids: MapSet.put(state.seen_message_ids, message_id)})
+          else
+            chat_loop(state)
+          end
+        else
+          chat_loop(state)
         end
 
+      {:socket, {:inbox_message, _payload}} ->
+        # Ignore inbox messages in chat mode - these are just metadata/previews
         chat_loop(state)
 
       {:socket, {:broadcast, _payload}} ->
@@ -1129,7 +1150,7 @@ defmodule Fleetlm.TestClient.Socket do
         {:ok, state}
 
       {:ok, %{"topic" => "inbox:" <> _ = _topic, "event" => "message", "payload" => payload}} ->
-        send(state.owner, {:socket, {:dm_message, payload}})
+        send(state.owner, {:socket, {:inbox_message, payload}})
         {:ok, state}
 
       {:ok,
@@ -1225,7 +1246,7 @@ defmodule Fleetlm.TestClient.Socket do
   end
 
   defp dispatch_message(%{"dm_key" => _} = payload, state) do
-    send(state.owner, {:socket, {:dm_message, payload}})
+    send(state.owner, {:socket, {:conversation_message, payload}})
     {:ok, state}
   end
 
