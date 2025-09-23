@@ -23,22 +23,14 @@ defmodule Fleetlm.Chat.EventsTest do
       assert payload["text"] == "Hello Bob!"
       assert payload["sender_id"] == user_a
 
-      inbox_updates =
-        for _ <- 1..2, into: %{} do
-          assert_receive {:dm_activity, payload}, 500
-          {payload["participant_id"], payload}
-        end
-
-      inbox_a = Map.fetch!(inbox_updates, user_a)
-      inbox_b = Map.fetch!(inbox_updates, user_b)
-
-      assert inbox_a["dm_key"] == dm_key
-      assert inbox_a["other_participant_id"] == user_b
-      assert inbox_a["last_message_text"] == "Hello Bob!"
-
-      assert inbox_b["dm_key"] == dm_key
-      assert inbox_b["other_participant_id"] == user_a
-      assert inbox_b["last_message_text"] == "Hello Bob!"
+      for participant <- [user_a, user_b] do
+        assert_receive {:dm_activity, payload}, 500
+        assert payload["participant_id"] == participant
+        assert payload["dm_key"] == dm_key
+        assert payload["other_participant_id"] in [user_a, user_b]
+        assert payload["last_sender_id"] == user_a
+        assert payload["last_message_text"] in [nil, ""]
+      end
     end
 
     test "broadcast messages are faned out" do

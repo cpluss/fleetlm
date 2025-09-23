@@ -4,14 +4,7 @@ defmodule Fleetlm.Chat.Dispatcher do
   open conversations, send messages, and get conversation history in one canonical locatian & way.
   """
 
-  alias Fleetlm.Chat.{
-    ConversationServer,
-    ConversationSupervisor,
-    DmKey,
-    InboxServer,
-    InboxSupervisor,
-    Storage
-  }
+  alias Fleetlm.Chat.{ConversationServer, ConversationSupervisor, DmKey, Event, Storage}
 
   @type send_message_attrs :: %{
           required(:sender_id) => String.t(),
@@ -60,10 +53,18 @@ defmodule Fleetlm.Chat.Dispatcher do
 
   @spec inbox_snapshot(String.t()) :: [Fleetlm.Chat.Event.DmActivity.t()]
   def inbox_snapshot(participant_id) do
-    case ensure_inbox(participant_id) do
-      {:ok, _pid} -> InboxServer.snapshot(participant_id)
-      {:error, reason} -> raise "failed to load inbox: #{inspect(reason)}"
-    end
+    Storage.list_dm_threads(participant_id)
+    |> Enum.map(fn thread ->
+      %Event.DmActivity{
+        participant_id: participant_id,
+        dm_key: thread.dm_key,
+        other_participant_id: thread.other_participant_id,
+        last_sender_id: nil,
+        last_message_text: nil,
+        last_message_at: thread.last_message_at,
+        unread_count: 0
+      }
+    end)
   end
 
   @spec list_broadcast_messages(keyword()) :: [Fleetlm.Chat.BroadcastMessage.t()]
@@ -93,28 +94,11 @@ defmodule Fleetlm.Chat.Dispatcher do
     end
   end
 
-  @spec ensure_inbox(String.t()) :: {:ok, pid()} | {:error, term()}
-  def ensure_inbox(participant_id) do
-    InboxSupervisor.ensure_started(participant_id)
-  end
-
   @spec heartbeat_conversation(String.t()) :: :ok | {:error, term()}
   def heartbeat_conversation(dm_key) do
     case ConversationSupervisor.ensure_started(dm_key) do
       {:ok, _pid} ->
         ConversationServer.heartbeat(dm_key)
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @spec heartbeat_inbox(String.t()) :: :ok | {:error, term()}
-  def heartbeat_inbox(participant_id) do
-    case InboxSupervisor.ensure_started(participant_id) do
-      {:ok, _pid} ->
-        InboxServer.heartbeat(participant_id)
         :ok
 
       {:error, reason} ->

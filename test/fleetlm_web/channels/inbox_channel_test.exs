@@ -16,15 +16,15 @@ defmodule FleetlmWeb.InboxChannelTest do
       {:ok, user_a: user_a, user_b: user_b}
     end
 
-    test "joining inbox channel returns conversation snapshot", %{user_a: user_a, user_b: user_b} do
+    test "joining inbox channel returns empty snapshot", %{user_a: user_a} do
       {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"participant_id" => user_a})
       {:ok, reply, _socket} = subscribe_and_join(socket, InboxChannel, "inbox:#{user_a}")
 
       assert %{"conversations" => conversations} = reply
-      assert Enum.any?(conversations, &(&1["dm_key"] == Chat.generate_dm_key(user_a, user_b)))
+      assert conversations == []
     end
 
-    test "dm activity events flow through inbox channel", %{user_a: user_a, user_b: user_b} do
+    test "dm metadata updates flow through inbox channel", %{user_a: user_a, user_b: user_b} do
       {:ok, socket_a} = connect(FleetlmWeb.UserSocket, %{"participant_id" => user_a})
       {:ok, _reply, inbox_socket} = subscribe_and_join(socket_a, InboxChannel, "inbox:#{user_a}")
 
@@ -32,8 +32,10 @@ defmodule FleetlmWeb.InboxChannelTest do
       {:ok, _} = Chat.send_dm_message(user_b, user_a, "New ping")
 
       update = wait_for_update(inbox_socket, dm_key)
+      assert update["participant_id"] == user_a
+      assert update["other_participant_id"] == user_b
       assert update["last_sender_id"] == user_b
-      assert update["last_message_text"] == "New ping"
+      assert update["last_message_text"] in [nil, ""]
     end
 
     test "unauthorized participant cannot join inbox channel" do

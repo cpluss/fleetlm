@@ -23,19 +23,6 @@ defmodule Fleetlm.Chat.Events do
   end
 
   @doc """
-  Broadcast inbox activity updates to a participant channel.
-  """
-  @spec publish_dm_activity(Event.DmActivity.t()) :: :ok
-  def publish_dm_activity(%Event.DmActivity{} = event) do
-    PubSub.broadcast(@pubsub, "participant:" <> event.participant_id, {
-      :dm_activity,
-      Event.DmActivity.to_payload(event)
-    })
-
-    :ok
-  end
-
-  @doc """
   Broadcast a system-wide broadcast message event.
   """
   @spec publish_broadcast_message(Event.BroadcastMessage.t()) :: :ok
@@ -43,6 +30,29 @@ defmodule Fleetlm.Chat.Events do
     PubSub.broadcast(@pubsub, "broadcast", {
       :broadcast_message,
       Event.BroadcastMessage.to_payload(event)
+    })
+
+    :ok
+  end
+
+  @doc """
+  Broadcast participant-scoped activity metadata for inbox consumers.
+  """
+  @spec publish_dm_activity(Event.DmMessage.t(), String.t(), String.t()) :: :ok
+  def publish_dm_activity(%Event.DmMessage{} = event, participant_id, other_participant_id) do
+    activity = %Event.DmActivity{
+      participant_id: participant_id,
+      dm_key: event.dm_key,
+      other_participant_id: other_participant_id,
+      last_sender_id: event.sender_id,
+      last_message_text: nil,
+      last_message_at: event.created_at,
+      unread_count: 0
+    }
+
+    PubSub.broadcast(@pubsub, "participant:" <> participant_id, {
+      :dm_activity,
+      Event.DmActivity.to_payload(activity)
     })
 
     :ok

@@ -7,7 +7,7 @@ defmodule Fleetlm.Chat.ConversationServer do
 
   use GenServer, restart: :transient
 
-  alias Fleetlm.Chat.{DmKey, Event, Events, InboxServer, Storage}
+  alias Fleetlm.Chat.{DmKey, Event, Events, Storage}
   alias Fleetlm.Telemetry.RuntimeCounters
 
   @tail_limit 100
@@ -86,8 +86,6 @@ defmodule Fleetlm.Chat.ConversationServer do
             {:reply, {:error, reason}, state}
         end
       else
-        # Ensure inbox entries are warmed even without initial message
-        notify_inbox(state, nil)
         {:reply, {:ok, %{dm_key: state.dm.key, initial_message: nil}}, state}
       end
     else
@@ -160,7 +158,8 @@ defmodule Fleetlm.Chat.ConversationServer do
         new_state = put_in(state.tail, update_tail(state.tail, event))
 
         Events.publish_dm_message(event)
-        notify_inbox(state, event)
+        Events.publish_dm_activity(event, state.dm.first, state.dm.second)
+        Events.publish_dm_activity(event, state.dm.second, state.dm.first)
 
         {:ok, event, reschedule_idle(new_state)}
 
@@ -172,16 +171,6 @@ defmodule Fleetlm.Chat.ConversationServer do
   defp update_tail(tail, event) do
     [event | tail]
     |> Enum.take(@tail_limit)
-  end
-
-  defp notify_inbox(state, nil) do
-    InboxServer.touch_conversation(state.dm.first, state.dm.key, state.dm.second)
-    InboxServer.touch_conversation(state.dm.second, state.dm.key, state.dm.first)
-  end
-
-  defp notify_inbox(state, %Event.DmMessage{} = event) do
-    InboxServer.record_message(state.dm.first, state.dm.key, event)
-    InboxServer.record_message(state.dm.second, state.dm.key, event)
   end
 
   defp emit_stopped(state, reason) do

@@ -1,262 +1,447 @@
 defmodule Fleetlm.TestClient do
   @moduledoc """
-  Lightweight Phoenix channel client for manual testing.
+  Minimal CLI utility for chatting with the FleetLM runtime.
 
-  Usage:
+  Features:
+    * Connects to Phoenix channels for real-time updates
+    * Sends DMs via the REST API
+    * Optional broadcast helper (`! message`)
 
-      mix run scripts/test_client.exs -- --participant-id <uuid>
-
-  Starts a websocket connection, joins the participant channel, and
-  automatically subscribes to threads as metadata updates arrive.
+  Input commands:
+    @recipient message   – direct message (recipient like `alice` or `user:alice`)
+    ! message             – broadcast
+    /sub dm_key           – subscribe to a DM by key
+    /history target       – fetch last 40 messages against a recipient or dm_key
+    /help                 – show commands
+    /quit                 – exit
   """
 
+  alias Fleetlm.Chat
   alias Fleetlm.TestClient.Socket
 
+  @default_socket_url "ws://localhost:4000/socket/websocket"
+  @default_api_url "http://localhost:4000/api"
+
   def main(args) do
-    {opts, rest, _} =
+    {opts, _rest, _invalid} =
       OptionParser.parse(args,
-        switches: [participant_id: :string, url: :string],
-        aliases: [p: :participant_id, u: :url]
+        switches: [participant_id: :string, socket_url: :string, api_url: :string],
+        aliases: [p: :participant_id, s: :socket_url, a: :api_url]
       )
 
-    extras = parse_positional_args(rest)
-
     participant_id =
-      opts[:participant_id] || Map.get(extras, "participant_id") ||
-        System.get_env("PARTICIPANT_ID") || Ecto.UUID.generate()
+      (opts[:participant_id] || System.get_env("PARTICIPANT_ID") || random_participant())
+      |> normalize_participant()
 
-    base_url =
-      opts[:url] || Map.get(extras, "url") ||
-        System.get_env("TEST_CLIENT_SOCKET_URL") ||
-        "ws://localhost:4000/socket/websocket"
+    socket_url =
+      opts[:socket_url] || System.get_env("TEST_CLIENT_SOCKET_URL") || @default_socket_url
 
-    url = build_url(base_url, participant_id)
+    api_url = opts[:api_url] || System.get_env("TEST_CLIENT_API_URL") || @default_api_url
+    api_url = String.trim_trailing(api_url, "/")
 
-    name = Socket.name(participant_id)
+    {:ok, socket} = Socket.start_link(socket_url, participant_id: participant_id, owner: self())
 
-    case Socket.start_link(url, participant_id: participant_id, owner: self(), name: name) do
-      {:ok, pid} ->
-        IO.puts("\nConnected as #{participant_id}")
+    input_pid = spawn_link(fn -> input_loop(self()) end)
 
-        IO.puts(
-          "Commands: list | dm <participant_id> [message] | send <dm_key> <message> | read <dm_key> | quit\n"
-        )
+    init_state = %{
+      participant_id: participant_id,
+      socket: socket,
+      api_url: api_url,
+      subscriptions: MapSet.new(),
+      input_pid: input_pid
+    }
 
-        input_loop(pid)
-
-      {:error, {:already_started, _}} ->
-        IO.puts("Client already running for #{participant_id}, reusing process")
-
-        case Socket.whereis(participant_id) do
-          nil -> Mix.raise("client process not found")
-          pid -> input_loop(pid)
-        end
-
-      {:error, reason} ->
-        Mix.raise("failed to start client: #{inspect(reason)}")
-    end
+    print_banner(participant_id, socket_url, api_url)
+    event_loop(init_state)
   end
 
-  defp build_url(url, participant_id) do
-    uri = URI.parse(url)
-
-    params =
-      (uri.query || "")
-      |> URI.decode_query(%{})
-      |> Map.put("participant_id", participant_id)
-      |> URI.encode_query()
-
-    %{uri | query: params} |> URI.to_string()
-  end
-
-  defp input_loop(client) do
-    case IO.gets("> ") do
-      :eof ->
-        WebSockex.cast(client, :stop)
-        :ok
-
-      {:error, _} ->
-        WebSockex.cast(client, :stop)
-        :ok
-
-      line ->
-        line
-        |> String.trim()
-        |> handle_command(client)
-
-        input_loop(client)
-    end
-  end
-
-  defp handle_command("", _client), do: :ok
-
-  defp handle_command("help", _client) do
-    IO.puts(
-      "Commands: list | dm <participant_id> [message] | send <dm_key> <message> | read <dm_key> | quit"
-    )
-  end
-
-  defp handle_command("list", client) do
-    WebSockex.cast(client, {:list, self()})
-
+  defp event_loop(state) do
     receive do
-      {:dm_list, rows} ->
-        Enum.each(rows, &IO.puts/1)
-    after
-      1_000 -> IO.puts("timeout waiting for list reply")
+      {:input, :eof} ->
+        Socket.stop(state.socket)
+        :ok
+
+      {:input, line} ->
+        state
+        |> handle_input(line)
+        |> event_loop()
+
+      {:socket, {:connected, url}} ->
+        client_log("websocket connected to #{url}")
+        event_loop(state)
+
+      {:socket, :conversation_ready} ->
+        client_log("conversation channel joined")
+        flush_pending_subscriptions(state) |> event_loop()
+
+      {:socket, :inbox_ready} ->
+        client_log("inbox channel joined")
+        event_loop(state)
+
+      {:socket, {:subscribed, dm_key, history}} ->
+        client_log("subscribed to #{dm_key} (#{length(history)} messages)")
+        Enum.each(history, &print_message(&1, :history))
+        event_loop(put_in(state.subscriptions, MapSet.put(state.subscriptions, dm_key)))
+
+      {:socket, {:dm_message, payload}} ->
+        print_message(payload, :live)
+        event_loop(state)
+
+      {:socket, {:broadcast, payload}} ->
+        print_broadcast(payload)
+        event_loop(state)
+
+      {:socket, {:inbox_update, update}} ->
+        print_inbox(update)
+        event_loop(state)
+
+      {:socket, {:error, context, reason}} ->
+        client_log("error #{context}: #{inspect(reason)}")
+        event_loop(state)
+
+      other ->
+        client_log("unhandled #{inspect(other)}")
+        event_loop(state)
     end
   end
 
-  defp handle_command("quit", client) do
-    WebSockex.cast(client, :stop)
+  defp handle_input(state, line)
+
+  defp handle_input(state, "") do
+    state
+  end
+
+  defp handle_input(state, "/help") do
+    print_help()
+    state
+  end
+
+  defp handle_input(state, "/quit") do
+    Socket.stop(state.socket)
+    Process.exit(state.input_pid, :normal)
     System.halt(0)
   end
 
-  defp handle_command("read " <> rest, client) do
-    dm_key = String.trim(rest)
+  defp handle_input(state, "/sub " <> dm_key) do
+    dm_key = String.trim(dm_key)
 
-    if dm_key == "" do
-      IO.puts("usage: read <dm_key>")
+    cond do
+      dm_key == "" ->
+        client_log("usage: /sub <dm_key>")
+        state
+
+      MapSet.member?(state.subscriptions, dm_key) ->
+        client_log("already subscribed to #{dm_key}")
+        state
+
+      true ->
+        Socket.subscribe(state.socket, dm_key)
+        update_subscriptions(state, dm_key)
+    end
+  end
+
+  defp handle_input(state, "/history " <> target) do
+    target = String.trim(target)
+
+    dm_key =
+      cond do
+        target == "" ->
+          nil
+
+        String.contains?(target, ":") && length(String.split(target, ":")) >= 4 ->
+          target
+
+        true ->
+          recipient = normalize_participant(target)
+          Chat.generate_dm_key(state.participant_id, recipient)
+      end
+
+    case dm_key do
+      nil ->
+        client_log("usage: /history <recipient|dm_key>")
+        state
+
+      dm_key ->
+        fetch_history(state, dm_key)
+        state
+    end
+  end
+
+  defp handle_input(state, "@" <> rest) do
+    case String.split(rest, ~r/\s+/, parts: 2, trim: true) do
+      [recipient, message] when message not in [nil, ""] ->
+        recipient = normalize_participant(recipient)
+        dm_key = Chat.generate_dm_key(state.participant_id, recipient)
+        state = ensure_subscription(state, dm_key)
+
+        case send_dm(state.api_url, dm_key, state.participant_id, message) do
+          {:ok, payload} ->
+            print_message(payload, :outgoing)
+            state
+
+          {:error, reason} ->
+            client_log("failed to send: #{reason}")
+            state
+        end
+
+      _ ->
+        client_log("usage: @recipient message")
+        state
+    end
+  end
+
+  defp handle_input(state, "!" <> message) do
+    message = String.trim(message)
+
+    if message == "" do
+      client_log("usage: ! message")
+      state
     else
-      WebSockex.cast(client, {:mark_read, dm_key})
+      state = ensure_subscription(state, "broadcast")
+
+      case send_broadcast(state.api_url, state.participant_id, message) do
+        {:ok, payload} ->
+          print_broadcast(Map.put(payload, "sender_id", state.participant_id))
+          state
+
+        {:error, reason} ->
+          client_log("failed to broadcast: #{reason}")
+          state
+      end
     end
   end
 
-  defp handle_command("dm " <> rest, client) do
-    case String.split(rest, ~r/\s+/, parts: 2) do
-      [participant_id] when participant_id not in [nil, ""] ->
-        WebSockex.cast(client, {:create_dm, participant_id, nil})
+  defp handle_input(state, line) do
+    client_log("unknown command: #{line}")
+    state
+  end
 
-      [participant_id, message]
-      when participant_id not in [nil, ""] and message not in [nil, ""] ->
-        WebSockex.cast(client, {:create_dm, participant_id, message})
-
-      _ ->
-        IO.puts("usage: dm <participant_id> [message]")
+  defp ensure_subscription(state, dm_key) do
+    if MapSet.member?(state.subscriptions, dm_key) do
+      state
+    else
+      Socket.subscribe(state.socket, dm_key)
+      update_subscriptions(state, dm_key)
     end
   end
 
-  defp handle_command("send " <> rest, client) do
-    case String.split(rest, ~r/\s+/, parts: 2) do
-      [dm_key, message] when message not in [nil, ""] ->
-        WebSockex.cast(client, {:send_message, dm_key, message})
+  defp flush_pending_subscriptions(state) do
+    Enum.each(state.subscriptions, fn dm_key -> Socket.subscribe(state.socket, dm_key) end)
+    state
+  end
 
-      _ ->
-        IO.puts("usage: send <dm_key> <message>")
+  defp update_subscriptions(state, dm_key) do
+    %{state | subscriptions: MapSet.put(state.subscriptions, dm_key)}
+  end
+
+  defp fetch_history(state, dm_key) do
+    url = "#{state.api_url}/conversations/#{dm_key}/messages"
+
+    case Req.get(url, params: [participant_id: state.participant_id]) do
+      {:ok, %Req.Response{status: status, body: %{"messages" => messages}}}
+      when status in 200..299 ->
+        client_log("history for #{dm_key} (#{length(messages)} messages)")
+        Enum.each(messages, &print_message(&1, :history))
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        client_log("history request failed (#{status}): #{inspect(body)}")
+
+      {:error, reason} ->
+        client_log("history request error: #{Exception.message(reason)}")
     end
   end
 
-  defp handle_command(cmd, _client) do
-    IO.puts("unknown command: #{cmd}")
+  defp send_dm(api_url, dm_key, sender_id, message) do
+    url = "#{api_url}/conversations/#{dm_key}/messages"
+    body = %{sender_id: sender_id, text: message, metadata: %{}}
+
+    case Req.post(url, json: body) do
+      {:ok, %Req.Response{status: status, body: payload}} when status in 200..299 ->
+        {:ok, payload}
+
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:error, "HTTP #{status}: #{inspect(body)}"}
+
+      {:error, reason} ->
+        {:error, Exception.message(reason)}
+    end
   end
 
-  defp parse_positional_args(args) do
-    {acc, awaiting} =
-      Enum.reduce(args, {%{}, nil}, fn
-        arg, {map, nil} ->
-          case String.split(arg, "=", parts: 2) do
-            [key, value] -> {Map.put(map, key, value), nil}
-            _ -> {map, arg}
-          end
+  defp send_broadcast(api_url, sender_id, message) do
+    url = "#{api_url}/conversations/broadcast/messages"
+    body = %{sender_id: sender_id, text: message, metadata: %{}}
 
-        arg, {map, key} ->
-          {Map.put(map, key, arg), nil}
-      end)
+    case Req.post(url, json: body) do
+      {:ok, %Req.Response{status: status, body: payload}} when status in 200..299 ->
+        {:ok, payload}
 
-    case awaiting do
-      nil -> acc
-      _ -> acc
+      {:ok, %Req.Response{status: status, body: body}} ->
+        {:error, "HTTP #{status}: #{inspect(body)}"}
+
+      {:error, reason} ->
+        {:error, Exception.message(reason)}
     end
+  end
+
+  defp print_message(%{"dm_key" => dm_key} = payload, origin) do
+    sender = payload["sender_id"]
+    text = payload["text"]
+    created_at = payload["created_at"] || ""
+    marker = origin_marker(origin)
+    IO.puts("#{marker} [#{dm_key}] #{sender}: #{text} #{created_at}")
+  end
+
+  defp print_message(payload, origin) do
+    sender = payload["sender_id"]
+    text = payload["text"]
+    created_at = payload["created_at"] || ""
+    marker = origin_marker(origin)
+    IO.puts("#{marker} #{sender}: #{text} #{created_at}")
+  end
+
+  defp print_broadcast(payload) do
+    sender = payload["sender_id"]
+    text = payload["text"]
+    IO.puts("<< [broadcast] #{sender}: #{text}")
+  end
+
+  defp print_inbox(%{"dm_key" => dm_key} = update) do
+    last = update["last_message_text"] || ""
+    unread = update["unread_count"] || 0
+    other = update["other_participant_id"]
+    IO.puts("!! inbox #{dm_key} (#{other}) last=#{inspect(last)} unread=#{unread}")
+  end
+
+  defp origin_marker(:history), do: "--"
+  defp origin_marker(:outgoing), do: ">>"
+  defp origin_marker(:live), do: "<<"
+  defp origin_marker(_), do: "--"
+
+  defp input_loop(owner) do
+    case IO.gets("") do
+      :eof -> send(owner, {:input, :eof})
+      {:error, _} -> send(owner, {:input, :eof})
+      line -> send(owner, {:input, String.trim(line)})
+    end
+
+    input_loop(owner)
+  end
+
+  defp print_banner(participant_id, socket_url, api_url) do
+    IO.puts("Connected as #{participant_id}")
+    IO.puts("  socket: #{socket_url}")
+    IO.puts("  api:    #{api_url}")
+    print_help()
+  end
+
+  defp print_help do
+    IO.puts("Commands:")
+    IO.puts("  @recipient message   send DM")
+    IO.puts("  ! message             broadcast")
+    IO.puts("  /sub dm_key           subscribe to DM key")
+    IO.puts("  /history target       fetch history by participant or dm key")
+    IO.puts("  /help                 show commands")
+    IO.puts("  /quit                 exit")
+  end
+
+  defp client_log(message), do: IO.puts("[client] #{message}")
+
+  defp normalize_participant(""), do: raise(ArgumentError, "participant cannot be blank")
+
+  defp normalize_participant(participant) do
+    participant = participant |> to_string() |> String.trim()
+
+    if String.contains?(participant, ":") do
+      participant
+    else
+      "user:" <> participant
+    end
+  end
+
+  defp random_participant do
+    "user:" <> Ecto.UUID.generate()
   end
 end
 
 defmodule Fleetlm.TestClient.Socket do
+  @moduledoc false
   use WebSockex
-
-  require Logger
-
-  def name(participant_id), do: {:global, {__MODULE__, participant_id}}
-
-  def whereis(participant_id) do
-    case :global.whereis_name(name(participant_id)) do
-      :undefined -> nil
-      pid -> pid
-    end
-  end
 
   def start_link(url, opts) do
     participant_id = Keyword.fetch!(opts, :participant_id)
-    owner = Keyword.get(opts, :owner, self())
+    owner = Keyword.fetch!(opts, :owner)
     name = Keyword.get(opts, :name, name(participant_id))
 
+    url = append_participant(url, participant_id)
+
     state = %{
+      url: url,
       participant_id: participant_id,
       owner: owner,
       ref: 1,
       pending: %{},
-      joined_dms: MapSet.new(),
-      dm_threads: %{},
-      unreads: %{},
+      subscriptions: MapSet.new(),
+      pending_subscriptions: MapSet.new(),
+      conversation_ready?: false,
+      inbox_ready?: false,
       heartbeat_ref: nil
     }
 
     WebSockex.start_link(url, __MODULE__, state, name: name)
   end
 
+  def name(participant_id), do: {:global, {__MODULE__, participant_id}}
+
+  def join_channels(pid), do: WebSockex.cast(pid, :join_channels)
+  def subscribe(pid, dm_key), do: WebSockex.cast(pid, {:subscribe, dm_key})
+  def stop(pid), do: WebSockex.cast(pid, :stop)
+
   @impl true
   def handle_connect(_conn, state) do
-    send(self(), :join_participant)
+    send(state.owner, {:socket, {:connected, state.url}})
+    send(self(), :join_channels)
     {:ok, schedule_heartbeat(state)}
   end
 
   @impl true
-  def handle_frame({:text, payload}, state) do
-    case Jason.decode(payload) do
-      {:ok, message} ->
-        process_message(message, state)
+  def handle_cast(:join_channels, state) do
+    frames = []
 
-      {:error, _} ->
-        IO.puts("[client] failed to decode frame: #{payload}")
+    {state, frames} =
+      state
+      |> push("conversation", "phx_join", %{}, {:conversation_join})
+      |> collect_frame(frames)
+
+    {state, frames} =
+      state
+      |> push("inbox:" <> state.participant_id, "phx_join", %{}, {:inbox_join})
+      |> collect_frame(frames)
+
+    reply_with_frames(state, frames)
+  end
+
+  def handle_cast({:subscribe, dm_key}, state) do
+    cond do
+      MapSet.member?(state.subscriptions, dm_key) ->
         {:ok, state}
+
+      state.conversation_ready? ->
+        {state, frames} =
+          state
+          |> push(
+            "conversation",
+            "conversation:subscribe",
+            %{dm_key: dm_key},
+            {:subscribe, dm_key}
+          )
+          |> collect_frame([])
+
+        reply_with_frames(state, frames)
+
+      true ->
+        pending = MapSet.put(state.pending_subscriptions, dm_key)
+        {:ok, %{state | pending_subscriptions: pending}}
     end
-  end
-
-  @impl true
-  def handle_cast({:create_dm, participant_id, message}, state) do
-    {state, frame} = create_dm(state, participant_id, message)
-    reply_with_frames(state, [frame])
-  end
-
-  def handle_cast({:send_message, dm_key, text}, state) do
-    {state, frame} = push_message(state, dm_key, text)
-    reply_with_frames(state, [frame])
-  end
-
-  def handle_cast({:list, caller}, state) do
-    rows =
-      state.dm_threads
-      |> Enum.map(fn {dm_key, meta} ->
-        unread = Map.get(state.unreads, dm_key, 0)
-        preview = Map.get(meta, "last_message_text") || "(none)"
-        timestamp = Map.get(meta, "last_message_at") || "-"
-        other_participant = Map.get(meta, "other_participant_id") || "?"
-        "#{dm_key} | #{other_participant} | unread=#{unread} | last=#{preview} @ #{timestamp}"
-      end)
-      |> Enum.sort()
-
-    send(caller, {:dm_list, rows})
-    {:ok, state}
-  end
-
-  def handle_cast({:mark_read, dm_key}, state) do
-    unreads = Map.put(state.unreads, dm_key, 0)
-    {:ok, %{state | unreads: unreads}}
-  end
-
-  def handle_cast({:get_state, caller}, state) do
-    snapshot = Map.take(state, [:dm_threads, :unreads, :joined_dms])
-    send(caller, {:client_state, snapshot})
-    {:ok, state}
   end
 
   def handle_cast(:stop, state) do
@@ -264,284 +449,127 @@ defmodule Fleetlm.TestClient.Socket do
   end
 
   @impl true
-  def handle_info(:join_participant, state) do
-    {state, frame} = join_participant(state)
-    reply_with_frames(state, [frame])
+  def handle_frame({:text, payload}, state) do
+    case Jason.decode(payload) do
+      {:ok, %{"event" => "phx_reply", "ref" => ref} = message} ->
+        handle_reply(ref, message, state)
+
+      {:ok, %{"topic" => "conversation", "event" => "message", "payload" => payload}} ->
+        dispatch_message(payload, state)
+
+      {:ok, %{"topic" => "inbox:" <> _ = _topic, "event" => "message", "payload" => payload}} ->
+        send(state.owner, {:socket, {:dm_message, payload}})
+        {:ok, state}
+
+      {:ok,
+       %{
+         "topic" => "inbox:" <> _ = _topic,
+         "event" => "tick",
+         "payload" => %{"updates" => updates}
+       }} ->
+        Enum.each(updates, &send(state.owner, {:socket, {:inbox_update, &1}}))
+        {:ok, state}
+
+      {:ok, other} ->
+        send(state.owner, {:socket, {:error, :frame, other}})
+        {:ok, state}
+
+      {:error, reason} ->
+        send(state.owner, {:socket, {:error, :decode, reason}})
+        {:ok, state}
+    end
   end
 
   @impl true
+  def handle_info(:join_channels, state) do
+    handle_cast(:join_channels, state)
+  end
+
   def handle_info(:heartbeat, state) do
-    {state, frame} = heartbeat(state)
-    reply_with_frames(schedule_heartbeat(state), [frame])
+    {state, frames} =
+      state
+      |> push("phoenix", "heartbeat", %{}, nil)
+      |> collect_frame([])
+
+    reply_with_frames(schedule_heartbeat(state), frames)
   end
 
   def handle_info({:send_frames, frames}, state) do
     reply_with_frames(state, frames)
   end
 
-  def handle_info(msg, state) do
-    Logger.debug("socket info #{inspect(msg)}")
-    {:ok, state}
-  end
+  def handle_info(_, state), do: {:ok, state}
 
-  ### Internal helpers
-
-  defp schedule_heartbeat(state) do
-    if state.heartbeat_ref, do: Process.cancel_timer(state.heartbeat_ref)
-    %{state | heartbeat_ref: Process.send_after(self(), :heartbeat, 25_000)}
-  end
-
-  defp next_ref(state) do
-    ref = Integer.to_string(state.ref)
-    {%{state | ref: state.ref + 1}, ref}
-  end
-
-  defp join_participant(state) do
-    {state, ref} = next_ref(state)
-    frame = encode_message("participant:#{state.participant_id}", "phx_join", %{}, ref)
-    state = put_pending(state, ref, {:join_participant})
-    {state, {:text, frame}}
-  end
-
-  defp heartbeat(state) do
-    {state, ref} = next_ref(state)
-    frame = encode_message("phoenix", "heartbeat", %{}, ref)
-    {state, {:text, frame}}
-  end
-
-  defp create_dm(state, participant_id, message) do
-    payload = %{"participant_id" => participant_id, "message" => message}
-    {state, ref} = next_ref(state)
-    frame = encode_message("participant:#{state.participant_id}", "dm:create", payload, ref)
-    state = put_pending(state, ref, {:create_dm, participant_id, message})
-    {state, {:text, frame}}
-  end
-
-  defp push_message(state, dm_key, text) do
-    payload = %{"text" => text}
-    {state, ref} = next_ref(state)
-    frame = encode_message("dm:#{dm_key}", "message:new", payload, ref)
-    state = put_pending(state, ref, {:push, dm_key})
-    {state, {:text, frame}}
-  end
-
-  defp put_pending(state, ref, value) do
-    %{state | pending: Map.put(state.pending, ref, value)}
-  end
-
-  defp process_message(%{"event" => "phx_reply", "ref" => ref} = message, state) do
+  defp handle_reply(ref, message, state) do
     case Map.pop(state.pending, ref) do
-      {nil, _} ->
-        {:ok, state}
-
-      {action, pending} ->
-        state = %{state | pending: pending}
-        handle_reply(action, message, state)
+      {nil, pending} -> {:ok, %{state | pending: pending}}
+      {action, pending} -> process_reply(action, message, %{state | pending: pending})
     end
   end
 
-  defp process_message(%{"topic" => topic, "event" => "tick", "payload" => payload}, state) do
-    {state, frames} = handle_tick(topic, payload, state)
-    reply_with_frames(state, frames)
+  defp process_reply({:conversation_join}, %{"payload" => %{"status" => "ok"}}, state) do
+    Enum.each(state.pending_subscriptions, &subscribe(self(), &1))
+    send(state.owner, {:socket, :conversation_ready})
+    {:ok, %{state | conversation_ready?: true, pending_subscriptions: MapSet.new()}}
   end
 
-  defp process_message(%{"topic" => topic, "event" => "message", "payload" => payload}, state) do
-    handle_dm_message(topic, payload, state)
+  defp process_reply({:inbox_join}, %{"payload" => %{"status" => "ok"}}, state) do
+    send(state.owner, {:socket, :inbox_ready})
+    {:ok, %{state | inbox_ready?: true}}
   end
 
-  defp process_message(%{"event" => "phx_error", "topic" => topic}, state) do
-    IO.puts("[client] channel error on #{topic}")
-    {:ok, state}
-  end
-
-  defp process_message(other, state) do
-    IO.puts("[client] unhandled message: #{inspect(other)}")
-    {:ok, state}
-  end
-
-  defp handle_reply({:join_participant}, %{"payload" => %{"response" => response}}, state) do
-    dm_threads = Map.new(response["dm_threads"] || [], &{&1["dm_key"], &1})
-
-    IO.puts("✅ Subscribed to ParticipantChannel - will receive notifications for all DM activity")
-
-    if map_size(dm_threads) > 0 do
-      IO.puts("📬 Found #{map_size(dm_threads)} existing DM thread(s):")
-
-      Enum.each(dm_threads, fn {dm_key, meta} ->
-        IO.puts(
-          "  - DM #{dm_key} with #{meta["other_participant_id"]} last=#{meta["last_message_text"] || "(none)"}"
-        )
-      end)
-
-      IO.puts("🔗 Auto-subscribing to all DM threads for real-time messages...")
-    else
-      IO.puts("📭 No existing DM threads found")
-    end
-
-    {state, frames} = ensure_dm_joins(state, Map.keys(dm_threads))
-    reply_with_frames(%{state | dm_threads: dm_threads}, frames)
-  end
-
-  defp handle_reply(
-         {:join_dm, dm_key},
-         %{"payload" => %{"response" => %{"messages" => history}}},
+  defp process_reply(
+         {:subscribe, dm_key},
+         %{"payload" => %{"status" => "ok", "response" => resp}},
          state
        ) do
-    IO.puts("✅ Subscribed to ThreadChannel for DM #{dm_key} - will receive real-time messages")
+    history = Map.get(resp, "messages", [])
+    send(state.owner, {:socket, {:subscribed, resp["dm_key"] || dm_key, history}})
+    subscriptions = MapSet.put(state.subscriptions, dm_key)
+    {:ok, %{state | subscriptions: subscriptions}}
+  end
 
-    if length(history) > 0 do
-      IO.puts("📜 Message history (#{length(history)} messages):")
-
-      Enum.each(history, fn msg ->
-        print_message(msg)
-      end)
-    else
-      IO.puts("📭 No message history for this DM")
-    end
-
+  defp process_reply(action, message, state) do
+    send(state.owner, {:socket, {:error, action, message}})
     {:ok, state}
   end
 
-  defp handle_reply({:push, dm_key}, %{"payload" => %{"status" => "ok"}}, state) do
-    unreads = Map.put(state.unreads, dm_key, 0)
-    {:ok, %{state | unreads: unreads}}
+  defp dispatch_message(%{"dm_key" => _} = payload, state) do
+    send(state.owner, {:socket, {:dm_message, payload}})
+    {:ok, state}
   end
 
-  defp handle_reply(
-         {:create_dm, participant_id, message},
-         %{"payload" => %{"response" => response}},
-         state
-       ) do
-    thread_id = response["thread_id"]
-    IO.puts("✓ DM created with #{participant_id}: #{thread_id}")
-
-    # The thread_id from legacy API is actually a fake dm_key format
-    # We need to generate the real dm_key
-    dm_key = generate_dm_key(state.participant_id, participant_id)
-
-    # Add the new DM to our local state
-    dm_meta = %{
-      "dm_key" => dm_key,
-      "other_participant_id" => participant_id,
-      "last_message_text" => message,
-      "last_message_at" => DateTime.utc_now() |> DateTime.to_iso8601()
-    }
-
-    dm_threads = Map.put(state.dm_threads, dm_key, dm_meta)
-    unreads = Map.put(state.unreads, dm_key, 0)
-
-    # Auto-join the new DM
-    {state, frames} = ensure_dm_join(%{state | dm_threads: dm_threads, unreads: unreads}, dm_key)
-    reply_with_frames(state, frames)
+  defp dispatch_message(payload, state) do
+    send(state.owner, {:socket, {:broadcast, payload}})
+    {:ok, state}
   end
 
-  defp handle_reply(_action, _message, state), do: {:ok, state}
+  defp push(state, topic, event, payload, action) do
+    {state, ref} = next_ref(state)
 
-  defp generate_dm_key(participant_a, participant_b) do
-    [x, y] = Enum.sort([participant_a, participant_b])
-    "#{x}:#{y}"
-  end
-
-  defp handle_tick("participant:" <> _participant, %{"updates" => updates}, state) do
-    Enum.reduce(updates, {state, []}, fn update, {st, frames} ->
-      dm_key = update["dm_key"] || update[:dm_key]
-      other_participant = update["other_participant_id"]
-      last_message = update["last_message_text"]
-      sender_id = update["sender_id"]
-
-      # Display notification for new messages from others
-      if sender_id && sender_id != st.participant_id do
-        IO.puts("🔔 New message in DM #{dm_key} from #{other_participant}: #{last_message}")
-      end
-
-      dm_threads = Map.put(st.dm_threads, dm_key, update)
-      unread = unread_increment(st, dm_key, update)
-      unreads = Map.put(st.unreads, dm_key, unread)
-
-      {st, extra} = ensure_dm_join(%{st | dm_threads: dm_threads, unreads: unreads}, dm_key)
-      {st, frames ++ extra}
-    end)
-  end
-
-  defp handle_tick(_topic, _payload, state), do: {state, []}
-
-  defp unread_increment(state, dm_key, %{"sender_id" => sender_id}) do
-    current = Map.get(state.unreads, dm_key, 0)
-
-    if sender_id == state.participant_id do
-      0
-    else
-      current + 1
-    end
-  end
-
-  defp unread_increment(state, dm_key, update) when is_map(update) do
-    sender_id = update["sender_id"] || update[:sender_id]
-    current = Map.get(state.unreads, dm_key, 0)
-
-    if sender_id == state.participant_id do
-      0
-    else
-      current + 1
-    end
-  end
-
-  defp handle_dm_message("dm:" <> dm_key, payload, state) do
-    # Display the message with DM context
-    sender_id = payload["sender_id"]
-
-    if sender_id != state.participant_id do
-      IO.puts("💬 [DM #{dm_key}] Real-time message:")
-    end
-
-    print_message(payload)
-
-    unreads =
-      if payload["sender_id"] == state.participant_id do
-        Map.put(state.unreads, dm_key, 0)
+    pending =
+      if action do
+        Map.put(state.pending, ref, action)
       else
-        Map.update(state.unreads, dm_key, 1, &(&1 + 1))
+        state.pending
       end
 
-    {:ok, %{state | unreads: unreads}}
+    frame = encode(topic, event, payload, ref)
+    {%{state | pending: pending}, frame}
   end
 
-  defp ensure_dm_joins(state, dm_keys) do
-    Enum.reduce(dm_keys, {state, []}, fn dm_key, {st, frames} ->
-      {st, frame} = ensure_dm_join(st, dm_key)
-      {st, frames ++ frame}
-    end)
-  end
+  defp collect_frame({state, frame}, frames), do: {state, frames ++ [frame]}
 
-  defp ensure_dm_join(state, dm_key) do
-    if MapSet.member?(state.joined_dms, dm_key) do
-      {state, []}
-    else
-      {state, ref} = next_ref(state)
-      frame = encode_message("dm:#{dm_key}", "phx_join", %{}, ref)
+  defp next_ref(state), do: {%{state | ref: state.ref + 1}, Integer.to_string(state.ref)}
 
-      state = %{
-        state
-        | pending: Map.put(state.pending, ref, {:join_dm, dm_key}),
-          joined_dms: MapSet.put(state.joined_dms, dm_key)
-      }
-
-      {state, [{:text, frame}]}
-    end
-  end
-
-  defp print_message(payload) do
-    created_at = Map.get(payload, "created_at") || ""
-    IO.puts("[#{created_at}] #{payload["sender_id"]}: #{payload["text"]}")
-  end
-
-  defp encode_message(topic, event, payload, ref) do
-    Jason.encode!(%{
-      "topic" => topic,
-      "event" => event,
-      "payload" => payload,
-      "ref" => ref
-    })
+  defp encode(topic, event, payload, ref) do
+    {:text,
+     Jason.encode!(%{
+       "topic" => topic,
+       "event" => event,
+       "payload" => payload,
+       "ref" => ref
+     })}
   end
 
   defp reply_with_frames(state, []), do: {:ok, state}
@@ -551,5 +579,23 @@ defmodule Fleetlm.TestClient.Socket do
   defp reply_with_frames(state, [frame | rest]) do
     send(self(), {:send_frames, rest})
     {:reply, frame, state}
+  end
+
+  defp schedule_heartbeat(state) do
+    if state.heartbeat_ref, do: Process.cancel_timer(state.heartbeat_ref)
+    ref = Process.send_after(self(), :heartbeat, 25_000)
+    %{state | heartbeat_ref: ref}
+  end
+
+  defp append_participant(url, participant_id) do
+    uri = URI.parse(url)
+
+    params =
+      (uri.query || "")
+      |> URI.decode_query(%{})
+      |> Map.put("participant_id", participant_id)
+      |> URI.encode_query()
+
+    %{uri | query: params} |> URI.to_string()
   end
 end
