@@ -61,6 +61,26 @@ defmodule Fleetlm.ChatTest do
       assert Chat.generate_dm_key(user_a, user_b) in dm_keys
       assert Chat.generate_dm_key(user_a, user_c) in dm_keys
     end
+
+    test "mark_read/3 clears unread counts" do
+      user_a = "user:alice"
+      user_b = "user:bob"
+      dm_key = Chat.generate_dm_key(user_a, user_b)
+
+      {:ok, _} = Chat.send_message(user_b, user_a, "Ping")
+      {:ok, _pid} = Fleetlm.Chat.InboxSupervisor.ensure_started(user_a)
+      :ok = Fleetlm.Chat.InboxServer.flush(user_a)
+
+      {:ok, _} = Chat.send_message(user_b, user_a, "Ping two")
+      :ok = Fleetlm.Chat.InboxServer.flush(user_a)
+
+      assert :ok = Chat.mark_read(dm_key, user_a)
+      :ok = Fleetlm.Chat.InboxServer.flush(user_a)
+
+      {:ok, snapshot} = Fleetlm.Chat.InboxServer.snapshot(user_a)
+      entry = Enum.find(snapshot, &(&1["dm_key"] == dm_key))
+      assert entry["unread_count"] == 0
+    end
   end
 
   describe "broadcast messaging" do

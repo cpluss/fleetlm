@@ -5,6 +5,7 @@ defmodule Fleetlm.Chat.TestRuntime do
 
   def reset do
     terminate_children(Fleetlm.Chat.ConversationRegistry, Fleetlm.Chat.ConversationSupervisor)
+    terminate_children(Fleetlm.Chat.InboxRegistry, Fleetlm.Chat.InboxSupervisor)
     _ = Cache.reset()
     :ok
   end

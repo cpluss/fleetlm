@@ -17,7 +17,9 @@ defmodule Fleetlm.Chat.Supervisor do
     children = [
       CacheSupervisor,
       {Registry, keys: :unique, name: Fleetlm.Chat.ConversationRegistry},
-      {Fleetlm.Chat.ConversationSupervisor, []}
+      {Registry, keys: :unique, name: Fleetlm.Chat.InboxRegistry},
+      {Fleetlm.Chat.ConversationSupervisor, []},
+      {Fleetlm.Chat.InboxSupervisor, []}
     ]
 
     Supervisor.init(children, strategy: :one_for_all)

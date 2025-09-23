@@ -59,7 +59,8 @@ defmodule Fleetlm.Chat.Storage do
       dm_key,
       CASE WHEN last_sender_id = $1 THEN last_recipient_id ELSE last_sender_id END as other_participant_id,
       last_message_at,
-      last_message_text
+      last_message_text,
+      last_sender_id
     FROM latest_by_dm_key
     ORDER BY last_message_at DESC
     LIMIT $2
@@ -68,12 +69,19 @@ defmodule Fleetlm.Chat.Storage do
     execute(fn -> Repo.query(query, [participant_id, limit]) end)
     |> case do
       {:ok, %{rows: rows}} ->
-        Enum.map(rows, fn [dm_key, other_participant_id, last_message_at, last_message_text] ->
+        Enum.map(rows, fn [
+                            dm_key,
+                            other_participant_id,
+                            last_message_at,
+                            last_message_text,
+                            last_sender_id
+                          ] ->
           %{
             dm_key: dm_key,
             other_participant_id: other_participant_id,
             last_message_at: last_message_at,
-            last_message_text: last_message_text
+            last_message_text: last_message_text,
+            last_sender_id: last_sender_id
           }
         end)
 

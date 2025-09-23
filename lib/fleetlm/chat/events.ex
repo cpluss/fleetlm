@@ -3,6 +3,8 @@ defmodule Fleetlm.Chat.Events do
   Domain event definitions and PubSub fanout helpers for the chat runtime.
   """
 
+  alias Fleetlm.Chat.InboxSupervisor
+  alias Fleetlm.Chat.InboxServer
   alias Phoenix.PubSub
 
   @pubsub Fleetlm.PubSub
@@ -175,16 +177,14 @@ defmodule Fleetlm.Chat.Events do
       dm_key: event.dm_key,
       other_participant_id: other_participant_id,
       last_sender_id: event.sender_id,
-      last_message_text: nil,
+      last_message_text: event.text,
       last_message_at: event.created_at,
       unread_count: 0
     }
 
-    PubSub.broadcast(@pubsub, "participant:" <> participant_id, {
-      :dm_activity,
-      DmActivity.to_payload(activity)
-    })
-
-    :ok
+    case InboxSupervisor.ensure_started(participant_id) do
+      {:ok, _pid} -> InboxServer.enqueue_activity(participant_id, activity)
+      {:error, _reason} -> :ok
+    end
   end
 end

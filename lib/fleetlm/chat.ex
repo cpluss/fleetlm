@@ -82,10 +82,15 @@ defmodule Fleetlm.Chat do
   end
 
   @doc """
-  Stub for future read-state handling.
+  Mark a conversation as read up to a specific timestamp.
   """
-  @spec mark_read(String.t(), String.t(), keyword()) :: {:error, :not_implemented}
-  def mark_read(_dm_key, _participant_id, _opts \\ []), do: {:error, :not_implemented}
+  @spec mark_read(String.t(), String.t(), keyword()) :: :ok | {:error, term()}
+  def mark_read(dm_key, participant_id, opts \\ []) do
+    with {:ok, dm} <- resolve_dm(%{dm_key: dm_key}),
+         {:ok, _pid} <- Fleetlm.Chat.InboxSupervisor.ensure_started(participant_id) do
+      Fleetlm.Chat.InboxServer.mark_read(participant_id, dm.key, opts)
+    end
+  end
 
   @doc false
   @spec inbox_snapshot(String.t()) :: [Events.DmActivity.t()]
