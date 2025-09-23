@@ -175,8 +175,8 @@ defmodule Fleetlm.Chat do
 
   defp format_history(events, limit) do
     events
-    |> Enum.reverse()
     |> Enum.take(limit)
+    |> Enum.reverse()
   end
 
   defp resolve_dm(%{dm_key: dm_key}) when is_binary(dm_key), do: {:ok, DmKey.parse!(dm_key)}
