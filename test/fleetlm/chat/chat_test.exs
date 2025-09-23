@@ -91,5 +91,4 @@ defmodule Fleetlm.ChatTest do
       assert first.created_at >= second.created_at
     end
   end
-
 end

@@ -71,8 +71,8 @@ defmodule Fleetlm.TestClient do
         event_loop(state)
 
       {:socket, :conversation_ready} ->
-        client_log("conversation channel joined")
-        flush_pending_subscriptions(state) |> event_loop()
+        client_log("conversation channel ready")
+        event_loop(state)
 
       {:socket, :inbox_ready} ->
         client_log("inbox channel joined")
@@ -223,11 +223,6 @@ defmodule Fleetlm.TestClient do
       Socket.subscribe(state.socket, dm_key)
       update_subscriptions(state, dm_key)
     end
-  end
-
-  defp flush_pending_subscriptions(state) do
-    Enum.each(state.subscriptions, fn dm_key -> Socket.subscribe(state.socket, dm_key) end)
-    state
   end
 
   defp update_subscriptions(state, dm_key) do
@@ -381,8 +376,7 @@ defmodule Fleetlm.TestClient.Socket do
       ref: 1,
       pending: %{},
       subscriptions: MapSet.new(),
-      pending_subscriptions: MapSet.new(),
-      conversation_ready?: false,
+      conversation_ready?: true,
       inbox_ready?: false,
       heartbeat_ref: nil
     }
@@ -405,42 +399,31 @@ defmodule Fleetlm.TestClient.Socket do
 
   @impl true
   def handle_cast(:join_channels, state) do
-    frames = []
-
-    {state, frames} =
-      state
-      |> push("conversation", "phx_join", %{}, {:conversation_join})
-      |> collect_frame(frames)
-
     {state, frames} =
       state
       |> push("inbox:" <> state.participant_id, "phx_join", %{}, {:inbox_join})
-      |> collect_frame(frames)
+      |> collect_frame([])
+
+    send(state.owner, {:socket, :conversation_ready})
 
     reply_with_frames(state, frames)
   end
 
   def handle_cast({:subscribe, dm_key}, state) do
-    cond do
-      MapSet.member?(state.subscriptions, dm_key) ->
-        {:ok, state}
+    if MapSet.member?(state.subscriptions, dm_key) do
+      {:ok, state}
+    else
+      {state, frames} =
+        state
+        |> push(
+          "conversation:" <> dm_key,
+          "phx_join",
+          %{},
+          {:subscribe, dm_key}
+        )
+        |> collect_frame([])
 
-      state.conversation_ready? ->
-        {state, frames} =
-          state
-          |> push(
-            "conversation",
-            "conversation:subscribe",
-            %{dm_key: dm_key},
-            {:subscribe, dm_key}
-          )
-          |> collect_frame([])
-
-        reply_with_frames(state, frames)
-
-      true ->
-        pending = MapSet.put(state.pending_subscriptions, dm_key)
-        {:ok, %{state | pending_subscriptions: pending}}
+      reply_with_frames(state, frames)
     end
   end
 
@@ -454,7 +437,8 @@ defmodule Fleetlm.TestClient.Socket do
       {:ok, %{"event" => "phx_reply", "ref" => ref} = message} ->
         handle_reply(ref, message, state)
 
-      {:ok, %{"topic" => "conversation", "event" => "message", "payload" => payload}} ->
+      {:ok,
+       %{"topic" => "conversation:" <> _ = _topic, "event" => "message", "payload" => payload}} ->
         dispatch_message(payload, state)
 
       {:ok, %{"topic" => "inbox:" <> _ = _topic, "event" => "message", "payload" => payload}} ->
@@ -505,12 +489,6 @@ defmodule Fleetlm.TestClient.Socket do
       {nil, pending} -> {:ok, %{state | pending: pending}}
       {action, pending} -> process_reply(action, message, %{state | pending: pending})
     end
-  end
-
-  defp process_reply({:conversation_join}, %{"payload" => %{"status" => "ok"}}, state) do
-    Enum.each(state.pending_subscriptions, &subscribe(self(), &1))
-    send(state.owner, {:socket, :conversation_ready})
-    {:ok, %{state | conversation_ready?: true, pending_subscriptions: MapSet.new()}}
   end
 
   defp process_reply({:inbox_join}, %{"payload" => %{"status" => "ok"}}, state) do

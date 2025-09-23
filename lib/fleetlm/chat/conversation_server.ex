@@ -7,7 +7,7 @@ defmodule Fleetlm.Chat.ConversationServer do
 
   use GenServer, restart: :transient
 
-  alias Fleetlm.Chat.{DmKey, Event, Events, Storage}
+  alias Fleetlm.Chat.{Cache, DmKey, Events, Storage}
   alias Fleetlm.Telemetry.RuntimeCounters
 
   @tail_limit 100
@@ -25,7 +25,7 @@ defmodule Fleetlm.Chat.ConversationServer do
   end
 
   @spec send_message(String.t(), String.t(), String.t(), String.t() | nil, map()) ::
-          {:ok, Event.DmMessage.t()} | {:error, term()}
+          {:ok, Events.DmMessage.t()} | {:error, term()}
   def send_message(dm_key, sender_id, recipient_id, text, metadata) do
     GenServer.call(via(dm_key), {:send_message, sender_id, recipient_id, text, metadata})
   end
@@ -36,15 +36,10 @@ defmodule Fleetlm.Chat.ConversationServer do
   end
 
   @spec ensure_open(String.t(), String.t(), String.t(), String.t() | nil) ::
-          {:ok, %{dm_key: String.t(), initial_message: Event.DmMessage.t() | nil}}
+          {:ok, %{dm_key: String.t(), initial_message: Events.DmMessage.t() | nil}}
           | {:error, term()}
   def ensure_open(dm_key, initiator_id, other_participant_id, initial_text) do
     GenServer.call(via(dm_key), {:ensure_open, initiator_id, other_participant_id, initial_text})
-  end
-
-  @spec history(String.t(), keyword()) :: [Event.DmMessage.t()]
-  def history(dm_key, opts \\ []) do
-    GenServer.call(via(dm_key), {:history, opts})
   end
 
   ## GenServer callbacks
@@ -53,12 +48,10 @@ defmodule Fleetlm.Chat.ConversationServer do
   def init(dm_key) do
     dm = DmKey.parse!(dm_key)
 
-    messages = Storage.list_dm_tail(dm.key, limit: @tail_limit)
-    events = Enum.map(messages, &Event.DmMessage.from_message/1)
+    seed_tail(dm.key)
 
     state = %{
       dm: dm,
-      tail: events,
       idle_ref: schedule_idle(),
       stopped_reason: nil
     }
@@ -79,8 +72,9 @@ defmodule Fleetlm.Chat.ConversationServer do
          trimmed <- normalize_text(initial_text) do
       if trimmed do
         case do_send_message(trimmed, initiator_id, other_participant_id, %{}, state) do
-          {:ok, event, new_state} ->
-            {:reply, {:ok, %{dm_key: state.dm.key, initial_message: event}}, new_state}
+          {:ok, event} ->
+            {:reply, {:ok, %{dm_key: state.dm.key, initial_message: event}},
+             reschedule_idle(state)}
 
           {:error, reason} ->
             {:reply, {:error, reason}, state}
@@ -104,7 +98,7 @@ defmodule Fleetlm.Chat.ConversationServer do
          trimmed <- normalize_text(text),
          true <- trimmed not in [nil, ""] do
       case do_send_message(trimmed, sender_id, recipient_id, metadata, state) do
-        {:ok, event, new_state} -> {:reply, {:ok, event}, new_state}
+        {:ok, event} -> {:reply, {:ok, event}, reschedule_idle(state)}
         {:error, reason} -> {:reply, {:error, reason}, state}
       end
     else
@@ -113,18 +107,6 @@ defmodule Fleetlm.Chat.ConversationServer do
     end
   rescue
     e in ArgumentError -> {:reply, {:error, e}, state}
-  end
-
-  @impl true
-  def handle_call({:history, opts}, _from, state) do
-    limit = Keyword.get(opts, :limit, 40)
-
-    events =
-      state.tail
-      |> Enum.reverse()
-      |> Enum.take(limit)
-
-    {:reply, events, reschedule_idle(state)}
   end
 
   @impl true
@@ -154,23 +136,19 @@ defmodule Fleetlm.Chat.ConversationServer do
   defp do_send_message(text, sender_id, recipient_id, metadata, state) do
     case Storage.persist_dm_message(state.dm.key, sender_id, recipient_id, text, metadata) do
       {:ok, message} ->
-        event = Event.DmMessage.from_message(message)
-        new_state = put_in(state.tail, update_tail(state.tail, event))
+        event = Events.DmMessage.from_message(message)
+
+        _ = ensure_tail_appended(state.dm.key, event)
 
         Events.publish_dm_message(event)
         Events.publish_dm_activity(event, state.dm.first, state.dm.second)
         Events.publish_dm_activity(event, state.dm.second, state.dm.first)
 
-        {:ok, event, reschedule_idle(new_state)}
+        {:ok, event}
 
       {:error, error} ->
         {:error, error}
     end
-  end
-
-  defp update_tail(tail, event) do
-    [event | tail]
-    |> Enum.take(@tail_limit)
   end
 
   defp emit_stopped(state, reason) do
@@ -197,6 +175,33 @@ defmodule Fleetlm.Chat.ConversationServer do
   end
 
   defp normalize_text(_), do: nil
+
+  defp seed_tail(dm_key) do
+    case Cache.fetch_tail(dm_key, limit: @tail_limit) do
+      {:ok, _events} ->
+        :ok
+
+      :miss ->
+        dm_key
+        |> Storage.list_dm_tail(limit: @tail_limit)
+        |> Enum.map(&Events.DmMessage.from_message/1)
+        |> then(&Cache.put_tail(dm_key, &1))
+        |> case do
+          :ok -> :ok
+          {:error, _reason} -> :ok
+        end
+
+      {:error, _reason} ->
+        :ok
+    end
+  end
+
+  defp ensure_tail_appended(dm_key, event) do
+    case Cache.append_to_tail(dm_key, event, limit: @tail_limit) do
+      :ok -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
 
   defp schedule_idle do
     Process.send_after(self(), :idle_timeout, @idle_timeout)

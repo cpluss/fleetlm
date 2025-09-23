@@ -3,7 +3,16 @@ defmodule Fleetlm.Chat do
   Canonical Chat runtime API. All public chat operations flow through this module.
   """
 
-  alias Fleetlm.Chat.{ConversationServer, ConversationSupervisor, DmKey, Event, Storage}
+  alias Fleetlm.Chat.{
+    Cache,
+    ConversationServer,
+    ConversationSupervisor,
+    DmKey,
+    Events,
+    Storage
+  }
+
+  @tail_limit 100
 
   @type send_message_attrs :: %{
           required(:sender_id) => String.t(),
@@ -26,7 +35,7 @@ defmodule Fleetlm.Chat do
   @doc """
   Send a DM message using map attributes.
   """
-  @spec send_message(send_message_attrs()) :: {:ok, Event.DmMessage.t()} | {:error, term()}
+  @spec send_message(send_message_attrs()) :: {:ok, Events.DmMessage.t()} | {:error, term()}
   def send_message(attrs) when is_map(attrs) do
     with {:ok, dm} <- resolve_dm(attrs),
          {:ok, _pid} <- ConversationSupervisor.ensure_started(dm.key) do
@@ -49,7 +58,7 @@ defmodule Fleetlm.Chat do
   Convenience version of `send_message/1` using positional arguments.
   """
   @spec send_message(String.t(), String.t(), String.t(), map()) ::
-          {:ok, Event.DmMessage.t()} | {:error, term()}
+          {:ok, Events.DmMessage.t()} | {:error, term()}
   def send_message(sender_id, recipient_id, text, metadata \\ %{}) do
     send_message(%{
       sender_id: sender_id,
@@ -62,11 +71,13 @@ defmodule Fleetlm.Chat do
   @doc """
   Retrieve the message history for a conversation.
   """
-  @spec get_messages(String.t(), keyword()) :: {:ok, [Event.DmMessage.t()]} | {:error, term()}
+  @spec get_messages(String.t(), keyword()) :: {:ok, [Events.DmMessage.t()]} | {:error, term()}
   def get_messages(dm_key, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 40)
+
     with {:ok, dm} <- resolve_dm(%{dm_key: dm_key}),
-         {:ok, _pid} <- ConversationSupervisor.ensure_started(dm.key) do
-      {:ok, ConversationServer.history(dm.key, opts)}
+         {:ok, events} <- fetch_message_tail(dm.key, limit) do
+      {:ok, events}
     end
   end
 
@@ -77,11 +88,11 @@ defmodule Fleetlm.Chat do
   def mark_read(_dm_key, _participant_id, _opts \\ []), do: {:error, :not_implemented}
 
   @doc false
-  @spec inbox_snapshot(String.t()) :: [Event.DmActivity.t()]
+  @spec inbox_snapshot(String.t()) :: [Events.DmActivity.t()]
   def inbox_snapshot(participant_id) do
     Storage.list_dm_threads(participant_id)
     |> Enum.map(fn thread ->
-      %Event.DmActivity{
+      %Events.DmActivity{
         participant_id: participant_id,
         dm_key: thread.dm_key,
         other_participant_id: thread.other_participant_id,
@@ -113,12 +124,12 @@ defmodule Fleetlm.Chat do
   ## Broadcast operations
 
   @spec send_broadcast_message(String.t(), String.t() | nil, map()) ::
-          {:ok, Event.BroadcastMessage.t()} | {:error, term()}
+          {:ok, Events.BroadcastMessage.t()} | {:error, term()}
   def send_broadcast_message(sender_id, text, metadata \\ %{}) do
     case Storage.persist_broadcast_message(sender_id, text, metadata) do
       {:ok, message} ->
-        event = Event.BroadcastMessage.from_message(message)
-        Fleetlm.Chat.Events.publish_broadcast_message(event)
+        event = Events.BroadcastMessage.from_message(message)
+        Events.publish_broadcast_message(event)
         {:ok, event}
 
       {:error, reason} ->
@@ -126,10 +137,41 @@ defmodule Fleetlm.Chat do
     end
   end
 
-  @spec list_broadcast_messages(keyword()) :: [Event.BroadcastMessage.t()]
+  @spec list_broadcast_messages(keyword()) :: [Events.BroadcastMessage.t()]
   def list_broadcast_messages(opts \\ []) do
     Storage.list_broadcast_messages(opts)
-    |> Enum.map(&Event.BroadcastMessage.from_message/1)
+    |> Enum.map(&Events.BroadcastMessage.from_message/1)
+  end
+
+  defp fetch_message_tail(dm_key, limit) do
+    case Cache.fetch_tail(dm_key) do
+      {:ok, events} ->
+        {:ok, format_history(events, limit)}
+
+      :miss ->
+        {:ok, format_history(load_and_cache_tail(dm_key), limit)}
+
+      {:error, _reason} ->
+        {:ok, format_history(load_and_cache_tail(dm_key), limit)}
+    end
+  end
+
+  defp load_and_cache_tail(dm_key) do
+    dm_key
+    |> load_tail_from_storage()
+    |> tap(&Cache.put_tail(dm_key, &1))
+  end
+
+  defp load_tail_from_storage(dm_key) do
+    dm_key
+    |> Storage.list_dm_tail(limit: @tail_limit)
+    |> Enum.map(&Events.DmMessage.from_message/1)
+  end
+
+  defp format_history(events, limit) do
+    events
+    |> Enum.reverse()
+    |> Enum.take(limit)
   end
 
   defp resolve_dm(%{dm_key: dm_key}) when is_binary(dm_key), do: {:ok, DmKey.parse!(dm_key)}

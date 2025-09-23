@@ -5,6 +5,8 @@ defmodule Fleetlm.Chat.Supervisor do
 
   use Supervisor
 
+  alias Fleetlm.Chat.CacheSupervisor
+
   @spec start_link(term()) :: Supervisor.on_start()
   def start_link(arg) do
     Supervisor.start_link(__MODULE__, arg, name: __MODULE__)
@@ -13,6 +15,7 @@ defmodule Fleetlm.Chat.Supervisor do
   @impl true
   def init(_arg) do
     children = [
+      CacheSupervisor,
       {Registry, keys: :unique, name: Fleetlm.Chat.ConversationRegistry},
       {Fleetlm.Chat.ConversationSupervisor, []}
     ]

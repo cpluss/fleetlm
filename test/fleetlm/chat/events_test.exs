@@ -9,7 +9,7 @@ defmodule Fleetlm.Chat.EventsTest do
       user_b = "user:bob"
       dm_key = Chat.generate_dm_key(user_a, user_b)
 
-      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "dm:" <> dm_key)
+      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "conversation:" <> dm_key)
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "participant:" <> user_a)
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "participant:" <> user_b)
 
