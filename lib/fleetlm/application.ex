@@ -7,15 +7,10 @@ defmodule Fleetlm.Application do
 
   @impl true
   def start(_type, _args) do
-    # Attach telemetry handlers
-    Fleetlm.Telemetry.setup_metrics()
-    Fleetlm.Telemetry.attach_handlers()
-
     children = [
-      FleetlmWeb.Telemetry,
+      # Observability stack (PromEx + telemetry helpers)
+      Fleetlm.Observability,
       Fleetlm.Repo,
-      {TelemetryMetricsPrometheus.Core,
-       name: Fleetlm.Telemetry.Prometheus, metrics: Fleetlm.Telemetry.metrics()},
       Fleetlm.Chat.Supervisor,
       {DNSCluster, query: Application.get_env(:fleetlm, :dns_cluster_query) || :ignore},
       pubsub_spec(),

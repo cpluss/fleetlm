@@ -62,8 +62,12 @@ config :logger, :default_formatter,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
-# Disable default OpenTelemetry exporters; Prometheus metrics are provided via TelemetryMetricsPrometheus.Core.
+# Disable default OpenTelemetry exporters; Prometheus metrics are exposed via PromEx.
 config :opentelemetry, :processors, []
+
+config :fleetlm, Fleetlm.Observability.PromEx,
+  metrics_server: :disabled,
+  grafana_agent: :disabled
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.

@@ -8,7 +8,7 @@ defmodule Fleetlm.Chat.ConversationServer do
   use GenServer, restart: :transient
 
   alias Fleetlm.Chat.{Cache, DmKey, Events, Storage}
-  alias Fleetlm.Telemetry.RuntimeCounters
+  alias Fleetlm.Observability
 
   @tail_limit 100
   @registry Fleetlm.Chat.ConversationRegistry
@@ -56,9 +56,7 @@ defmodule Fleetlm.Chat.ConversationServer do
       stopped_reason: nil
     }
 
-    active = RuntimeCounters.increment(:conversations_active, 1)
-    emit_active(dm.key, active)
-    :telemetry.execute([:fleetlm, :conversation, :started], %{count: 1}, %{dm_key: dm.key})
+    Observability.conversation_started(dm.key)
 
     {:ok, state}
   end
@@ -127,7 +125,12 @@ defmodule Fleetlm.Chat.ConversationServer do
   @impl true
   def terminate(reason, state) do
     if state[:idle_ref], do: Process.cancel_timer(state.idle_ref)
-    emit_stopped(state, state[:stopped_reason] || normalize_reason(reason))
+
+    Observability.conversation_stopped(
+      state.dm.key,
+      state[:stopped_reason] || normalize_reason(reason)
+    )
+
     :ok
   end
 
@@ -144,25 +147,13 @@ defmodule Fleetlm.Chat.ConversationServer do
         Events.publish_dm_activity(event, state.dm.first, state.dm.second)
         Events.publish_dm_activity(event, state.dm.second, state.dm.first)
 
+        Observability.message_sent(state.dm.key, sender_id, recipient_id, metadata)
+
         {:ok, event}
 
       {:error, error} ->
         {:error, error}
     end
-  end
-
-  defp emit_stopped(state, reason) do
-    active = RuntimeCounters.increment(:conversations_active, -1)
-    emit_active(state.dm.key, active)
-
-    :telemetry.execute([:fleetlm, :conversation, :stopped], %{count: 1}, %{
-      dm_key: state.dm.key,
-      reason: reason
-    })
-  end
-
-  defp emit_active(dm_key, count) do
-    :telemetry.execute([:fleetlm, :conversation, :active], %{count: count}, %{dm_key: dm_key})
   end
 
   defp normalize_reason({:shutdown, inner}), do: normalize_reason(inner)

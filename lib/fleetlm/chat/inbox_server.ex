@@ -4,7 +4,7 @@ defmodule Fleetlm.Chat.InboxServer do
   use GenServer, restart: :transient
 
   alias Fleetlm.Chat.{Cache, Events, InboxSupervisor}
-  alias Fleetlm.Telemetry.RuntimeCounters
+  alias Fleetlm.Observability
   alias Phoenix.PubSub
 
   @pubsub Fleetlm.PubSub
@@ -57,8 +57,6 @@ defmodule Fleetlm.Chat.InboxServer do
 
   @impl true
   def init(participant_id) do
-    RuntimeCounters.increment(:inboxes_active, 1)
-
     entries = load_entries(participant_id)
 
     state = %{
@@ -68,6 +66,8 @@ defmodule Fleetlm.Chat.InboxServer do
       timer_ref: nil,
       last_flush: monotonic_millis()
     }
+
+    Observability.inbox_started(participant_id)
 
     {:ok, state}
   end
@@ -116,12 +116,16 @@ defmodule Fleetlm.Chat.InboxServer do
   def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, _state) do
-    RuntimeCounters.increment(:inboxes_active, -1)
+  def terminate(reason, %{participant_id: participant_id}) do
+    Observability.inbox_stopped(participant_id, normalize_reason(reason))
     :ok
   end
 
   ## Helpers
+
+  defp normalize_reason({:shutdown, inner}), do: normalize_reason(inner)
+  defp normalize_reason(:normal), do: :normal
+  defp normalize_reason(reason), do: reason
 
   defp load_entries(participant_id) do
     case Cache.fetch_inbox_snapshot(participant_id) do

@@ -61,8 +61,7 @@ defmodule Fleetlm.MixProject do
       {:swoosh, "~> 1.16"},
       {:req, "~> 0.5"},
       {:cachex, "~> 3.6"},
-      {:telemetry_metrics, "~> 1.0"},
-      {:telemetry_poller, "~> 1.0"},
+      {:prom_ex, "~> 1.11"},
       {:gettext, "~> 0.26"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
@@ -72,8 +71,7 @@ defmodule Fleetlm.MixProject do
       {:redix, "~> 1.5"},
       {:opentelemetry_api, "~> 1.3"},
       {:opentelemetry, "~> 1.3"},
-      {:opentelemetry_exporter, "~> 1.7"},
-      {:telemetry_metrics_prometheus_core, "~> 1.2"}
+      {:opentelemetry_exporter, "~> 1.7"}
     ]
   end
 

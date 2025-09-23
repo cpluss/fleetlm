@@ -31,4 +31,23 @@ defmodule Fleetlm.Chat.InboxSupervisor do
   def init(_arg) do
     DynamicSupervisor.init(strategy: :one_for_one)
   end
+
+  @doc """
+  Return the number of active inbox processes.
+  """
+  @spec active_count() :: non_neg_integer()
+  def active_count do
+    case Process.whereis(Fleetlm.Chat.InboxRegistry) do
+      nil -> 0
+      _pid -> safe_registry_count(Fleetlm.Chat.InboxRegistry)
+    end
+  end
+
+  defp safe_registry_count(registry) do
+    try do
+      Registry.count(registry)
+    catch
+      :exit, _ -> 0
+    end
+  end
 end

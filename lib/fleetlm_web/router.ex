@@ -39,7 +39,7 @@ defmodule FleetlmWeb.Router do
     scope "/dev" do
       pipe_through :browser
 
-      live_dashboard "/dashboard", metrics: FleetlmWeb.Telemetry
+      live_dashboard "/dashboard"
       forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
   end

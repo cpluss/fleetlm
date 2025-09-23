@@ -39,6 +39,25 @@ defmodule Fleetlm.Chat.ConversationSupervisor do
     DynamicSupervisor.init(strategy: :one_for_one)
   end
 
+  @doc """
+  Return the number of active conversation processes.
+  """
+  @spec active_count() :: non_neg_integer()
+  def active_count do
+    case Process.whereis(Fleetlm.Chat.ConversationRegistry) do
+      nil -> 0
+      _pid -> safe_registry_count(Fleetlm.Chat.ConversationRegistry)
+    end
+  end
+
+  defp safe_registry_count(registry) do
+    try do
+      Registry.count(registry)
+    catch
+      :exit, _ -> 0
+    end
+  end
+
   defp ensure_ready(pid, attempts \\ 20)
   defp ensure_ready(_pid, 0), do: {:error, :not_ready}
 
