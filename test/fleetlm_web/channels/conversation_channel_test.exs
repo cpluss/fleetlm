@@ -10,9 +10,9 @@ defmodule FleetlmWeb.ConversationChannelTest do
       user_b = "user:bob"
       dm_key = Chat.generate_dm_key(user_a, user_b)
 
-      {:ok, _} = Chat.send_dm_message(user_a, user_b, "Message 1")
+      {:ok, _} = Chat.send_message(user_a, user_b, "Message 1")
       :timer.sleep(10)
-      {:ok, _} = Chat.send_dm_message(user_b, user_a, "Message 2")
+      {:ok, _} = Chat.send_message(user_b, user_a, "Message 2")
 
       {:ok, user_a: user_a, user_b: user_b, dm_key: dm_key}
     end
@@ -42,7 +42,7 @@ defmodule FleetlmWeb.ConversationChannelTest do
       ref_b = push(socket_b, "conversation:subscribe", %{"dm_key" => dm_key})
       assert_reply ref_b, :ok, %{"dm_key" => ^dm_key, "messages" => _}
 
-      {:ok, _} = Chat.send_dm_message(user_a, user_b, "Hello from A")
+      {:ok, _} = Chat.send_message(user_a, user_b, "Hello from A")
 
       assert_receive %Phoenix.Socket.Message{
         event: "message",

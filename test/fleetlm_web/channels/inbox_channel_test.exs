@@ -9,9 +9,9 @@ defmodule FleetlmWeb.InboxChannelTest do
       user_a = "user:alice"
       user_b = "user:bob"
 
-      {:ok, _} = Chat.send_dm_message(user_a, user_b, "Hello Bob")
+      {:ok, _} = Chat.send_message(user_a, user_b, "Hello Bob")
       :timer.sleep(10)
-      {:ok, _} = Chat.send_dm_message(user_b, user_a, "Hi Alice")
+      {:ok, _} = Chat.send_message(user_b, user_a, "Hi Alice")
 
       {:ok, user_a: user_a, user_b: user_b}
     end
@@ -29,7 +29,7 @@ defmodule FleetlmWeb.InboxChannelTest do
       {:ok, _reply, inbox_socket} = subscribe_and_join(socket_a, InboxChannel, "inbox:#{user_a}")
 
       dm_key = Chat.generate_dm_key(user_a, user_b)
-      {:ok, _} = Chat.send_dm_message(user_b, user_a, "New ping")
+      {:ok, _} = Chat.send_message(user_b, user_a, "New ping")
 
       update = wait_for_update(inbox_socket, dm_key)
       assert update["participant_id"] == user_a

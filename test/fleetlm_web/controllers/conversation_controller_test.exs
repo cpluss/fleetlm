@@ -11,9 +11,9 @@ defmodule FleetlmWeb.ConversationControllerTest do
       user_b = "user:bob"
       dm_key = Chat.generate_dm_key(user_a, user_b)
 
-      {:ok, _} = Chat.send_dm_message(user_a, user_b, "hello")
+      {:ok, _} = Chat.send_message(user_a, user_b, "hello")
       :timer.sleep(5)
-      {:ok, _} = Chat.send_dm_message(user_b, user_a, "hi")
+      {:ok, _} = Chat.send_message(user_b, user_a, "hi")
 
       {:ok, user_a: user_a, user_b: user_b, dm_key: dm_key}
     end

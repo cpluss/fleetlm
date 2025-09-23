@@ -7,7 +7,7 @@ defmodule FleetlmWeb.ConversationChannel do
   use FleetlmWeb, :channel
 
   alias Fleetlm.Chat
-  alias Fleetlm.Chat.{Dispatcher, DmKey, Event}
+  alias Fleetlm.Chat.{DmKey, Event}
   alias Phoenix.PubSub
 
   @pubsub Fleetlm.PubSub
@@ -39,13 +39,10 @@ defmodule FleetlmWeb.ConversationChannel do
 
       true ->
         with {:ok, dm} <- authorize_dm(dm_key, participant_id),
-             {:ok, _} <- Dispatcher.ensure_conversation(dm.key) do
+             {:ok, events} <- Chat.get_messages(dm.key, limit: @history_limit) do
           :ok = PubSub.subscribe(@pubsub, "dm:" <> dm.key)
 
-          history =
-            dm.key
-            |> Dispatcher.convo_history(limit: @history_limit)
-            |> Enum.map(&Event.DmMessage.to_payload/1)
+          history = Enum.map(events, &Event.DmMessage.to_payload/1)
 
           subscriptions = MapSet.put(socket.assigns.subscriptions, dm.key)
 
@@ -75,7 +72,7 @@ defmodule FleetlmWeb.ConversationChannel do
   end
 
   def handle_in("heartbeat", %{"dm_key" => dm_key}, socket) do
-    Dispatcher.heartbeat_conversation(dm_key)
+    Chat.heartbeat(dm_key)
     {:noreply, socket}
   end
 

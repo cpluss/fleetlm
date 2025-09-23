@@ -2,7 +2,7 @@ defmodule FleetlmWeb.ConversationController do
   use FleetlmWeb, :controller
 
   alias Fleetlm.Chat
-  alias Fleetlm.Chat.{Dispatcher, DmKey, Event}
+  alias Fleetlm.Chat.{DmKey, Event}
 
   @broadcast_key "broadcast"
 
@@ -45,17 +45,13 @@ defmodule FleetlmWeb.ConversationController do
 
   defp fetch_messages(dm_key, participant_id, limit) do
     with {:ok, dm} <- authorize(dm_key, participant_id),
-         {:ok, _} <- Dispatcher.ensure_conversation(dm.key) do
-      messages =
-        Dispatcher.convo_history(dm.key, limit: limit)
-        |> Enum.map(&Event.DmMessage.to_payload/1)
-
-      {:ok, messages}
+         {:ok, events} <- Chat.get_messages(dm.key, limit: limit) do
+      {:ok, Enum.map(events, &Event.DmMessage.to_payload/1)}
     end
   end
 
   defp deliver_message(@broadcast_key, sender_id, text, metadata) when is_binary(sender_id) do
-    case Dispatcher.send_broadcast(sender_id, text, metadata) do
+    case Chat.send_broadcast_message(sender_id, text, metadata) do
       {:ok, event} -> {:ok, Event.BroadcastMessage.to_payload(event)}
       {:error, reason} -> {:error, reason}
     end
@@ -66,7 +62,7 @@ defmodule FleetlmWeb.ConversationController do
     with {:ok, dm} <- authorize(dm_key, sender_id),
          recipient <- DmKey.other_participant(dm, sender_id),
          {:ok, event} <-
-           Dispatcher.send_message(%{
+           Chat.send_message(%{
              dm_key: dm.key,
              sender_id: sender_id,
              recipient_id: recipient,

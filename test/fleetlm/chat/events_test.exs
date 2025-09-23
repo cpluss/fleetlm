@@ -16,7 +16,7 @@ defmodule Fleetlm.Chat.EventsTest do
       Chat.inbox_snapshot(user_a)
       Chat.inbox_snapshot(user_b)
 
-      {:ok, event} = Chat.send_dm_message(user_a, user_b, "Hello Bob!")
+      {:ok, event} = Chat.send_message(user_a, user_b, "Hello Bob!")
 
       assert_receive {:dm_message, payload}
       assert payload["id"] == event.id
