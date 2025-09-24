@@ -2,7 +2,7 @@ defmodule Fleetlm.Chat.EventsTest do
   use FleetlmWeb.ChannelCase
 
   alias Fleetlm.Chat
-  alias Fleetlm.Chat.{Cache, InboxServer, InboxSupervisor}
+  alias Fleetlm.Chat.{Cache, InboxServer, InboxSupervisor, DmKey}
 
   describe "runtime PubSub fanout" do
     test "dm messages and inbox activity are broadcast" do
@@ -29,17 +29,21 @@ defmodule Fleetlm.Chat.EventsTest do
       assert payload["text"] == "Hello Bob!"
       assert payload["sender_id"] == user_a
 
-      for participant <- [user_a, user_b] do
+      participants = [user_a, user_b]
+      dm = DmKey.parse!(dm_key)
+      dm_participants = Enum.sort([dm.first, dm.second])
+
+      Enum.each(participants, fn _participant ->
         assert_receive {:inbox_delta, %{updates: updates}}, 500
         payload = Enum.find(updates, &(&1["dm_key"] == dm_key))
         assert payload
-        assert payload["participant_id"] == participant
-        assert payload["other_participant_id"] in [user_a, user_b]
+        parsed = DmKey.parse!(payload["dm_key"])
+        assert Enum.sort([parsed.first, parsed.second]) == dm_participants
         assert payload["last_sender_id"] == user_a
         assert payload["last_message_text"] == "Hello Bob!"
         refute Map.has_key?(payload, "text")
         refute Map.has_key?(payload, "metadata")
-      end
+      end)
     end
 
     test "broadcast messages are faned out" do

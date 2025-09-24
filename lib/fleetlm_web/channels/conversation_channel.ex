@@ -14,17 +14,17 @@ defmodule FleetlmWeb.ConversationChannel do
   @impl true
   def join("conversation:" <> topic_key, _params, socket) do
     participant_id = socket.assigns.participant_id
-    process_id = "CONV_#{:erlang.phash2(self(), 10000)}"
 
     result =
       case topic_key do
-        @broadcast_key -> join_broadcast(socket, process_id)
-        dm_key -> join_dm(dm_key, participant_id, socket, process_id)
+        @broadcast_key -> join_broadcast(socket)
+        dm_key -> join_dm(dm_key, participant_id, socket)
       end
 
     case result do
       {:ok, response, new_socket} ->
         {:ok, response, new_socket}
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -48,7 +48,7 @@ defmodule FleetlmWeb.ConversationChannel do
     {:noreply, socket}
   end
 
-  defp join_dm(dm_key, participant_id, socket, _process_id) do
+  defp join_dm(dm_key, participant_id, socket) do
     with {:ok, dm} <- authorize_dm(dm_key, participant_id),
          {:ok, events} <- Chat.get_messages(dm.key, limit: @history_limit) do
       history = Enum.map(events, &Events.DmMessage.to_payload/1)
@@ -59,7 +59,9 @@ defmodule FleetlmWeb.ConversationChannel do
     end
   end
 
-  defp join_broadcast(socket, _process_id) do
+  defp join_broadcast(socket) do
+    :ok = Phoenix.PubSub.subscribe(Fleetlm.PubSub, @broadcast_key)
+
     history =
       Chat.list_broadcast_messages(limit: @history_limit)
       |> Enum.reverse()

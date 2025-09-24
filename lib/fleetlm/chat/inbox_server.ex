@@ -237,9 +237,7 @@ defmodule Fleetlm.Chat.InboxServer do
 
   defp ensure_activity_struct(payload) when is_map(payload) do
     struct!(Events.DmActivity, %{
-      participant_id: payload[:participant_id] || payload["participant_id"],
       dm_key: payload[:dm_key] || payload["dm_key"],
-      other_participant_id: payload[:other_participant_id] || payload["other_participant_id"],
       last_sender_id: payload[:last_sender_id] || payload["last_sender_id"],
       last_message_text: payload[:last_message_text] || payload["last_message_text"],
       last_message_at: payload[:last_message_at] || payload["last_message_at"],

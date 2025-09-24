@@ -46,16 +46,14 @@ defmodule Fleetlm.ChatIntegrationTest do
       :ok = Client.flush_inbox(bob)
       assert {:ok, updates_bob} = Client.wait_for_inbox_updates(bob, attempts: 5)
       update_bob = Client.find_inbox_update(updates_bob, dm_key_ab)
-      assert update_bob["participant_id"] == bob.participant_id
-      assert update_bob["other_participant_id"] == alice.participant_id
+      assert update_bob["dm_key"] == dm_key_ab
       assert update_bob["last_sender_id"] == alice.participant_id
       assert update_bob["unread_count"] == 1
 
       :ok = Client.flush_inbox(alice)
       assert {:ok, updates_alice} = Client.wait_for_inbox_updates(alice, attempts: 5)
       update_alice = Client.find_inbox_update(updates_alice, dm_key_ab)
-      assert update_alice["participant_id"] == alice.participant_id
-      assert update_alice["other_participant_id"] == bob.participant_id
+      assert update_alice["dm_key"] == dm_key_ab
       assert update_alice["last_sender_id"] == alice.participant_id
       assert update_alice["unread_count"] == 0
 

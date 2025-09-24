@@ -2,7 +2,7 @@ defmodule FleetlmWeb.InboxChannelTest do
   use FleetlmWeb.ChannelCase
 
   alias Fleetlm.Chat
-  alias Fleetlm.Chat.{Cache, InboxServer, InboxSupervisor}
+  alias Fleetlm.Chat.{Cache, InboxServer, InboxSupervisor, DmKey}
   alias FleetlmWeb.InboxChannel
 
   describe "InboxChannel" do
@@ -28,7 +28,10 @@ defmodule FleetlmWeb.InboxChannelTest do
       assert %{"conversations" => conversations} = reply
       assert length(conversations) == 1
       conversation = hd(conversations)
-      assert conversation["other_participant_id"] == user_b
+
+      parsed = DmKey.parse!(conversation["dm_key"])
+      participants = [parsed.first, parsed.second]
+      assert Enum.sort(participants) == Enum.sort([user_a, user_b])
     end
 
     test "dm metadata updates flow through inbox channel", %{user_a: user_a, user_b: user_b} do
@@ -40,8 +43,6 @@ defmodule FleetlmWeb.InboxChannelTest do
       :ok = InboxServer.flush(user_a)
 
       update = wait_for_update(inbox_socket, dm_key)
-      assert update["participant_id"] == user_a
-      assert update["other_participant_id"] == user_b
       assert update["last_sender_id"] == user_b
       assert update["last_message_text"] == "New ping"
     end
@@ -60,8 +61,14 @@ defmodule FleetlmWeb.InboxChannelTest do
       assert_receive %Phoenix.Socket.Message{event: "tick", payload: %{"updates" => updates}}
       assert length(updates) == 2
 
-      participant_ids = Enum.map(updates, & &1["other_participant_id"])
-      assert Enum.sort(participant_ids) == Enum.sort([user_b, user_c])
+      parsed_participants =
+        updates
+        |> Enum.map(&DmKey.parse!(&1["dm_key"]))
+        |> Enum.map(fn dm ->
+          if dm.first == user_a, do: dm.second, else: dm.first
+        end)
+
+      assert Enum.sort(parsed_participants) == Enum.sort([user_b, user_c])
 
       Enum.each(updates, fn update ->
         refute Map.has_key?(update, "text")

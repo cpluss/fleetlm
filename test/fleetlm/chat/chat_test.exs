@@ -2,6 +2,7 @@ defmodule Fleetlm.ChatTest do
   use Fleetlm.DataCase
 
   alias Fleetlm.Chat
+  alias Fleetlm.Chat.DmKey
 
   describe "DM messaging" do
     test "send_message/4 creates a DM message" do
@@ -54,7 +55,12 @@ defmodule Fleetlm.ChatTest do
 
       # Check that we get dm_keys and other participant IDs
       dm_keys = Enum.map(threads, & &1.dm_key)
-      participant_ids = Enum.map(threads, & &1.other_participant_id)
+
+      participant_ids =
+        Enum.map(threads, fn thread ->
+          dm = DmKey.parse!(thread.dm_key)
+          if dm.first == user_a, do: dm.second, else: dm.first
+        end)
 
       assert user_b in participant_ids
       assert user_c in participant_ids
