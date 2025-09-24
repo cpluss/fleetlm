@@ -15,7 +15,8 @@ defmodule Fleetlm.Observability.PromEx do
       {PromEx.Plugins.Application, otp_app: :fleetlm},
       PromEx.Plugins.Beam,
       {PromEx.Plugins.Ecto, otp_app: :fleetlm, repos: [Fleetlm.Repo]},
-      {PromEx.Plugins.Phoenix, router: FleetlmWeb.Router, endpoint: FleetlmWeb.Endpoint},
+      {Fleetlm.Observability.PromEx.PhoenixPlugin,
+       router: FleetlmWeb.Router, endpoint: FleetlmWeb.Endpoint},
       Fleetlm.Observability.PromEx.ChatPlugin
     ]
   end
