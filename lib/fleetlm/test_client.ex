@@ -641,9 +641,10 @@ defmodule Fleetlm.TestClient do
 
       {:socket, {:conversation_message, payload}} ->
         if payload["dm_key"] == state.dm_key do
-          # Deduplicate by message ID to handle duplicate conversation channel messages
           message_id = payload["id"]
+
           unless MapSet.member?(state.seen_message_ids, message_id) do
+            # Deduplicate by message ID to handle duplicate conversation channel messages
             emit(%{event: "message.live", dm_key: state.dm_key, message: payload}, state.format)
             chat_loop(%{state | seen_message_ids: MapSet.put(state.seen_message_ids, message_id)})
           else

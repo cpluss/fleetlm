@@ -5,16 +5,18 @@ defmodule Fleetlm.Chat.ConversationSupervisor do
 
   use DynamicSupervisor
 
-  alias Fleetlm.Chat.ConversationServer
+  alias Fleetlm.Chat.{ConversationServer, DmKey}
+
+  @registry Fleetlm.Chat.ConversationRegistry
 
   @spec start_link(term()) :: Supervisor.on_start()
   def start_link(init_arg) do
     DynamicSupervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
   end
 
-  @spec ensure_started(String.t()) :: {:ok, pid()} | {:error, term()}
-  def ensure_started(dm_key) do
-    case Registry.lookup(Fleetlm.Chat.ConversationRegistry, dm_key) do
+  @spec ensure_started(DmKey.t()) :: {:ok, pid()} | {:error, term()}
+  def ensure_started(%DmKey{} = dm_key) do
+    case Registry.lookup(@registry, dm_key.key) do
       [{pid, _}] ->
         case ensure_ready(pid) do
           {:ok, _pid} ->
@@ -34,6 +36,14 @@ defmodule Fleetlm.Chat.ConversationSupervisor do
     end
   end
 
+  def ensure_started(dm_key) when is_binary(dm_key) do
+    dm_key
+    |> DmKey.parse!()
+    |> ensure_started()
+  rescue
+    e in ArgumentError -> {:error, e}
+  end
+
   @impl true
   def init(_arg) do
     DynamicSupervisor.init(strategy: :one_for_one)
@@ -44,9 +54,9 @@ defmodule Fleetlm.Chat.ConversationSupervisor do
   """
   @spec active_count() :: non_neg_integer()
   def active_count do
-    case Process.whereis(Fleetlm.Chat.ConversationRegistry) do
+    case Process.whereis(@registry) do
       nil -> 0
-      _pid -> safe_registry_count(Fleetlm.Chat.ConversationRegistry)
+      _pid -> safe_registry_count(@registry)
     end
   end
 

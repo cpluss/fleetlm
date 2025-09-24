@@ -16,38 +16,36 @@ defmodule Fleetlm.Chat.ConversationServer do
 
   ## Public API
 
-  @spec via(String.t()) :: {:via, Registry, {module(), String.t()}}
-  def via(dm_key), do: {:via, Registry, {@registry, dm_key}}
+  @spec via(DmKey.t()) :: {:via, Registry, {module(), String.t()}}
+  def via(%DmKey{key: key}), do: {:via, Registry, {@registry, key}}
 
-  @spec start_link(String.t()) :: GenServer.on_start()
-  def start_link(dm_key) when is_binary(dm_key) do
+  @spec start_link(DmKey.t()) :: GenServer.on_start()
+  def start_link(%DmKey{} = dm_key) do
     GenServer.start_link(__MODULE__, dm_key, name: via(dm_key))
   end
 
-  @spec send_message(String.t(), String.t(), String.t(), String.t() | nil, map()) ::
+  @spec send_message(DmKey.t(), String.t(), String.t(), String.t() | nil, map()) ::
           {:ok, Events.DmMessage.t()} | {:error, term()}
-  def send_message(dm_key, sender_id, recipient_id, text, metadata) do
+  def send_message(%DmKey{} = dm_key, sender_id, recipient_id, text, metadata) do
     GenServer.call(via(dm_key), {:send_message, sender_id, recipient_id, text, metadata})
   end
 
-  @spec heartbeat(String.t()) :: :ok
-  def heartbeat(dm_key) do
+  @spec heartbeat(DmKey.t()) :: :ok
+  def heartbeat(%DmKey{} = dm_key) do
     GenServer.cast(via(dm_key), :heartbeat)
   end
 
-  @spec ensure_open(String.t(), String.t(), String.t(), String.t() | nil) ::
+  @spec ensure_open(DmKey.t(), String.t(), String.t(), String.t() | nil) ::
           {:ok, %{dm_key: String.t(), initial_message: Events.DmMessage.t() | nil}}
           | {:error, term()}
-  def ensure_open(dm_key, initiator_id, other_participant_id, initial_text) do
+  def ensure_open(%DmKey{} = dm_key, initiator_id, other_participant_id, initial_text) do
     GenServer.call(via(dm_key), {:ensure_open, initiator_id, other_participant_id, initial_text})
   end
 
   ## GenServer callbacks
 
   @impl true
-  def init(dm_key) do
-    dm = DmKey.parse!(dm_key)
-
+  def init(%DmKey{} = dm) do
     seed_tail(dm.key)
 
     state = %{

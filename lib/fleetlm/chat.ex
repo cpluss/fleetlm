@@ -38,7 +38,7 @@ defmodule Fleetlm.Chat do
   @spec send_message(send_message_attrs()) :: {:ok, Events.DmMessage.t()} | {:error, term()}
   def send_message(attrs) when is_map(attrs) do
     with {:ok, dm} <- resolve_dm(attrs),
-         {:ok, _pid} <- ConversationSupervisor.ensure_started(dm.key) do
+         {:ok, _pid} <- ConversationSupervisor.ensure_started(dm) do
       metadata = Map.get(attrs, :metadata) || Map.get(attrs, "metadata") || %{}
       text = Map.get(attrs, :text) || Map.get(attrs, "text")
       sender_id = Map.get(attrs, :sender_id) || Map.get(attrs, "sender_id")
@@ -49,7 +49,7 @@ defmodule Fleetlm.Chat do
             Map.get(attrs, "recipient_id") ||
             DmKey.other_participant(dm, sender_id)
 
-        ConversationServer.send_message(dm.key, sender_id, recipient_id, text, metadata)
+        ConversationServer.send_message(dm, sender_id, recipient_id, text, metadata)
       end
     end
   end
@@ -116,13 +116,12 @@ defmodule Fleetlm.Chat do
   """
   @spec heartbeat(String.t()) :: :ok | {:error, term()}
   def heartbeat(dm_key) do
-    case ConversationSupervisor.ensure_started(dm_key) do
-      {:ok, _pid} ->
-        ConversationServer.heartbeat(dm_key)
-        :ok
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:ok, dm} <- resolve_dm(%{dm_key: dm_key}),
+         {:ok, _pid} <- ConversationSupervisor.ensure_started(dm) do
+      ConversationServer.heartbeat(dm)
+      :ok
+    else
+      {:error, reason} -> {:error, reason}
     end
   end
 
