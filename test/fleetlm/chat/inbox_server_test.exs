@@ -22,9 +22,8 @@ defmodule Fleetlm.Chat.InboxServerTest do
     participant = "user:snapshot"
 
     entry = %Events.DmActivity{
-      participant_id: participant,
+      sender_id: participant,
       dm_key: "dm:one",
-      other_participant_id: "user:other",
       last_sender_id: "user:other",
       last_message_text: "cached",
       last_message_at: DateTime.utc_now(),
@@ -44,9 +43,8 @@ defmodule Fleetlm.Chat.InboxServerTest do
     subscribe(participant)
 
     activity = %Events.DmActivity{
-      participant_id: participant,
+      sender_id: participant,
       dm_key: "dm:agg",
-      other_participant_id: "user:bob",
       last_sender_id: "user:bob",
       last_message_text: "first",
       last_message_at: DateTime.utc_now(),
@@ -76,9 +74,8 @@ defmodule Fleetlm.Chat.InboxServerTest do
 
     Enum.each(["dm:a", "dm:b"], fn dm ->
       activity = %Events.DmActivity{
-        participant_id: participant,
+        sender_id: participant,
         dm_key: dm,
-        other_participant_id: "user:" <> dm,
         last_sender_id: "user:" <> dm,
         last_message_text: dm,
         last_message_at: now,
@@ -106,9 +103,8 @@ defmodule Fleetlm.Chat.InboxServerTest do
     start_server(participant)
 
     activity = %Events.DmActivity{
-      participant_id: participant,
+      sender_id: participant,
       dm_key: "dm:read",
-      other_participant_id: "user:bob",
       last_sender_id: "user:bob",
       last_message_text: "ping",
       last_message_at: DateTime.utc_now(),

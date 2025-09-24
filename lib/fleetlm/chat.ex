@@ -98,9 +98,8 @@ defmodule Fleetlm.Chat do
     Storage.list_dm_threads(participant_id)
     |> Enum.map(fn thread ->
       %Events.DmActivity{
-        participant_id: participant_id,
+        sender_id: participant_id,
         dm_key: thread.dm_key,
-        other_participant_id: thread.other_participant_id,
         last_sender_id: nil,
         last_message_text: nil,
         last_message_at: thread.last_message_at,

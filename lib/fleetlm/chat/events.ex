@@ -62,9 +62,8 @@ defmodule Fleetlm.Chat.Events do
     """
 
     @type t :: %__MODULE__{
-            participant_id: String.t(),
+            sender_id: String.t(),
             dm_key: String.t(),
-            other_participant_id: String.t(),
             last_sender_id: String.t() | nil,
             last_message_text: String.t() | nil,
             last_message_at: DateTime.t() | NaiveDateTime.t() | nil,
@@ -72,9 +71,8 @@ defmodule Fleetlm.Chat.Events do
           }
 
     defstruct [
-      :participant_id,
+      :sender_id,
       :dm_key,
-      :other_participant_id,
       :last_sender_id,
       :last_message_text,
       :last_message_at,
@@ -83,9 +81,8 @@ defmodule Fleetlm.Chat.Events do
 
     def to_payload(%__MODULE__{} = event) do
       %{
-        "participant_id" => event.participant_id,
+        "sender_id" => event.sender_id,
         "dm_key" => event.dm_key,
-        "other_participant_id" => event.other_participant_id,
         "last_sender_id" => event.last_sender_id,
         "last_message_text" => event.last_message_text,
         "last_message_at" => encode_datetime(event.last_message_at),
@@ -170,21 +167,22 @@ defmodule Fleetlm.Chat.Events do
   @doc """
   Broadcast participant-scoped activity metadata for inbox consumers.
   """
-  @spec publish_dm_activity(DmMessage.t(), String.t(), String.t()) :: :ok
-  def publish_dm_activity(%DmMessage{} = event, participant_id, other_participant_id) do
+  @spec publish_dm_activity(DmMessage.t()) :: :ok
+  def publish_dm_activity(%DmMessage{} = event) do
     activity = %DmActivity{
-      participant_id: participant_id,
+      sender_id: event.sender_id,
       dm_key: event.dm_key,
-      other_participant_id: other_participant_id,
       last_sender_id: event.sender_id,
       last_message_text: event.text,
       last_message_at: event.created_at,
       unread_count: 0
     }
 
-    case InboxSupervisor.ensure_started(participant_id) do
-      {:ok, _pid} -> InboxServer.enqueue_activity(participant_id, activity)
-      {:error, _reason} -> :ok
-    end
+    Enum.each([event.sender_id, event.recipient_id], fn participant_id ->
+      case InboxSupervisor.has_started?(participant_id) do
+        true -> InboxServer.enqueue_activity(participant_id, activity)
+        false -> :skip
+      end
+    end)
   end
 end

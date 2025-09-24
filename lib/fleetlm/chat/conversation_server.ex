@@ -141,10 +141,11 @@ defmodule Fleetlm.Chat.ConversationServer do
 
         _ = ensure_tail_appended(state.dm.key, event)
 
+        # Actual message push
         Events.publish_dm_message(event)
-        Events.publish_dm_activity(event, state.dm.first, state.dm.second)
-        Events.publish_dm_activity(event, state.dm.second, state.dm.first)
-
+        # Notifications
+        Events.publish_dm_activity(event)
+        # Telemetry - so we can count this stuff
         Observability.message_sent(state.dm.key, sender_id, recipient_id, metadata)
 
         {:ok, event}

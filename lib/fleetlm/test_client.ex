@@ -506,7 +506,8 @@ defmodule Fleetlm.TestClient do
         "Chat session started. Type messages and press enter. Commands: /quit, /history"
       )
 
-      input_pid = spawn_link(fn -> chat_input_loop(self()) end)
+      parent = self()
+      input_pid = spawn_link(fn -> chat_input_loop(parent) end)
 
       chat_loop(%{
         socket: socket,

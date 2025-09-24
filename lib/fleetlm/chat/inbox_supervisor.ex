@@ -10,6 +10,14 @@ defmodule Fleetlm.Chat.InboxSupervisor do
     DynamicSupervisor.start_link(__MODULE__, arg, name: __MODULE__)
   end
 
+  @spec has_started?(String.t()) :: boolean()
+  def has_started?(participant_id) do
+    case Registry.lookup(Fleetlm.Chat.InboxRegistry, participant_id) do
+      [{_pid, _}] -> true
+      [] -> false
+    end
+  end
+
   @spec ensure_started(String.t()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(participant_id) do
     case Registry.lookup(Fleetlm.Chat.InboxRegistry, participant_id) do
@@ -28,6 +36,15 @@ defmodule Fleetlm.Chat.InboxSupervisor do
   end
 
   @impl true
+  @spec init(any()) ::
+          {:ok,
+           %{
+             extra_arguments: list(),
+             intensity: non_neg_integer(),
+             max_children: :infinity | non_neg_integer(),
+             period: pos_integer(),
+             strategy: :one_for_one
+           }}
   def init(_arg) do
     DynamicSupervisor.init(strategy: :one_for_one)
   end

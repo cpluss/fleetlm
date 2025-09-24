@@ -8,19 +8,25 @@ defmodule FleetlmWeb.ConversationChannel do
 
   alias Fleetlm.Chat
   alias Fleetlm.Chat.{DmKey, Events}
-  alias Phoenix.PubSub
-
-  @pubsub Fleetlm.PubSub
   @history_limit 40
   @broadcast_key "broadcast"
 
   @impl true
   def join("conversation:" <> topic_key, _params, socket) do
     participant_id = socket.assigns.participant_id
+    process_id = "CONV_#{:erlang.phash2(self(), 10000)}"
 
-    case topic_key do
-      @broadcast_key -> join_broadcast(socket)
-      dm_key -> join_dm(dm_key, participant_id, socket)
+    result =
+      case topic_key do
+        @broadcast_key -> join_broadcast(socket, process_id)
+        dm_key -> join_dm(dm_key, participant_id, socket, process_id)
+      end
+
+    case result do
+      {:ok, response, new_socket} ->
+        {:ok, response, new_socket}
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -42,33 +48,18 @@ defmodule FleetlmWeb.ConversationChannel do
     {:noreply, socket}
   end
 
-  @impl true
-  def terminate(_reason, %{assigns: %{dm_key: dm_key}}) do
-    case dm_key do
-      nil -> :ok
-      @broadcast_key -> PubSub.unsubscribe(@pubsub, @broadcast_key)
-      key -> PubSub.unsubscribe(@pubsub, conversation_topic(key))
-    end
-
-    :ok
-  end
-
-  defp join_dm(dm_key, participant_id, socket) do
+  defp join_dm(dm_key, participant_id, socket, _process_id) do
     with {:ok, dm} <- authorize_dm(dm_key, participant_id),
          {:ok, events} <- Chat.get_messages(dm.key, limit: @history_limit) do
-      :ok = PubSub.subscribe(@pubsub, conversation_topic(dm.key))
-
       history = Enum.map(events, &Events.DmMessage.to_payload/1)
-
       {:ok, %{"dm_key" => dm.key, "messages" => history}, assign(socket, :dm_key, dm.key)}
     else
-      {:error, reason} -> {:error, %{reason: inspect(reason)}}
+      {:error, reason} ->
+        {:error, %{reason: inspect(reason)}}
     end
   end
 
-  defp join_broadcast(socket) do
-    :ok = PubSub.subscribe(@pubsub, @broadcast_key)
-
+  defp join_broadcast(socket, _process_id) do
     history =
       Chat.list_broadcast_messages(limit: @history_limit)
       |> Enum.reverse()
@@ -89,6 +80,4 @@ defmodule FleetlmWeb.ConversationChannel do
   rescue
     e in ArgumentError -> {:error, e}
   end
-
-  defp conversation_topic(dm_key), do: "conversation:" <> dm_key
 end
