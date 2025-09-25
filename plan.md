@@ -1,131 +1,65 @@
-# FleetLM Scaling Implementation Plan
+# FleetLM Agent Sessions Rewrite Plan
 
 ## Overview
-Implementation roadmap for Redis PubSub, distributed caching, and scaling improvements.
+Complete redesign of the chat runtime to support multi-session, agent-integrated conversations while keeping write paths append-only. The new architecture introduces explicit chat sessions (two participants), first-class participants, webhook-capable agents, and delivery observability. Each phase keeps the system in a runnable state.
 
-## Phase 1: Redis PubSub Integration ✅
+## Phase 0 – Domain Blueprint & Guard Rails
+- Finalize ERD for `participants`, `chat_sessions`, `chat_messages`, `agent_endpoints`, `agent_delivery_logs`
+- `chat_sessions` holds both participant identifiers (`initiator_id`, `peer_id`) plus optional `agent_id` shortcut
+- Document message payload contract (`kind`, `content`, `metadata`, `seq`)
+- Capture migration approach (drop & reseed for MVP)
+- Exit criteria: ERD committed, interface contracts agreed
 
-### 1.1 Dependencies & Configuration
-- [x] Add phoenix_pubsub_redis and redix dependencies
-- [x] Update application.ex PubSub configuration for Redis
-- [x] Environment-based adapter switching (local for dev/test, Redis for prod)
-- [x] Test Redis connectivity
+## Phase 1 – Database & Migrations
+- Create migrations for new tables with indexes and per-session sequences (`chat_sessions.seq_name`)
+- `chat_sessions` columns: `id`, `initiator_id`, `peer_id`, `agent_id?`, `kind`, `status`, `metadata`, `seq_name`, `last_message_id`, `last_message_at`, timestamps
+- `chat_messages` columns: `id`, `session_id`, `sender_id`, `seq`, `kind`, `content` (JSONB), `metadata`, `shard_key`, timestamps
+- `agent_endpoints`, `agent_delivery_logs` tables per blueprint
+- Exit criteria: `mix ecto.migrate` succeeds on fresh DB with schema matching design
 
-**Target**: Enable cross-node message distribution ✅
+## Phase 2 – Context Layer APIs
+- Contexts: `Fleetlm.Participants`, `Fleetlm.Agents`, `Fleetlm.Sessions`
+- Session creation enforces exactly two participants, allocates per-session sequence, inserts seed row
+- Message append uses single insert returning `seq` via stored sequence
+- Replace `Fleetlm.Chat` with new API; add temporary compatibility wrappers if needed
+- Exit criteria: Context unit tests cover session create/list and message append
 
-### 1.2 Connection Management
-- [ ] Add Redis connection health checks
-- [ ] Implement retry logic with exponential backoff
-- [ ] Configure connection pooling
+## Phase 3 – Runtime & Caching
+- Implement `SessionServer` keyed by `session_id` (manages ordering, caching)
+- Update Cachex caches (`session_tails`, `inbox_snapshots`) to use `session_id`
+- Inbox runtime aggregates sessions per participant from `chat_sessions`
+- Telemetry hooks for session lifecycle and message append
+- Exit criteria: Supervision tree boots, runtime tests green
 
-**Target**: Reliable Redis connectivity with graceful degradation
+## Phase 4 – Webhook Agent Dispatcher
+- `AgentDispatcher` consumes message events where `agent_id` present and sender != agent
+- Deliver via `Req`, record outcomes in `agent_delivery_logs`, implement retry/backoff
+- Emit telemetry + PromEx metrics for delivery success/failure
+- Exit criteria: Integration tests simulate success/failure, logs captured
 
-## Phase 2: Cachex Distributed Caching ✅
+## Phase 5 – External Interfaces (REST + Channels + CLI)
+- REST: `/api/sessions` CRUD (create/list), `/api/sessions/:id/messages` (list/append)
+- WebSocket channels: topics `session:{session_id}` and `participant_inbox:{participant_id}`
+- Update CLI + tests to operate on session IDs and `seq`
+- Remove legacy DM endpoints
+- Exit criteria: Controller/channel tests pass, CLI smoke test works
 
-### 2.1 Cache Infrastructure
-- [x] Add Cachex dependency
-- [x] Set up cache modules:
-  - `Fleetlm.Cache.Messages` - Recent messages (TTL: 1 hour)
-  - `Fleetlm.Cache.Participants` - Thread participants (TTL: 30 min)
-  - `Fleetlm.Cache.ThreadMeta` - Thread metadata (TTL: 15 min)
+## Phase 6 – Admin LiveView & Observability
+- LiveViews for agent management (index/show/edit) and delivery logs
+- Session explorer (read-only) to inspect timelines for support
+- Extend PromEx dashboards with session + delivery metrics
+- Exit criteria: LiveView tests passing, dashboards compile
 
-### 2.2 ThreadServer Memory Management
-- [x] Remove in-process message caching from ThreadServer
-- [x] Implement Cachex-based message caching
-- [x] Replace ThreadServer state with cache lookups
-- [x] Cache invalidation on message creation
+## Phase 7 – Cleanup & Post-Migration Tasks
+- Remove deprecated `dm_*` modules and caches
+- Drop compatibility shims and unused config
+- Update docs (README/AGENTS) to reflect new architecture
+- Run `mix precommit`
+- Exit criteria: repo clean, docs updated, precommit green
 
-**Target**: 80% reduction in ThreadServer memory footprint ✅
+## Validation Checklist (ongoing)
+- `mix test`
+- `mix ecto.migrate`
+- `mix precommit` before delivery
+- Manual webhook smoke test against stub endpoint
 
-## Phase 3: Database Query Optimization ✅
-
-### 3.1 Query Performance
-- [x] Add query timing telemetry
-- [x] Optimize connection pool configuration
-- [x] Enhanced database connection settings (queue_target, queue_interval)
-
-### 3.2 Index Optimization
-- [x] Reviewed existing indexes (already optimized for hot paths)
-- [x] Database migration includes proper indexes for thread_messages and participants
-
-**Target**: <10ms average for hot path queries ✅
-
-## Phase 4: Enhanced Error Handling & Supervision ✅
-
-### 4.1 ThreadServer Resilience
-- [x] Add circuit breaker pattern for database and cache calls
-- [x] Implement graceful degradation strategies
-- [x] Enhanced restart policies with proper limits (10 restarts/60 seconds)
-
-### 4.2 Supervision Improvements
-- [x] ThreadSupervisor monitoring with restart limits
-- [x] Health check system for all components
-- [x] Graceful shutdown procedures with proper timeouts
-
-**Target**: 99.9% uptime with graceful error recovery ✅
-
-## Phase 5: Observability & Monitoring ✅
-
-### 5.1 Telemetry Integration
-- [x] Add comprehensive telemetry events for:
-  - Message processing latency
-  - Cache performance (hits/misses)
-  - Database query performance with slow query warnings
-  - ThreadServer operations
-
-### 5.2 Metrics & Logging
-- [x] Database query timing with warnings for slow queries (>100ms)
-- [x] Cache hit/miss tracking
-- [x] Message processing latency tracking
-- [x] Structured logging with detailed metadata
-
-**Target**: Full visibility into performance bottlenecks ✅
-
-## Phase 6: Production Readiness ⏳
-
-### 6.1 Configuration Management
-- [ ] Environment-based feature flags
-- [ ] Runtime configuration for cache/timeout settings
-- [ ] Health check endpoints
-
-### 6.2 Load Testing
-- [ ] Stress test ThreadServer lifecycle
-- [ ] Redis PubSub throughput testing
-- [ ] Memory usage profiling
-
-**Target**: Production-ready with comprehensive monitoring
-
----
-
-## Phase 7: Chat Runtime Refactor ⏳
-
-### 7.1 Phase 1 – Chat API Consolidation ✅
-- [x] Collapse dispatcher responsibilities into `Fleetlm.Chat`
-- [x] Expose canonical API (`send_message/1`, `get_messages/2`, `mark_read/2` stub)
-- [x] Update controllers/channels/tests to consume the new API
-- [x] Remove direct uses of `Fleetlm.Chat.Dispatcher`
-
-### 7.2 Phase 2 – Cachex Read Models & Per-Thread Channels
-- [x] Add Cachex dependency and start caches under the application supervisor
-- [x] Implement read-model helpers for tails/history with Cachex backing
-- [x] Rework `ConversationServer` to use read models + publish to `conversation:{dm_key}`
-- [x] Refactor socket routing/channels to join per-thread topics and hydrate from cache
-
-### 7.3 Phase 3 – Inbox Runtime
-- [x] Introduce `InboxServer`, registry, and supervision
-- [x] Deliver `InboxSnapshot`/`InboxDelta` via Cachex + InboxServer debouncing
-- [x] Implement `mark_read/2` and unread count adjustments
-- [x] Expand tests + telemetry for inbox flow
-
-### Status & Next Steps
-- Phase 7.3 implementation complete; review mark_read semantics and plan telemetry additions or further tuning if needed
-
----
-
-## Success Metrics
-- **Horizontal Scaling**: Support 2+ nodes with Redis PubSub
-- **Memory Usage**: 80% reduction in ThreadServer memory footprint
-- **Cache Performance**: 95%+ hit ratio for recent messages
-- **Query Performance**: <10ms average for hot path queries
-- **Reliability**: 99.9% uptime with graceful error recovery
-- **Observability**: Full visibility into performance bottlenecks
