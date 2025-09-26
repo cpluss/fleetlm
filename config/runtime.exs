@@ -55,7 +55,34 @@ if config_env() == :prod do
   host = System.get_env("PHX_HOST") || "example.com"
   port = String.to_integer(System.get_env("PORT") || "4000")
 
-  config :fleetlm, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  dns_query = System.get_env("DNS_CLUSTER_QUERY")
+
+  dns_poll_interval =
+    System.get_env("DNS_POLL_INTERVAL_MS", "5000")
+    |> String.to_integer()
+
+  topologies =
+    case dns_query do
+      nil ->
+        []
+
+      "" ->
+        []
+
+      query ->
+        [
+          fleetlm_dns: [
+            strategy: Cluster.Strategy.DNSPoll,
+            config: [
+              polling_interval: dns_poll_interval,
+              query: query,
+              node_basename: System.get_env("DNS_CLUSTER_NODE_BASENAME", "fleetlm")
+            ]
+          ]
+        ]
+    end
+
+  config :libcluster, topologies: topologies
 
   config :fleetlm, FleetlmWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],

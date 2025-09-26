@@ -12,6 +12,10 @@ services:
       PHX_HOST: ${PHX_HOST:-localhost}
       PORT: 4000
       MIGRATE_ON_BOOT: ${MIGRATE_ON_BOOT:-true}
+      # DNS clustering is disabled locally; set DNS_CLUSTER_QUERY in deployments
+      DNS_CLUSTER_QUERY: ${DNS_CLUSTER_QUERY:-}
+      DNS_CLUSTER_NODE_BASENAME: ${DNS_CLUSTER_NODE_BASENAME:-fleetlm}
+      DNS_POLL_INTERVAL_MS: ${DNS_POLL_INTERVAL_MS:-5000}
     depends_on:
       db:
         condition: service_healthy

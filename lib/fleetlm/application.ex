@@ -7,18 +7,21 @@ defmodule Fleetlm.Application do
 
   @impl true
   def start(_type, _args) do
-    children = [
-      # Observability stack (PromEx + telemetry helpers)
-      Fleetlm.Observability,
-      Fleetlm.Repo,
-      Fleetlm.Chat.Supervisor,
-      {DNSCluster, query: Application.get_env(:fleetlm, :dns_cluster_query) || :ignore},
-      pubsub_spec(),
-      # Start a worker by calling: Fleetlm.Worker.start_link(arg)
-      # {Fleetlm.Worker, arg},
-      # Start to serve requests, typically the last entry
-      FleetlmWeb.Endpoint
-    ]
+    topologies = Application.get_env(:libcluster, :topologies, [])
+
+    children =
+      [
+        # Observability stack (PromEx + telemetry helpers)
+        Fleetlm.Observability,
+        Fleetlm.Repo,
+        Fleetlm.Chat.Supervisor,
+        pubsub_spec()
+      ]
+      |> Enum.concat(cluster_children(topologies))
+      |> Enum.concat([
+        # Start to serve requests, typically the last entry
+        FleetlmWeb.Endpoint
+      ])
 
     # See https://hexdocs.pm/elixir/Supervisor.html
     # for other strategies and supported options
@@ -47,5 +50,13 @@ defmodule Fleetlm.Application do
       _ ->
         {Phoenix.PubSub, name: Fleetlm.PubSub}
     end
+  end
+
+  defp cluster_children([]), do: []
+
+  defp cluster_children(topologies) do
+    [
+      {Cluster.Supervisor, [topologies, [name: Fleetlm.ClusterSupervisor]]}
+    ]
   end
 end

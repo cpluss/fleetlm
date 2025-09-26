@@ -65,6 +65,8 @@ config :phoenix, :json_library, Jason
 # Disable default OpenTelemetry exporters; Prometheus metrics are exposed via PromEx.
 config :opentelemetry, :processors, []
 
+config :libcluster, topologies: []
+
 config :fleetlm, Fleetlm.Observability.PromEx,
   metrics_server: :disabled,
   grafana_agent: :disabled
