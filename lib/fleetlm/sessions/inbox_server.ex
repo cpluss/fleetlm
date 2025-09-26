@@ -1,5 +1,11 @@
 defmodule Fleetlm.Sessions.InboxServer do
-  @moduledoc false
+  @moduledoc """
+  Per-participant server that materialises inbox snapshots.
+
+  The server reacts to updates from `SessionServer`, refreshes the participant's
+  session list, caches it in Cachex, and broadcasts `"inbox:"` PubSub updates.
+  This keeps inbox rendering snappy without repeatedly hitting the database.
+  """
 
   use GenServer, restart: :transient
 

@@ -15,7 +15,9 @@ defmodule Fleetlm.Chat.TestRuntime do
   defp terminate_children(_registry, supervisor) do
     if Code.ensure_loaded?(supervisor) do
       case Process.whereis(supervisor) do
-        nil -> :ok
+        nil ->
+          :ok
+
         _ ->
           supervisor
           |> DynamicSupervisor.which_children()

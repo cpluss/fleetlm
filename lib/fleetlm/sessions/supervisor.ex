@@ -1,6 +1,11 @@
 defmodule Fleetlm.Sessions.Supervisor do
   @moduledoc """
-  Top-level supervisor for session runtime processes.
+  Root supervisor for the session runtime tree.
+
+  Starts Cachex caches, registries, and the dynamic supervisors that manage
+  session/inbox servers. Swapping `Fleetlm.Chat.Supervisor` for this module in
+  `Fleetlm.Application` switches the runtime to the new architecture while
+  preserving a similar supervision layout.
   """
 
   use Supervisor

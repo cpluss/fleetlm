@@ -1,5 +1,11 @@
 defmodule Fleetlm.Sessions.SessionSupervisor do
-  @moduledoc false
+  @moduledoc """
+  DynamicSupervisor responsible for starting `SessionServer` processes.
+
+  The supervisor exposes `ensure_started/1`, mirroring the previous chat
+  implementation, so higher-level code can guarantee a runtime process exists
+  before sending casts/calls.
+  """
 
   use DynamicSupervisor
 
@@ -17,8 +23,11 @@ defmodule Fleetlm.Sessions.SessionSupervisor do
   @spec ensure_started(String.t()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(session_id) when is_binary(session_id) do
     case Registry.lookup(@registry, session_id) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> DynamicSupervisor.start_child(__MODULE__, {Fleetlm.Sessions.SessionServer, session_id})
+      [{pid, _}] ->
+        {:ok, pid}
+
+      [] ->
+        DynamicSupervisor.start_child(__MODULE__, {Fleetlm.Sessions.SessionServer, session_id})
     end
   end
 

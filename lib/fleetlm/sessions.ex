@@ -1,6 +1,13 @@
 defmodule Fleetlm.Sessions do
   @moduledoc """
-  Context for working with chat sessions and messages.
+  Context boundary for the new session-based chat runtime.
+
+  This module owns the persisted representation of a two-party chat session,
+  provides helper functions to create sessions, append messages, and list
+  session history, and coordinates with the runtime layer (`SessionServer`)
+  to keep cached tails/inbox projections in sync. All public APIs here return
+  plain Ecto structs and push side effects (PubSub fan-out, cache updates) into
+  the session runtime.
   """
 
   import Ecto.Query

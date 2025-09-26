@@ -1,5 +1,11 @@
 defmodule Fleetlm.Sessions.CacheSupervisor do
-  @moduledoc false
+  @moduledoc """
+  Supervisor that boots the Cachex instances used by the session runtime.
+
+  This mirrors the original chat cache supervisor but only starts the caches
+  required for session tails and inbox snapshots. It lives under
+  `Fleetlm.Sessions.Supervisor` so the entire runtime can be restarted together.
+  """
 
   use Supervisor
   import Cachex.Spec

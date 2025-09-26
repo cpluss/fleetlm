@@ -1,5 +1,14 @@
 defmodule Fleetlm.Sessions.Cache do
-  @moduledoc false
+  @moduledoc """
+  Cachex-backed helpers for the session runtime.
+
+  We keep two lightweight caches:
+  * `session_tails` – recent messages per session to hydrate channel joins.
+  * `session_inboxes` – per-participant session snapshots for inbox listings.
+
+  The cache module centralises fetch/put/append behaviour so the runtime and
+  tests can mutate state without reaching for Cachex directly.
+  """
 
   alias Cachex
 
@@ -33,7 +42,9 @@ defmodule Fleetlm.Sessions.Cache do
     limit = Keyword.get(opts, :limit, @tail_limit)
 
     case Cachex.get(@tail_cache, session_id) do
-      {:ok, nil} -> Cachex.put(@tail_cache, session_id, [message]) |> normalize()
+      {:ok, nil} ->
+        Cachex.put(@tail_cache, session_id, [message]) |> normalize()
+
       {:ok, events} when is_list(events) ->
         updated =
           [message | events]
@@ -41,8 +52,11 @@ defmodule Fleetlm.Sessions.Cache do
 
         Cachex.put(@tail_cache, session_id, updated) |> normalize()
 
-      {:ok, _unexpected} -> Cachex.put(@tail_cache, session_id, [message]) |> normalize()
-      {:error, reason} -> {:error, reason}
+      {:ok, _unexpected} ->
+        Cachex.put(@tail_cache, session_id, [message]) |> normalize()
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

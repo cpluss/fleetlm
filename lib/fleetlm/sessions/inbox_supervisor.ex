@@ -1,5 +1,11 @@
 defmodule Fleetlm.Sessions.InboxSupervisor do
-  @moduledoc false
+  @moduledoc """
+  DynamicSupervisor for `InboxServer` processes.
+
+  Each participant that has an inbox subscription gets a lightweight GenServer
+  that tracks their session snapshots. This supervisor mirrors the previous
+  chat inbox implementation but is scoped to the new session runtime.
+  """
 
   use DynamicSupervisor
 
@@ -15,8 +21,11 @@ defmodule Fleetlm.Sessions.InboxSupervisor do
   @spec ensure_started(String.t()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(participant_id) when is_binary(participant_id) do
     case Registry.lookup(Fleetlm.Sessions.InboxRegistry, participant_id) do
-      [{pid, _}] -> {:ok, pid}
-      [] -> DynamicSupervisor.start_child(__MODULE__, {Fleetlm.Sessions.InboxServer, participant_id})
+      [{pid, _}] ->
+        {:ok, pid}
+
+      [] ->
+        DynamicSupervisor.start_child(__MODULE__, {Fleetlm.Sessions.InboxServer, participant_id})
     end
   end
 

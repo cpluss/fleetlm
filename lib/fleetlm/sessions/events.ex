@@ -1,6 +1,11 @@
 defmodule Fleetlm.Sessions.Events do
   @moduledoc """
   PubSub fan-out helpers for session messages and inbox updates.
+
+  `SessionServer` delegates to this module to broadcast real-time payloads to
+  LiveView/Channel subscribers (`"session:" <> id`) and to nudge inbox
+  projections. This keeps the runtime logic small and provides a single place
+  to shape payloads sent to clients.
   """
 
   alias Fleetlm.Sessions.InboxSupervisor
@@ -18,7 +23,9 @@ defmodule Fleetlm.Sessions.Events do
 
   defp notify_inboxes(message) do
     case Map.get(message, :session) do
-      nil -> :ok
+      nil ->
+        :ok
+
       session ->
         participants = [session.initiator_id, session.peer_id]
 
