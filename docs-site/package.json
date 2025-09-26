@@ -1,0 +1,19 @@
+{
+  "name": "fleetlm-docs",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "start": "docusaurus start",
+    "build": "docusaurus build",
+    "serve": "docusaurus serve"
+  },
+  "dependencies": {
+    "@docusaurus/core": "^3.5.1",
+    "@docusaurus/preset-classic": "^3.5.1",
+    "@docusaurus/theme-search-algolia": "^3.5.1"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}
