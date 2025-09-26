@@ -37,12 +37,13 @@ Complete redesign of the chat runtime to support multi-session, agent-integrated
 - Emit telemetry + PromEx metrics for delivery success/failure
 - Exit criteria: Integration tests simulate success/failure, logs captured
 
-## Phase 5 – External Interfaces (REST + Channels + CLI)
+## Phase 5 – External Interfaces & Regression Test Coverage
 - REST: `/api/sessions` CRUD (create/list), `/api/sessions/:id/messages` (list/append)
 - WebSocket channels: topics `session:{session_id}` and `participant_inbox:{participant_id}`
-- Update CLI + tests to operate on session IDs and `seq`
+- Update CLI + tests to operate on session IDs and ULID ordering
 - Remove legacy DM endpoints
-- Exit criteria: Controller/channel tests pass, CLI smoke test works
+- Reintroduce behavioural test coverage against the new runtime (port legacy DM tests, extend integration scenarios)
+- Exit criteria: Controller/channel tests green, behavioural suites cover inbox/session fan-out, no skipped legacy tests remain except read-receipt placeholders
 
 ## Phase 6 – Admin LiveView & Observability
 - LiveViews for agent management (index/show/edit) and delivery logs
@@ -62,3 +63,9 @@ Complete redesign of the chat runtime to support multi-session, agent-integrated
 - `mix ecto.migrate`
 - `mix precommit` before delivery
 - Manual webhook smoke test against stub endpoint
+
+## Active Work Log
+- 2025-03-?? – Restoring skipped legacy chat tests against `Fleetlm.Sessions`
+  - Port DM/unit specs to new context APIs (Sessions, Inbox runtime)
+  - Replace obsolete broadcast/read tests with equivalents or document blockers
+  - Ensure integration suite continues to cover high-load/inbox scenarios

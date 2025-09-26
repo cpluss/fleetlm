@@ -35,6 +35,17 @@ defmodule Fleetlm.SessionsTest do
       assert session.kind == "agent_dm"
       assert session.agent_id == agent.id
     end
+
+    test "rejects sessions where both participants are the same", %{user: user} do
+      assert {:error, %Ecto.Changeset{} = changeset} =
+               Sessions.start_session(%{
+                 initiator_id: user.id,
+                 peer_id: user.id
+               })
+
+      assert {"must be different from initiator", _} =
+               Keyword.fetch!(changeset.errors, :peer_id)
+    end
   end
 
   describe "append_message/2" do
@@ -88,6 +99,69 @@ defmodule Fleetlm.SessionsTest do
 
       tail = Sessions.list_messages(session.id, after_id: first.id)
       assert Enum.map(tail, & &1.id) == [second.id]
+    end
+
+    test "list_messages isolates session history", %{session: session, user: user} do
+      {:ok, other_user} =
+        Participants.upsert_participant(%{
+          id: "user:charlie",
+          kind: "user",
+          display_name: "Charlie"
+        })
+
+      {:ok, other_session} =
+        Sessions.start_session(%{
+          initiator_id: user.id,
+          peer_id: other_user.id
+        })
+
+      {:ok, _} =
+        Sessions.append_message(session.id, %{
+          sender_id: user.id,
+          kind: "text",
+          content: %{text: "primary"}
+        })
+
+      {:ok, _} =
+        Sessions.append_message(other_session.id, %{
+          sender_id: user.id,
+          kind: "text",
+          content: %{text: "secondary"}
+        })
+
+      messages = Sessions.list_messages(session.id)
+      assert Enum.count(messages) == 1
+      assert Enum.at(messages, 0).session_id == session.id
+    end
+  end
+
+  describe "list_sessions_for_participant/2" do
+    test "returns all sessions for a participant", %{user: user, agent: agent} do
+      {:ok, other_user} =
+        Participants.upsert_participant(%{
+          id: "user:bob",
+          kind: "user",
+          display_name: "Bob"
+        })
+
+      {:ok, agent_session} =
+        Sessions.start_session(%{
+          initiator_id: user.id,
+          peer_id: agent.id
+        })
+
+      {:ok, human_session} =
+        Sessions.start_session(%{
+          initiator_id: user.id,
+          peer_id: other_user.id
+        })
+
+      sessions = Sessions.list_sessions_for_participant(user.id, limit: 10)
+      ids = MapSet.new(Enum.map(sessions, & &1.id))
+
+      assert MapSet.member?(ids, agent_session.id)
+      assert MapSet.member?(ids, human_session.id)
+      assert Enum.count(sessions) == 2
     end
   end
 end

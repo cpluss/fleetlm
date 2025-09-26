@@ -12,6 +12,7 @@ defmodule Fleetlm.Sessions do
 
   import Ecto.Query
 
+  alias Ecto.Changeset
   alias Fleetlm.Repo
   alias Fleetlm.Participants
   alias Fleetlm.Sessions.ChatSession
@@ -27,31 +28,38 @@ defmodule Fleetlm.Sessions do
   """
   @spec start_session(map()) :: {:ok, ChatSession.t()} | {:error, Ecto.Changeset.t()}
   def start_session(attrs) when is_map(attrs) do
-    Repo.transaction(fn ->
-      initiator_id = fetch_id!(attrs, :initiator_id)
-      peer_id = fetch_id!(attrs, :peer_id)
+    initiator_id = fetch_id!(attrs, :initiator_id)
+    peer_id = fetch_id!(attrs, :peer_id)
 
-      initiator = Participants.get_participant!(initiator_id)
-      peer = Participants.get_participant!(peer_id)
+    if initiator_id == peer_id do
+      {:error,
+       %ChatSession{}
+       |> Changeset.change(%{initiator_id: initiator_id, peer_id: peer_id})
+       |> Changeset.add_error(:peer_id, "must be different from initiator")}
+    else
+      Repo.transaction(fn ->
+        initiator = Participants.get_participant!(initiator_id)
+        peer = Participants.get_participant!(peer_id)
 
-      {kind, agent_id} = infer_kind_and_agent(initiator, peer)
+        {kind, agent_id} = infer_kind_and_agent(initiator, peer)
 
-      session_attrs =
-        attrs
-        |> Map.take([:initiator_id, :peer_id, :kind, :metadata])
-        |> Map.put_new(:kind, kind)
-        |> Map.put(:agent_id, agent_id)
-        |> Map.put_new(:id, Ulid.generate())
+        session_attrs =
+          attrs
+          |> Map.take([:initiator_id, :peer_id, :kind, :metadata])
+          |> Map.put_new(:kind, kind)
+          |> Map.put(:agent_id, agent_id)
+          |> Map.put_new(:id, Ulid.generate())
 
-      %ChatSession{}
-      |> ChatSession.changeset(session_attrs)
-      |> Repo.insert()
-      |> case do
-        {:ok, session} -> session
-        {:error, changeset} -> Repo.rollback(changeset)
-      end
-    end)
-    |> unwrap_transaction()
+        %ChatSession{}
+        |> ChatSession.changeset(session_attrs)
+        |> Repo.insert()
+        |> case do
+          {:ok, session} -> session
+          {:error, changeset} -> Repo.rollback(changeset)
+        end
+      end)
+      |> unwrap_transaction()
+    end
   end
 
   @doc """
