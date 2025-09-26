@@ -19,6 +19,7 @@ defmodule Fleetlm.Sessions.InboxServerTest do
       :ok = Cache.put_inbox_snapshot(participant, snapshot)
 
       {:ok, pid} = InboxSupervisor.ensure_started(participant)
+      allow_sandbox_access(pid)
       state = :sys.get_state(pid)
 
       assert state.snapshot == snapshot
@@ -37,8 +38,11 @@ defmodule Fleetlm.Sessions.InboxServerTest do
         })
 
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:" <> recipient.id)
-      {:ok, _} = InboxSupervisor.ensure_started(recipient.id)
-      {:ok, _} = SessionSupervisor.ensure_started(session.id)
+      {:ok, inbox_pid} = InboxSupervisor.ensure_started(recipient.id)
+      allow_sandbox_access(inbox_pid)
+
+      {:ok, session_pid} = SessionSupervisor.ensure_started(session.id)
+      allow_sandbox_access(session_pid)
 
       %{session: session, sender: sender, recipient: recipient}
     end
@@ -55,11 +59,16 @@ defmodule Fleetlm.Sessions.InboxServerTest do
           content: %{text: "hello"}
         })
 
+      assert Sessions.unread_count(Sessions.get_session!(session.id), recipient.id) == 1
+      sessions = Sessions.list_sessions_for_participant(recipient.id)
+      assert Enum.any?(sessions, fn s -> Sessions.unread_count(s, recipient.id) == 1 end)
+
       assert_receive {:inbox_snapshot, snapshot}, 500
 
       entry = Enum.find(snapshot, &(&1["session_id"] == session.id))
       refute is_nil(entry)
       assert entry["session_id"] == session.id
+      assert Enum.any?(snapshot, &(&1["unread_count"] == 1))
 
       assert {:ok, cached} = Cache.fetch_inbox_snapshot(recipient.id)
       assert cached == snapshot
@@ -83,6 +92,30 @@ defmodule Fleetlm.Sessions.InboxServerTest do
 
       assert_receive {:inbox_snapshot, snapshot}, 500
       assert Enum.any?(snapshot, &(&1["session_id"] == session.id))
+    end
+
+    test "mark_read flush updates unread counts", %{
+      session: session,
+      sender: sender,
+      recipient: recipient
+    } do
+      {:ok, message} =
+        Sessions.append_message(session.id, %{
+          sender_id: sender.id,
+          kind: "text",
+          content: %{text: "hello"}
+        })
+
+      assert_receive {:inbox_snapshot, snapshot}, 500
+      entry = Enum.find(snapshot, &(&1["session_id"] == session.id))
+      assert entry
+      assert Enum.any?(snapshot, &(&1["unread_count"] == 1))
+
+      {:ok, _} = Sessions.mark_read(session.id, recipient.id, message_id: message.id)
+
+      assert_receive {:inbox_snapshot, snapshot2}, 500
+      entry2 = Enum.find(snapshot2, &(&1["session_id"] == session.id))
+      assert entry2["unread_count"] == 0
     end
   end
 

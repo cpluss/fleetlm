@@ -9,14 +9,20 @@ defmodule Fleetlm.Sessions.InboxServer do
 
   use GenServer, restart: :transient
 
-  alias Fleetlm.Sessions
+  alias Fleetlm.{Repo, Sessions}
   alias Fleetlm.Sessions.Cache
 
   @pubsub Fleetlm.PubSub
+  @snapshot_limit 200
 
   @spec start_link(String.t()) :: GenServer.on_start()
   def start_link(participant_id) when is_binary(participant_id) do
-    GenServer.start_link(__MODULE__, participant_id, name: via(participant_id))
+    GenServer.start_link(__MODULE__, {participant_id, nil}, name: via(participant_id))
+  end
+
+  def start_link({participant_id, opts}) when is_binary(participant_id) and is_list(opts) do
+    owner = Keyword.get(opts, :sandbox_owner)
+    GenServer.start_link(__MODULE__, {participant_id, owner}, name: via(participant_id))
   end
 
   def via(participant_id), do: {:via, Registry, {Fleetlm.Sessions.InboxRegistry, participant_id}}
@@ -32,20 +38,24 @@ defmodule Fleetlm.Sessions.InboxServer do
   end
 
   @impl true
-  def init(participant_id) do
+  def init({participant_id, owner}) do
+    maybe_put_owner(owner)
+    maybe_allow_sandbox(owner)
     snapshot = load_snapshot(participant_id)
-    {:ok, %{participant_id: participant_id, snapshot: snapshot}}
+    {:ok, %{participant_id: participant_id, snapshot: snapshot, sandbox_owner: owner}}
   end
 
   @impl true
   def handle_cast({:updated, _session, _message}, state) do
-    snapshot = load_snapshot(state.participant_id)
+    maybe_put_owner(state.sandbox_owner)
+    snapshot = refresh_snapshot(state.participant_id)
     broadcast_snapshot(state.participant_id, snapshot)
     {:noreply, %{state | snapshot: snapshot}}
   end
 
   @impl true
   def handle_call(:flush, _from, state) do
+    maybe_put_owner(state.sandbox_owner)
     snapshot = refresh_snapshot(state.participant_id)
     broadcast_snapshot(state.participant_id, snapshot)
     {:reply, :ok, %{state | snapshot: snapshot}}
@@ -54,16 +64,18 @@ defmodule Fleetlm.Sessions.InboxServer do
   defp load_snapshot(participant_id) do
     case Cache.fetch_inbox_snapshot(participant_id) do
       {:ok, snapshot} -> snapshot
-      :miss -> refresh_snapshot(participant_id)
-      {:error, _} -> refresh_snapshot(participant_id)
+      _ -> []
     end
   end
 
   defp refresh_snapshot(participant_id) do
-    sessions = Sessions.list_sessions_for_participant(participant_id)
+    # Use a single database transaction to avoid connection leaks
+    Repo.transaction(fn ->
+      sessions = Sessions.list_sessions_for_participant(participant_id, limit: @snapshot_limit)
 
-    snapshot =
       Enum.map(sessions, fn session ->
+        unread_count = Sessions.unread_count(session, participant_id)
+
         %{
           "session_id" => session.id,
           "kind" => session.kind,
@@ -72,12 +84,26 @@ defmodule Fleetlm.Sessions.InboxServer do
           "last_message_at" => encode_datetime(session.last_message_at),
           "agent_id" => session.agent_id,
           "initiator_id" => session.initiator_id,
-          "peer_id" => session.peer_id
+          "peer_id" => session.peer_id,
+          "initiator_last_read_id" => session.initiator_last_read_id,
+          "initiator_last_read_at" => encode_datetime(session.initiator_last_read_at),
+          "peer_last_read_id" => session.peer_last_read_id,
+          "peer_last_read_at" => encode_datetime(session.peer_last_read_at),
+          "unread_count" => unread_count
         }
       end)
-
-    Cache.put_inbox_snapshot(participant_id, snapshot)
-    snapshot
+    end)
+    |> case do
+      {:ok, snapshot} ->
+        Cache.put_inbox_snapshot(participant_id, snapshot)
+        snapshot
+      {:error, _reason} ->
+        # Return cached snapshot on transaction failure
+        case Cache.fetch_inbox_snapshot(participant_id) do
+          {:ok, snapshot} -> snapshot
+          _ -> []
+        end
+    end
   end
 
   defp broadcast_snapshot(participant_id, snapshot) do
@@ -87,4 +113,17 @@ defmodule Fleetlm.Sessions.InboxServer do
   defp encode_datetime(nil), do: nil
   defp encode_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp encode_datetime(%NaiveDateTime{} = naive), do: NaiveDateTime.to_iso8601(naive)
+
+  defp maybe_allow_sandbox(nil), do: :ok
+
+  defp maybe_allow_sandbox(owner) when is_pid(owner) do
+    if Code.ensure_loaded?(Ecto.Adapters.SQL.Sandbox) do
+      Ecto.Adapters.SQL.Sandbox.allow(Fleetlm.Repo, owner, self())
+    else
+      :ok
+    end
+  end
+
+  defp maybe_put_owner(nil), do: :ok
+  defp maybe_put_owner(owner) when is_pid(owner), do: Process.put(:sandbox_owner, owner)
 end

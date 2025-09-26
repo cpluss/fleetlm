@@ -3,6 +3,7 @@ defmodule FleetlmWeb.SessionChannelTest do
 
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
+  alias Fleetlm.Sessions.SessionSupervisor
   alias FleetlmWeb.SessionChannel
 
   setup do
@@ -25,6 +26,9 @@ defmodule FleetlmWeb.SessionChannelTest do
         initiator_id: "user:alice",
         peer_id: "agent:bot"
       })
+
+    {:ok, pid} = SessionSupervisor.ensure_started(session.id)
+    Fleetlm.DataCase.allow_sandbox_access(pid)
 
     {:ok, session: session}
   end

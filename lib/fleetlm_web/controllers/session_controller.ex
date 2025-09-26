@@ -41,6 +41,16 @@ defmodule FleetlmWeb.SessionController do
     end
   end
 
+  def mark_read(conn, %{"session_id" => session_id} = params) do
+    with {:ok, participant_id} <- require_param(params, "participant_id"),
+         {:ok, session} <-
+           Sessions.mark_read(session_id, participant_id,
+             message_id: Map.get(params, "message_id")
+           ) do
+      json(conn, %{session: render_session(session)})
+    end
+  end
+
   defp render_session(session) do
     %{
       id: session.id,
@@ -51,7 +61,11 @@ defmodule FleetlmWeb.SessionController do
       status: session.status,
       metadata: session.metadata,
       last_message_id: session.last_message_id,
-      last_message_at: encode_datetime(session.last_message_at)
+      last_message_at: encode_datetime(session.last_message_at),
+      initiator_last_read_id: session.initiator_last_read_id,
+      initiator_last_read_at: encode_datetime(session.initiator_last_read_at),
+      peer_last_read_id: session.peer_last_read_id,
+      peer_last_read_at: encode_datetime(session.peer_last_read_at)
     }
   end
 
@@ -88,6 +102,13 @@ defmodule FleetlmWeb.SessionController do
     case Integer.parse(to_string(value)) do
       {int, _} when int > 0 -> int
       _ -> default
+    end
+  end
+
+  defp require_param(params, key) do
+    case Map.get(params, key) do
+      value when is_binary(value) and value != "" -> {:ok, value}
+      _ -> {:error, %ArgumentError{message: "#{key} is required"}}
     end
   end
 end

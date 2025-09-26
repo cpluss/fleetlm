@@ -30,6 +30,7 @@ defmodule Fleetlm.DataCase do
   setup tags do
     Fleetlm.DataCase.setup_sandbox(tags)
     Fleetlm.Chat.TestRuntime.reset()
+    on_exit(fn -> Fleetlm.Chat.TestRuntime.reset() end)
     :ok
   end
 
@@ -38,6 +39,7 @@ defmodule Fleetlm.DataCase do
   """
   def setup_sandbox(tags) do
     pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Fleetlm.Repo, shared: not tags[:async])
+    Process.put(:sandbox_owner, pid)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
   end
 
@@ -55,5 +57,10 @@ defmodule Fleetlm.DataCase do
         opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
       end)
     end)
+  end
+
+  def allow_sandbox_access(pid) when is_pid(pid) do
+    owner = Process.get(:sandbox_owner) || self()
+    Ecto.Adapters.SQL.Sandbox.allow(Fleetlm.Repo, owner, pid)
   end
 end

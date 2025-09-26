@@ -1,5 +1,5 @@
 defmodule Fleetlm.SessionsTest do
-  use Fleetlm.DataCase, async: true
+  use Fleetlm.DataCase, async: false
 
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
@@ -132,6 +132,43 @@ defmodule Fleetlm.SessionsTest do
       messages = Sessions.list_messages(session.id)
       assert Enum.count(messages) == 1
       assert Enum.at(messages, 0).session_id == session.id
+    end
+  end
+
+  describe "mark_read/3" do
+    setup %{user: user, agent: agent} do
+      {:ok, session} =
+        Sessions.start_session(%{
+          initiator_id: user.id,
+          peer_id: agent.id
+        })
+
+      {:ok, message} =
+        Sessions.append_message(session.id, %{
+          sender_id: user.id,
+          kind: "text",
+          content: %{text: "hey"}
+        })
+
+      %{session: session, message: message}
+    end
+
+    test "updates peer read markers and clears unread count", %{
+      session: session,
+      message: message,
+      agent: agent
+    } do
+      {:ok, updated} =
+        Sessions.mark_read(session.id, agent.id, message_id: message.id)
+
+      assert updated.peer_last_read_id == message.id
+      assert match?(%DateTime{}, updated.peer_last_read_at)
+      assert Sessions.unread_count(updated, agent.id) == 0
+    end
+
+    test "rejects unknown participant", %{session: session, message: message} do
+      assert {:error, :invalid_participant} =
+               Sessions.mark_read(session.id, "user:ghost", message_id: message.id)
     end
   end
 

@@ -22,7 +22,8 @@ defmodule Fleetlm.Sessions.EventsTest do
     Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:" <> alice.id)
     Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:" <> bob.id)
 
-    {:ok, _} = SessionSupervisor.ensure_started(session.id)
+    {:ok, pid} = SessionSupervisor.ensure_started(session.id)
+    allow_sandbox_access(pid)
 
     %{session: session, alice: alice, bob: bob}
   end
@@ -43,6 +44,8 @@ defmodule Fleetlm.Sessions.EventsTest do
     Enum.each([alice.id, session.peer_id], fn _participant_id ->
       assert_receive {:inbox_snapshot, snapshot}, 500
       assert Enum.any?(snapshot, &(&1["session_id"] == session.id))
+      entry = Enum.find(snapshot, &(&1["session_id"] == session.id))
+      assert entry["unread_count"] >= 0
     end)
   end
 

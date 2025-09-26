@@ -19,12 +19,26 @@ defmodule Fleetlm.Sessions.ChatSession do
     field :metadata, :map, default: %{}
     field :last_message_id, :string
     field :last_message_at, :utc_datetime_usec
+    field :initiator_last_read_id, :string
+    field :initiator_last_read_at, :utc_datetime_usec
+    field :peer_last_read_id, :string
+    field :peer_last_read_at, :utc_datetime_usec
 
     timestamps()
   end
 
   @required_fields ~w(initiator_id peer_id kind)a
-  @optional_fields ~w(agent_id status metadata last_message_id last_message_at)a
+  @optional_fields ~w(
+    agent_id
+    status
+    metadata
+    last_message_id
+    last_message_at
+    initiator_last_read_id
+    initiator_last_read_at
+    peer_last_read_id
+    peer_last_read_at
+  )a
 
   def changeset(session, attrs) do
     session

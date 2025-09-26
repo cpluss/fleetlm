@@ -25,7 +25,9 @@ defmodule Fleetlm.Sessions.InboxSupervisor do
         {:ok, pid}
 
       [] ->
-        DynamicSupervisor.start_child(__MODULE__, {Fleetlm.Sessions.InboxServer, participant_id})
+        opts = sandbox_opts()
+        child = {Fleetlm.Sessions.InboxServer, {participant_id, opts}}
+        DynamicSupervisor.start_child(__MODULE__, child)
     end
   end
 
@@ -34,6 +36,13 @@ defmodule Fleetlm.Sessions.InboxSupervisor do
     case Process.whereis(Fleetlm.Sessions.InboxRegistry) do
       nil -> 0
       _ -> Registry.count(Fleetlm.Sessions.InboxRegistry)
+    end
+  end
+
+  defp sandbox_opts do
+    case Process.get(:sandbox_owner) do
+      nil -> []
+      owner -> [sandbox_owner: owner]
     end
   end
 end

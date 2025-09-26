@@ -18,6 +18,8 @@ defmodule Fleetlm.Sessions do
   alias Fleetlm.Sessions.ChatSession
   alias Fleetlm.Sessions.ChatMessage
   alias Fleetlm.Sessions.SessionServer
+  alias Fleetlm.Sessions.InboxSupervisor
+  alias Fleetlm.Sessions.InboxServer
   alias Fleetlm.Agents.Dispatcher
   alias Ulid
 
@@ -89,34 +91,27 @@ defmodule Fleetlm.Sessions do
 
            %ChatMessage{}
            |> ChatMessage.changeset(message_attrs)
-           |> Repo.insert()
-           |> case do
-             {:ok, message} ->
-               {:ok, _} =
-                 session
-                 |> ChatSession.changeset(%{
-                   last_message_id: message.id,
-                   last_message_at: message.inserted_at
-                 })
-                 |> Repo.update()
+          |> Repo.insert()
+          |> case do
+            {:ok, message} ->
+              {:ok, _} =
+                session
+                |> ChatSession.changeset(%{
+                  last_message_id: message.id,
+                  last_message_at: message.inserted_at
+                })
+                |> Repo.update()
 
-               runtime_session =
-                 session
-                 |> Map.put(:last_message_id, message.id)
-                 |> Map.put(:last_message_at, to_datetime(message.inserted_at))
+              runtime_session =
+                session
+                |> Map.put(:last_message_id, message.id)
+                |> Map.put(:last_message_at, to_datetime(message.inserted_at))
 
-               message_for_runtime =
-                 message
-                 |> Map.from_struct()
-                 |> Map.put(:session, runtime_session)
-
-               SessionServer.append_message(message_for_runtime)
-
-               dispatch_payload =
-                 message
-                 |> Map.from_struct()
-                 |> Map.take([
-                   :id,
+              dispatch_payload =
+                message
+                |> Map.from_struct()
+                |> Map.take([
+                  :id,
                    :session_id,
                    :sender_id,
                    :kind,
@@ -125,18 +120,41 @@ defmodule Fleetlm.Sessions do
                    :inserted_at
                  ])
 
-               {message, runtime_session, dispatch_payload}
+               message_for_runtime =
+                message
+                |> Map.from_struct()
+                |> Map.put(:session, runtime_session)
 
-             {:error, changeset} ->
-               Repo.rollback(changeset)
-           end
+               {message, message_for_runtime, runtime_session, dispatch_payload}
+
+            {:error, changeset} ->
+              Repo.rollback(changeset)
+          end
          end) do
-      {:ok, {message, runtime_session, dispatch_payload}} ->
+      {:ok, {message, message_for_runtime, runtime_session, dispatch_payload}} ->
+        SessionServer.append_message(message_for_runtime)
         Dispatcher.maybe_dispatch(runtime_session, dispatch_payload)
         {:ok, message}
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  @doc """
+  Mark messages in a session as read for the given participant.
+  """
+  @spec mark_read(String.t(), String.t(), keyword()) ::
+          {:ok, ChatSession.t()} | {:error, term()}
+  def mark_read(session_id, participant_id, opts \\ [])
+      when is_binary(session_id) and is_binary(participant_id) do
+    message_id = Keyword.get(opts, :message_id)
+
+    owner = Process.get(:sandbox_owner)
+
+    with {:ok, session} <- do_mark_read(session_id, participant_id, message_id, owner) do
+      _ = refresh_inbox(participant_id, owner)
+      {:ok, session}
     end
   end
 
@@ -173,6 +191,18 @@ defmodule Fleetlm.Sessions do
     |> Repo.all()
   end
 
+  @doc """
+  Count unread messages for the given participant in the session.
+  """
+  @spec unread_count(ChatSession.t(), String.t()) :: non_neg_integer()
+  def unread_count(%ChatSession{} = session, participant_id) when is_binary(participant_id) do
+    case participant_role(session, participant_id) do
+      :initiator -> do_unread_count(session, participant_id, :initiator_last_read_at)
+      :peer -> do_unread_count(session, participant_id, :peer_last_read_at)
+      nil -> 0
+    end
+  end
+
   defp fetch_id!(attrs, key) do
     case Map.fetch(attrs, key) || Map.fetch(attrs, Atom.to_string(key)) do
       {:ok, value} when is_binary(value) -> value
@@ -198,4 +228,119 @@ defmodule Fleetlm.Sessions do
 
   defp unwrap_transaction({:ok, result}), do: {:ok, result}
   defp unwrap_transaction({:error, reason}), do: {:error, reason}
+
+  defp do_mark_read(session_id, participant_id, message_id, owner) do
+    Repo.transaction(fn ->
+      maybe_put_sandbox_owner(owner)
+      session = Repo.get!(ChatSession, session_id)
+
+      case participant_role(session, participant_id) do
+        nil ->
+          Repo.rollback({:error, :invalid_participant})
+
+        role ->
+          case resolve_message(session, message_id) do
+            {:ok, {resolved_id, resolved_at}} ->
+              read_attrs = build_read_attrs(role, resolved_id, resolved_at)
+
+              session
+              |> ChatSession.changeset(read_attrs)
+              |> Repo.update()
+              |> case do
+                {:ok, updated_session} -> updated_session
+                {:error, changeset} -> Repo.rollback(changeset)
+              end
+
+            {:error, reason} ->
+              Repo.rollback({:error, reason})
+          end
+      end
+    end)
+    |> case do
+      {:ok, session} -> {:ok, session}
+      {:error, {:error, reason}} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp participant_role(%ChatSession{} = session, participant_id) do
+    cond do
+      session.initiator_id == participant_id -> :initiator
+      session.peer_id == participant_id -> :peer
+      true -> nil
+    end
+  end
+
+  defp resolve_message(session, nil) do
+    if session.last_message_id do
+      Repo.get(ChatMessage, session.last_message_id)
+      |> case do
+        %ChatMessage{} = message -> {:ok, {message.id, to_datetime(message.inserted_at)}}
+        nil -> {:error, :message_not_found}
+      end
+    else
+      {:ok, {nil, DateTime.utc_now()}}
+    end
+  end
+
+  defp resolve_message(%ChatSession{} = session, message_id) when is_binary(message_id) do
+    session_id = session.id
+
+    case Repo.get(ChatMessage, message_id) do
+      %ChatMessage{session_id: ^session_id} = message ->
+        {:ok, {message.id, to_datetime(message.inserted_at)}}
+
+      _ ->
+        {:error, :message_not_found}
+    end
+  end
+
+  defp build_read_attrs(:initiator, message_id, read_at) do
+    %{
+      initiator_last_read_id: message_id,
+      initiator_last_read_at: read_at
+    }
+  end
+
+  defp build_read_attrs(:peer, message_id, read_at) do
+    %{
+      peer_last_read_id: message_id,
+      peer_last_read_at: read_at
+    }
+  end
+
+  defp do_unread_count(%ChatSession{} = session, participant_id, read_field) do
+    read_at = Map.get(session, read_field)
+
+    ChatMessage
+    |> where([m], m.session_id == ^session.id)
+    |> where([m], m.sender_id != ^participant_id)
+    |> maybe_after_time(read_at)
+    |> select([m], count(m.id))
+    |> Repo.one()
+  end
+
+  defp maybe_after_time(query, nil), do: query
+
+  defp maybe_after_time(query, %DateTime{} = dt) do
+    naive = DateTime.to_naive(dt)
+    from m in query, where: m.inserted_at > ^naive
+  end
+
+  defp maybe_after_time(query, %NaiveDateTime{} = naive),
+    do: from(m in query, where: m.inserted_at > ^naive)
+
+  defp refresh_inbox(participant_id, owner) do
+    maybe_put_sandbox_owner(owner)
+    case InboxSupervisor.ensure_started(participant_id) do
+      {:ok, _pid} -> InboxServer.flush(participant_id)
+      {:error, _} -> :ok
+    end
+  end
+
+  defp maybe_put_sandbox_owner(nil), do: :ok
+
+  defp maybe_put_sandbox_owner(owner) when is_pid(owner) do
+    Process.put(:sandbox_owner, owner)
+  end
 end

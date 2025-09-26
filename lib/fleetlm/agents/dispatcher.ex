@@ -12,6 +12,7 @@ defmodule Fleetlm.Agents.Dispatcher do
 
   alias Fleetlm.Agents
   alias Fleetlm.Agents.AgentEndpoint
+  alias Fleetlm.Sessions
 
   @dispatcher_supervisor Fleetlm.Agents.DispatcherSupervisor
 
@@ -66,6 +67,8 @@ defmodule Fleetlm.Agents.Dispatcher do
           latency_ms: latency,
           response_excerpt: excerpt
         })
+
+        maybe_mark_read(session, message)
 
         :telemetry.execute([:fleetlm, :agent, :delivery, :stop], %{duration: latency}, meta)
 
@@ -146,6 +149,13 @@ defmodule Fleetlm.Agents.Dispatcher do
       |> Map.put(:agent_id, session.agent_id)
 
     _ = Agents.log_delivery(log_attrs)
+    :ok
+  end
+
+  defp maybe_mark_read(%{agent_id: nil}, _message), do: :ok
+
+  defp maybe_mark_read(session, message) do
+    _ = Sessions.mark_read(session.id, session.agent_id, message_id: message.id)
     :ok
   end
 

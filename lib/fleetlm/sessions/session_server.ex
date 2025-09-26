@@ -23,7 +23,12 @@ defmodule Fleetlm.Sessions.SessionServer do
 
   @spec start_link(String.t()) :: GenServer.on_start()
   def start_link(session_id) when is_binary(session_id) do
-    GenServer.start_link(__MODULE__, session_id, name: via(session_id))
+    GenServer.start_link(__MODULE__, {session_id, nil}, name: via(session_id))
+  end
+
+  def start_link({session_id, opts}) when is_binary(session_id) and is_list(opts) do
+    owner = Keyword.get(opts, :sandbox_owner)
+    GenServer.start_link(__MODULE__, {session_id, owner}, name: via(session_id))
   end
 
   @spec append_message(map()) :: :ok
@@ -41,13 +46,16 @@ defmodule Fleetlm.Sessions.SessionServer do
   defp via(session_id), do: {:via, Registry, {Fleetlm.Sessions.SessionRegistry, session_id}}
 
   @impl true
-  def init(session_id) do
+  def init({session_id, owner}) do
+    maybe_put_owner(owner)
+    maybe_allow_sandbox(owner)
     tail = warm_cache(session_id)
-    {:ok, %{session_id: session_id, tail: tail}}
+    {:ok, %{session_id: session_id, tail: tail, sandbox_owner: owner}}
   end
 
   @impl true
   def handle_cast({:append, message}, %{session_id: session_id} = state) do
+    maybe_put_owner(state.sandbox_owner)
     _ = Cache.append_to_tail(session_id, message, limit: @tail_limit)
     Events.publish_message(message)
 
@@ -56,6 +64,7 @@ defmodule Fleetlm.Sessions.SessionServer do
 
   @impl true
   def handle_call(:tail, _from, state) do
+    maybe_put_owner(state.sandbox_owner)
     {:reply, {:ok, state.tail}, state}
   end
 
@@ -75,6 +84,19 @@ defmodule Fleetlm.Sessions.SessionServer do
         messages
     end
   end
+
+  defp maybe_allow_sandbox(nil), do: :ok
+
+  defp maybe_allow_sandbox(owner) when is_pid(owner) do
+    if Code.ensure_loaded?(Ecto.Adapters.SQL.Sandbox) do
+      Ecto.Adapters.SQL.Sandbox.allow(Fleetlm.Repo, owner, self())
+    else
+      :ok
+    end
+  end
+
+  defp maybe_put_owner(nil), do: :ok
+  defp maybe_put_owner(owner) when is_pid(owner), do: Process.put(:sandbox_owner, owner)
 
   defp preload_tail(session_id) do
     session = Sessions.get_session!(session_id)

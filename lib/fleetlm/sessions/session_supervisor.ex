@@ -27,7 +27,9 @@ defmodule Fleetlm.Sessions.SessionSupervisor do
         {:ok, pid}
 
       [] ->
-        DynamicSupervisor.start_child(__MODULE__, {Fleetlm.Sessions.SessionServer, session_id})
+        opts = sandbox_opts()
+        child = {Fleetlm.Sessions.SessionServer, {session_id, opts}}
+        DynamicSupervisor.start_child(__MODULE__, child)
     end
   end
 
@@ -36,6 +38,13 @@ defmodule Fleetlm.Sessions.SessionSupervisor do
     case Process.whereis(@registry) do
       nil -> 0
       _ -> Registry.count(@registry)
+    end
+  end
+
+  defp sandbox_opts do
+    case Process.get(:sandbox_owner) do
+      nil -> []
+      owner -> [sandbox_owner: owner]
     end
   end
 end

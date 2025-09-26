@@ -74,4 +74,36 @@ defmodule FleetlmWeb.SessionControllerTest do
     assert %{"message" => %{"session_id" => ^session_id, "content" => %{"text" => "hello"}}} =
              json_response(conn, 200)
   end
+
+  test "POST /api/sessions/:id/read marks session as read", %{conn: conn} do
+    {:ok, session} =
+      Sessions.start_session(%{
+        initiator_id: "user:alice",
+        peer_id: "agent:bot"
+      })
+
+    {:ok, message} =
+      Sessions.append_message(session.id, %{
+        sender_id: "user:alice",
+        kind: "text",
+        content: %{text: "ping"}
+      })
+
+    conn =
+      post(conn, ~p"/api/sessions/#{session.id}/read", %{
+        "participant_id" => "agent:bot",
+        "message_id" => message.id
+      })
+
+    assert %{
+             "session" => %{
+               "peer_last_read_id" => peer_last_read_id,
+               "peer_last_read_at" => peer_last_read_at
+             }
+           } =
+             json_response(conn, 200)
+
+    assert peer_last_read_id == message.id
+    assert is_binary(peer_last_read_at)
+  end
 end

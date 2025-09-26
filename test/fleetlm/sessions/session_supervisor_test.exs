@@ -31,7 +31,10 @@ defmodule Fleetlm.Sessions.SessionSupervisorTest do
 
   test "ensure_started/1 returns the same pid for repeated calls", %{session: session} do
     assert {:ok, pid1} = SessionSupervisor.ensure_started(session.id)
+    allow(pid1)
     assert {:ok, pid2} = SessionSupervisor.ensure_started(session.id)
     assert pid1 == pid2
   end
+
+  defp allow(pid), do: allow_sandbox_access(pid)
 end
