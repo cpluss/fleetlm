@@ -15,6 +15,7 @@ defmodule Fleetlm.Sessions do
   alias Ecto.Changeset
   alias Fleetlm.Repo
   alias Fleetlm.Participants
+  alias Fleetlm.Sessions.Cache
   alias Fleetlm.Sessions.ChatSession
   alias Fleetlm.Sessions.ChatMessage
   alias Fleetlm.Sessions.SessionServer
@@ -190,6 +191,89 @@ defmodule Fleetlm.Sessions do
     |> limit(^limit)
     |> Repo.all()
   end
+
+  @doc """
+  List recent sessions for a participant with unread counts in a single query.
+  Returns tuples of {session, unread_count}.
+  """
+  @spec list_sessions_with_unread_counts(String.t(), keyword()) :: [{ChatSession.t(), non_neg_integer()}]
+  def list_sessions_with_unread_counts(participant_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, @default_limit)
+
+    # Get sessions first, then calculate unread counts
+    sessions =
+      ChatSession
+      |> where([s], s.initiator_id == ^participant_id or s.peer_id == ^participant_id)
+      |> order_by([s], desc: s.inserted_at)
+      |> limit(^limit)
+      |> Repo.all()
+
+    # Calculate unread counts for each session
+    Enum.map(sessions, fn session ->
+      role = cond do
+        session.initiator_id == participant_id -> :initiator
+        session.peer_id == participant_id -> :peer
+        true -> nil
+      end
+
+      unread_count = case role do
+        :initiator -> do_unread_count(session, participant_id, :initiator_last_read_at)
+        :peer -> do_unread_count(session, participant_id, :peer_last_read_at)
+        _ -> 0
+      end
+
+      {session, unread_count}
+    end)
+  end
+
+
+  @doc """
+  Get inbox snapshot with read-through caching.
+  Returns cached version if available and fresh, otherwise builds new one.
+  """
+  @spec get_inbox_snapshot(String.t(), keyword()) :: [map()]
+  def get_inbox_snapshot(participant_id, opts \\ []) do
+    cache_ttl_ms = Keyword.get(opts, :cache_ttl_ms, :timer.minutes(5))
+    limit = Keyword.get(opts, :limit, @default_limit)
+
+    case Cache.fetch_inbox_snapshot(participant_id) do
+      {:ok, snapshot} ->
+        snapshot
+      _ ->
+        # Cache miss - build new snapshot
+        snapshot = build_inbox_snapshot(participant_id, limit: limit)
+        Cache.put_inbox_snapshot(participant_id, snapshot, cache_ttl_ms)
+        snapshot
+    end
+  end
+
+  defp build_inbox_snapshot(participant_id, opts) do
+    limit = Keyword.get(opts, :limit, @default_limit)
+
+    sessions_with_counts = list_sessions_with_unread_counts(participant_id, limit: limit)
+
+    Enum.map(sessions_with_counts, fn {session, unread_count} ->
+      %{
+        "session_id" => session.id,
+        "kind" => session.kind,
+        "status" => session.status,
+        "last_message_id" => session.last_message_id,
+        "last_message_at" => encode_datetime(session.last_message_at),
+        "agent_id" => session.agent_id,
+        "initiator_id" => session.initiator_id,
+        "peer_id" => session.peer_id,
+        "initiator_last_read_id" => session.initiator_last_read_id,
+        "initiator_last_read_at" => encode_datetime(session.initiator_last_read_at),
+        "peer_last_read_id" => session.peer_last_read_id,
+        "peer_last_read_at" => encode_datetime(session.peer_last_read_at),
+        "unread_count" => unread_count
+      }
+    end)
+  end
+
+  defp encode_datetime(nil), do: nil
+  defp encode_datetime(%NaiveDateTime{} = naive), do: NaiveDateTime.to_iso8601(naive)
+  defp encode_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 
   @doc """
   Count unread messages for the given participant in the session.

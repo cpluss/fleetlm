@@ -9,7 +9,7 @@ defmodule Fleetlm.Sessions.InboxServer do
 
   use GenServer, restart: :transient
 
-  alias Fleetlm.{Repo, Sessions}
+  alias Fleetlm.Sessions
   alias Fleetlm.Sessions.Cache
 
   @pubsub Fleetlm.PubSub
@@ -47,72 +47,41 @@ defmodule Fleetlm.Sessions.InboxServer do
 
   @impl true
   def handle_cast({:updated, _session, _message}, state) do
-    maybe_put_owner(state.sandbox_owner)
-    snapshot = refresh_snapshot(state.participant_id)
-    broadcast_snapshot(state.participant_id, snapshot)
-    {:noreply, %{state | snapshot: snapshot}}
+    # Move database operations to async task to avoid blocking GenServer
+    participant_id = state.participant_id
+    sandbox_owner = state.sandbox_owner
+
+    Task.start(fn ->
+      maybe_put_owner(sandbox_owner)
+      # Invalidate cache to force fresh snapshot on next request
+      Cache.delete_inbox_snapshot(participant_id)
+      snapshot = Sessions.get_inbox_snapshot(participant_id, limit: @snapshot_limit)
+      broadcast_snapshot(participant_id, snapshot)
+    end)
+
+    {:noreply, state}
   end
 
   @impl true
   def handle_call(:flush, _from, state) do
     maybe_put_owner(state.sandbox_owner)
-    snapshot = refresh_snapshot(state.participant_id)
+    # Invalidate cache and get fresh snapshot
+    Cache.delete_inbox_snapshot(state.participant_id)
+    snapshot = Sessions.get_inbox_snapshot(state.participant_id, limit: @snapshot_limit)
     broadcast_snapshot(state.participant_id, snapshot)
     {:reply, :ok, %{state | snapshot: snapshot}}
   end
 
   defp load_snapshot(participant_id) do
-    case Cache.fetch_inbox_snapshot(participant_id) do
-      {:ok, snapshot} -> snapshot
-      _ -> []
-    end
+    # Use read-through caching pattern
+    Sessions.get_inbox_snapshot(participant_id, limit: @snapshot_limit)
   end
 
-  defp refresh_snapshot(participant_id) do
-    # Use a single database transaction to avoid connection leaks
-    Repo.transaction(fn ->
-      sessions = Sessions.list_sessions_for_participant(participant_id, limit: @snapshot_limit)
-
-      Enum.map(sessions, fn session ->
-        unread_count = Sessions.unread_count(session, participant_id)
-
-        %{
-          "session_id" => session.id,
-          "kind" => session.kind,
-          "status" => session.status,
-          "last_message_id" => session.last_message_id,
-          "last_message_at" => encode_datetime(session.last_message_at),
-          "agent_id" => session.agent_id,
-          "initiator_id" => session.initiator_id,
-          "peer_id" => session.peer_id,
-          "initiator_last_read_id" => session.initiator_last_read_id,
-          "initiator_last_read_at" => encode_datetime(session.initiator_last_read_at),
-          "peer_last_read_id" => session.peer_last_read_id,
-          "peer_last_read_at" => encode_datetime(session.peer_last_read_at),
-          "unread_count" => unread_count
-        }
-      end)
-    end)
-    |> case do
-      {:ok, snapshot} ->
-        Cache.put_inbox_snapshot(participant_id, snapshot)
-        snapshot
-      {:error, _reason} ->
-        # Return cached snapshot on transaction failure
-        case Cache.fetch_inbox_snapshot(participant_id) do
-          {:ok, snapshot} -> snapshot
-          _ -> []
-        end
-    end
-  end
 
   defp broadcast_snapshot(participant_id, snapshot) do
     Phoenix.PubSub.broadcast(@pubsub, "inbox:" <> participant_id, {:inbox_snapshot, snapshot})
   end
 
-  defp encode_datetime(nil), do: nil
-  defp encode_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  defp encode_datetime(%NaiveDateTime{} = naive), do: NaiveDateTime.to_iso8601(naive)
 
   defp maybe_allow_sandbox(nil), do: :ok
 

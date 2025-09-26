@@ -79,6 +79,11 @@ defmodule Fleetlm.Sessions.Cache do
     Cachex.put(@inbox_cache, participant_id, snapshot) |> normalize()
   end
 
+  @spec put_inbox_snapshot(String.t(), any(), integer()) :: :ok | {:error, term()}
+  def put_inbox_snapshot(participant_id, snapshot, ttl_ms) do
+    Cachex.put(@inbox_cache, participant_id, snapshot, ttl: ttl_ms) |> normalize()
+  end
+
   @spec delete_inbox_snapshot(String.t()) :: :ok | {:error, term()}
   def delete_inbox_snapshot(participant_id) do
     Cachex.del(@inbox_cache, participant_id) |> normalize()
