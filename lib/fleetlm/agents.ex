@@ -3,10 +3,12 @@ defmodule Fleetlm.Agents do
   Context for managing agent participants and webhook endpoints.
   """
 
+  import Ecto.Query
+
   alias Fleetlm.Repo
   alias Fleetlm.Participants
   alias Fleetlm.Participants.Participant
-  alias Fleetlm.Agents.AgentEndpoint
+  alias Fleetlm.Agents.{AgentEndpoint, DeliveryLog}
   alias Ulid
 
   @doc """
@@ -63,6 +65,30 @@ defmodule Fleetlm.Agents do
   @spec get_endpoint(String.t()) :: AgentEndpoint.t() | nil
   def get_endpoint(agent_id) when is_binary(agent_id) do
     Repo.get_by(AgentEndpoint, agent_id: agent_id)
+  end
+
+  @doc """
+  Persist a delivery log entry for webhook attempts.
+  """
+  @spec log_delivery(map()) :: {:ok, DeliveryLog.t()} | {:error, Ecto.Changeset.t()}
+  def log_delivery(attrs) do
+    %DeliveryLog{}
+    |> DeliveryLog.changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  List delivery logs for an agent (optional limit).
+  """
+  @spec list_delivery_logs(String.t(), keyword()) :: [DeliveryLog.t()]
+  def list_delivery_logs(agent_id, opts \\ []) do
+    limit = Keyword.get(opts, :limit, 50)
+
+    DeliveryLog
+    |> where(agent_id: ^agent_id)
+    |> order_by([d], desc: d.inserted_at)
+    |> limit(^limit)
+    |> Repo.all()
   end
 
   @doc """

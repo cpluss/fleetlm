@@ -17,6 +17,7 @@ defmodule Fleetlm.Sessions do
   alias Fleetlm.Sessions.ChatSession
   alias Fleetlm.Sessions.ChatMessage
   alias Fleetlm.Sessions.SessionServer
+  alias Fleetlm.Agents.Dispatcher
   alias Ulid
 
   @default_limit 50
@@ -66,50 +67,69 @@ defmodule Fleetlm.Sessions do
   """
   @spec append_message(String.t(), map()) :: {:ok, ChatMessage.t()} | {:error, Ecto.Changeset.t()}
   def append_message(session_id, attrs) when is_binary(session_id) and is_map(attrs) do
-    Repo.transaction(fn ->
-      session = Repo.get!(ChatSession, session_id)
+    case Repo.transaction(fn ->
+           session = Repo.get!(ChatSession, session_id)
 
-      message_attrs =
-        attrs
-        |> Map.take([:sender_id, :kind, :content, :metadata])
-        |> Map.put(:session_id, session.id)
-        |> Map.put_new(:content, %{})
-        |> Map.put_new(:metadata, %{})
-        |> Map.put(:shard_key, shard_key_for(session.id))
-        |> Map.put_new(:id, Ulid.generate())
+           message_attrs =
+             attrs
+             |> Map.take([:sender_id, :kind, :content, :metadata])
+             |> Map.put(:session_id, session.id)
+             |> Map.put_new(:content, %{})
+             |> Map.put_new(:metadata, %{})
+             |> Map.put(:shard_key, shard_key_for(session.id))
+             |> Map.put_new(:id, Ulid.generate())
 
-      %ChatMessage{}
-      |> ChatMessage.changeset(message_attrs)
-      |> Repo.insert()
-      |> case do
-        {:ok, message} ->
-          {:ok, _} =
-            session
-            |> ChatSession.changeset(%{
-              last_message_id: message.id,
-              last_message_at: message.inserted_at
-            })
-            |> Repo.update()
+           %ChatMessage{}
+           |> ChatMessage.changeset(message_attrs)
+           |> Repo.insert()
+           |> case do
+             {:ok, message} ->
+               {:ok, _} =
+                 session
+                 |> ChatSession.changeset(%{
+                   last_message_id: message.id,
+                   last_message_at: message.inserted_at
+                 })
+                 |> Repo.update()
 
-          runtime_session =
-            session
-            |> Map.put(:last_message_id, message.id)
-            |> Map.put(:last_message_at, to_datetime(message.inserted_at))
+               runtime_session =
+                 session
+                 |> Map.put(:last_message_id, message.id)
+                 |> Map.put(:last_message_at, to_datetime(message.inserted_at))
 
-          message_for_runtime =
-            message
-            |> Map.from_struct()
-            |> Map.put(:session, runtime_session)
+               message_for_runtime =
+                 message
+                 |> Map.from_struct()
+                 |> Map.put(:session, runtime_session)
 
-          SessionServer.append_message(message_for_runtime)
+               SessionServer.append_message(message_for_runtime)
 
-          message
+               dispatch_payload =
+                 message
+                 |> Map.from_struct()
+                 |> Map.take([
+                   :id,
+                   :session_id,
+                   :sender_id,
+                   :kind,
+                   :content,
+                   :metadata,
+                   :inserted_at
+                 ])
 
-        {:error, changeset} ->
-          Repo.rollback(changeset)
-      end
-    end)
-    |> unwrap_transaction()
+               {message, runtime_session, dispatch_payload}
+
+             {:error, changeset} ->
+               Repo.rollback(changeset)
+           end
+         end) do
+      {:ok, {message, runtime_session, dispatch_payload}} ->
+        Dispatcher.maybe_dispatch(runtime_session, dispatch_payload)
+        {:ok, message}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc """

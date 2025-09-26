@@ -12,6 +12,7 @@ defmodule Fleetlm.Application do
       Fleetlm.Observability,
       Fleetlm.Repo,
       Fleetlm.Sessions.Supervisor,
+      {Task.Supervisor, name: Fleetlm.Agents.DispatcherSupervisor},
       {DNSCluster, query: Application.get_env(:fleetlm, :dns_cluster_query) || :ignore},
       pubsub_spec(),
       # Start a worker by calling: Fleetlm.Worker.start_link(arg)

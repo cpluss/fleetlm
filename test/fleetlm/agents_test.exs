@@ -4,6 +4,7 @@ defmodule Fleetlm.AgentsTest do
   alias Fleetlm.Agents
   alias Fleetlm.Agents.AgentEndpoint
   alias Fleetlm.Participants
+  alias Fleetlm.Sessions
 
   setup do
     {:ok, participant} =
@@ -35,5 +36,81 @@ defmodule Fleetlm.AgentsTest do
     Agents.upsert_endpoint!(agent.id, %{origin_url: "https://example.com", auth_strategy: "none"})
 
     assert %AgentEndpoint{origin_url: "https://example.com"} = Agents.get_endpoint(agent.id)
+  end
+
+  describe "dispatcher" do
+    setup %{agent: agent} do
+      {:ok, _} =
+        Participants.upsert_participant(%{
+          id: "user:alice",
+          kind: "user",
+          display_name: "Alice"
+        })
+
+      previous = Application.get_env(:fleetlm, :agent_dispatcher)
+      Application.put_env(:fleetlm, :agent_dispatcher, %{mode: :test, pid: self()})
+
+      on_exit(fn ->
+        if previous do
+          Application.put_env(:fleetlm, :agent_dispatcher, previous)
+        else
+          Application.delete_env(:fleetlm, :agent_dispatcher)
+        end
+      end)
+
+      %{agent: agent}
+    end
+
+    test "dispatches user messages to agent endpoint", %{agent: agent} do
+      Agents.upsert_endpoint!(agent.id, %{
+        origin_url: "https://example.com",
+        auth_strategy: "none"
+      })
+
+      {:ok, session} =
+        Sessions.start_session(%{
+          initiator_id: "user:alice",
+          peer_id: agent.id
+        })
+
+      {:ok, message} =
+        Sessions.append_message(session.id, %{
+          sender_id: "user:alice",
+          kind: "text",
+          content: %{text: "hello"}
+        })
+
+      assert_receive {:agent_dispatch, payload}
+      assert payload["session"]["id"] == session.id
+      assert payload["message"]["id"] == message.id
+
+      Process.sleep(10)
+      [log | _] = Agents.list_delivery_logs(agent.id)
+      assert log.status == "sent"
+      assert log.session_id == session.id
+      assert log.message_id == message.id
+    end
+
+    test "does not dispatch messages sent by the agent", %{agent: agent} do
+      Agents.upsert_endpoint!(agent.id, %{
+        origin_url: "https://example.com",
+        auth_strategy: "none"
+      })
+
+      {:ok, session} =
+        Sessions.start_session(%{
+          initiator_id: agent.id,
+          peer_id: "user:alice"
+        })
+
+      {:ok, _message} =
+        Sessions.append_message(session.id, %{
+          sender_id: agent.id,
+          kind: "text",
+          content: %{text: "ping"}
+        })
+
+      refute_receive {:agent_dispatch, _}, 100
+    end
   end
 end
