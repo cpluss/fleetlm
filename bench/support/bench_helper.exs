@@ -121,9 +121,9 @@ defmodule Bench.Helper do
   Measures memory usage during function execution.
   """
   def measure_memory(fun) when is_function(fun, 0) do
-    {memory_before, _} = :erlang.process_info(self(), :memory)
+    {:memory, memory_before} = :erlang.process_info(self(), :memory)
     result = fun.()
-    {memory_after, _} = :erlang.process_info(self(), :memory)
+    {:memory, memory_after} = :erlang.process_info(self(), :memory)
     memory_used = memory_after - memory_before
     {result, memory_used}
   end

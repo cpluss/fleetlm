@@ -26,6 +26,36 @@ defmodule Fleetlm.Agents.Dispatcher do
   end
 
   defp dispatch_async(session, message) do
+    # Use cached endpoint status for maximum performance
+    case get_cached_endpoint_status(session.agent_id) do
+      "enabled" ->
+        # Use pooled webhook manager for efficient delivery
+        if Code.ensure_loaded?(Fleetlm.Agents.WebhookManager) do
+          Fleetlm.Agents.WebhookManager.deliver_async(session.agent_id, session, message)
+        else
+          # Fallback to task supervisor approach
+          Task.Supervisor.start_child(@dispatcher_supervisor, fn ->
+            deliver_with_lazy_loading(session.agent_id, session, message)
+          end)
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp get_cached_endpoint_status(agent_id) do
+    # Try cache first, fallback to direct database query
+    if Code.ensure_loaded?(Fleetlm.Agents.EndpointCache) do
+      Fleetlm.Agents.EndpointCache.get_status(agent_id)
+    else
+      # Fallback for when cache is not available
+      Agents.get_endpoint_status(agent_id)
+    end
+  end
+
+  # Fallback to original behavior if get_endpoint_status doesn't exist
+  defp dispatch_async_fallback(session, message) do
     case Agents.get_endpoint(session.agent_id) do
       %AgentEndpoint{status: "enabled"} = endpoint ->
         Task.Supervisor.start_child(@dispatcher_supervisor, fn ->
@@ -36,6 +66,16 @@ defmodule Fleetlm.Agents.Dispatcher do
         :ok
 
       nil ->
+        :ok
+    end
+  end
+
+  defp deliver_with_lazy_loading(agent_id, session, message) do
+    case Agents.get_endpoint(agent_id) do
+      %AgentEndpoint{status: "enabled"} = endpoint ->
+        deliver(endpoint, session, message)
+
+      _ ->
         :ok
     end
   end

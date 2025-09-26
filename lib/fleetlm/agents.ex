@@ -68,6 +68,39 @@ defmodule Fleetlm.Agents do
   end
 
   @doc """
+  Get only the status of an agent endpoint (optimized for dispatcher).
+  Returns the status string or nil if endpoint doesn't exist.
+  """
+  @spec get_endpoint_status(String.t()) :: String.t() | nil
+  def get_endpoint_status(agent_id) when is_binary(agent_id) do
+    AgentEndpoint
+    |> select([e], e.status)
+    |> where([e], e.agent_id == ^agent_id)
+    |> Repo.one()
+  end
+
+  @doc """
+  Batch get endpoint statuses for multiple agents (optimized for concurrent operations).
+  Returns a map of agent_id -> status.
+  """
+  @spec get_endpoint_statuses([String.t()]) :: %{String.t() => String.t() | nil}
+  def get_endpoint_statuses(agent_ids) when is_list(agent_ids) do
+    results =
+      AgentEndpoint
+      |> select([e], {e.agent_id, e.status})
+      |> where([e], e.agent_id in ^agent_ids)
+      |> Repo.all()
+
+    # Convert to map, with nil for missing agents
+    agent_ids
+    |> Enum.map(fn agent_id ->
+      status = Enum.find_value(results, fn {id, status} -> if id == agent_id, do: status end)
+      {agent_id, status}
+    end)
+    |> Map.new()
+  end
+
+  @doc """
   Persist a delivery log entry for webhook attempts.
   """
   @spec log_delivery(map()) :: {:ok, DeliveryLog.t()} | {:error, Ecto.Changeset.t()}

@@ -78,6 +78,46 @@ defmodule Fleetlm.Sessions do
   """
   @spec append_message(String.t(), map()) :: {:ok, ChatMessage.t()} | {:error, Ecto.Changeset.t()}
   def append_message(session_id, attrs) when is_binary(session_id) and is_map(attrs) do
+    # Use optimized single-query approach if available, fallback to multi-query
+    case append_message_optimized(session_id, attrs) do
+      {:ok, message} -> {:ok, message}
+      {:fallback, _reason} -> append_message_fallback(session_id, attrs)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # Optimized single-SQL-statement approach
+  defp append_message_optimized(session_id, attrs) do
+    try do
+      # Prepare message attributes
+      message_id = Ulid.generate()
+      message_attrs = prepare_message_attrs(attrs, session_id, message_id)
+
+      # Validate attributes using changeset
+      changeset = ChatMessage.changeset(%ChatMessage{}, message_attrs)
+
+      if changeset.valid? do
+        # Execute atomic SQL operation
+        case execute_atomic_message_insert(message_attrs) do
+          {:ok, result} ->
+            message = struct(ChatMessage, result)
+            post_message_processing(message, session_id)
+            {:ok, message}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+      else
+        {:error, changeset}
+      end
+    rescue
+      error ->
+        {:fallback, error}
+    end
+  end
+
+  # Fallback to original multi-query approach
+  defp append_message_fallback(session_id, attrs) do
     case Repo.transaction(fn ->
            session = Repo.get!(ChatSession, session_id)
 
@@ -347,6 +387,115 @@ defmodule Fleetlm.Sessions do
     do: session.initiator_last_read_at
 
   defp session_last_read_at(%ChatSession{} = session, :peer), do: session.peer_last_read_at
+
+  # Helper functions for optimized append_message
+
+  defp prepare_message_attrs(attrs, session_id, message_id) do
+    attrs
+    |> Map.take([:sender_id, :kind, :content, :metadata])
+    |> Map.put(:session_id, session_id)
+    |> Map.put_new(:content, %{})
+    |> Map.put_new(:metadata, %{})
+    |> Map.put(:shard_key, shard_key_for(session_id))
+    |> Map.put(:id, message_id)
+  end
+
+  defp execute_atomic_message_insert(message_attrs) do
+    # SQL CTE that inserts message and updates session in single atomic operation
+    sql = """
+    WITH inserted_message AS (
+      INSERT INTO chat_messages (id, session_id, sender_id, kind, content, metadata, shard_key, inserted_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      RETURNING *
+    ),
+    updated_session AS (
+      UPDATE chat_sessions
+      SET last_message_id = $1,
+          last_message_at = (SELECT inserted_at FROM inserted_message),
+          updated_at = NOW()
+      WHERE id = $2
+      RETURNING agent_id
+    )
+    SELECT
+      im.*,
+      us.agent_id as session_agent_id
+    FROM inserted_message im, updated_session us
+    """
+
+    params = [
+      message_attrs[:id],
+      message_attrs[:session_id],
+      message_attrs[:sender_id],
+      message_attrs[:kind],
+      message_attrs[:content],
+      message_attrs[:metadata],
+      message_attrs[:shard_key]
+    ]
+
+    case Ecto.Adapters.SQL.query(Repo, sql, params) do
+      {:ok, %{rows: [row], columns: columns}} ->
+        # Convert row data back to map
+        result =
+          columns
+          |> Enum.zip(row)
+          |> Map.new()
+          |> convert_db_result_to_message()
+
+        {:ok, result}
+
+      {:ok, %{rows: []}} ->
+        {:error, :session_not_found}
+
+      {:error, error} ->
+        {:error, error}
+    end
+  end
+
+  defp convert_db_result_to_message(db_result) do
+    # Convert database result to message-like map
+    %{
+      id: db_result["id"],
+      session_id: db_result["session_id"],
+      sender_id: db_result["sender_id"],
+      kind: db_result["kind"],
+      content: db_result["content"],
+      metadata: db_result["metadata"],
+      shard_key: db_result["shard_key"],
+      inserted_at: db_result["inserted_at"],
+      updated_at: db_result["updated_at"],
+      session_agent_id: db_result["session_agent_id"]
+    }
+  end
+
+  defp post_message_processing(message, session_id) do
+    # Build runtime session for dispatcher (minimal required data)
+    runtime_session = %{
+      id: session_id,
+      agent_id: message.session_agent_id,
+      last_message_id: message.id,
+      last_message_at: to_datetime(message.inserted_at)
+    }
+
+    # Build dispatch payload
+    dispatch_payload = %{
+      id: message.id,
+      session_id: message.session_id,
+      sender_id: message.sender_id,
+      kind: message.kind,
+      content: message.content,
+      metadata: message.metadata,
+      inserted_at: message.inserted_at
+    }
+
+    # Build message for runtime
+    message_for_runtime = Map.put(message, :session, runtime_session)
+
+    # Execute side effects
+    SessionServer.append_message(message_for_runtime)
+    Dispatcher.maybe_dispatch(runtime_session, dispatch_payload)
+
+    :ok
+  end
 
   defp fetch_id!(attrs, key) do
     case Map.fetch(attrs, key) || Map.fetch(attrs, Atom.to_string(key)) do
