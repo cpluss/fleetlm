@@ -1,12 +1,8 @@
 defmodule Fleetlm.SessionBehaviourTest do
   use Fleetlm.DataCase, async: false
 
-  alias Fleetlm.Participants
-  alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.Cache
-  alias Fleetlm.Sessions.SessionServer
-  alias Fleetlm.Sessions.SessionSupervisor
-  alias Fleetlm.Sessions.InboxSupervisor
+  alias Fleetlm.{Participants, Sessions, Agents}
+  alias Fleetlm.Sessions.{Cache, SessionServer, SessionSupervisor, InboxSupervisor}
 
   describe "session message delivery" do
     test "each message emits a single session event" do
@@ -151,6 +147,69 @@ defmodule Fleetlm.SessionBehaviourTest do
       {:ok, tail} = SessionServer.load_tail(session.id)
       texts = Enum.map(tail, fn msg -> msg.content["text"] end)
       assert "initial" in texts
+    end
+
+    test "offline participant receives backlog after connecting" do
+      session = create_session("user:sender", "user:offline")
+
+      {:ok, _} =
+        Sessions.append_message(session.id, %{
+          sender_id: "user:sender",
+          kind: "text",
+          content: %{text: "queued"}
+        })
+
+      assert [] == Registry.lookup(Fleetlm.Sessions.InboxRegistry, "user:offline")
+
+      {:ok, _} = InboxSupervisor.ensure_started("user:offline")
+      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:user:offline")
+
+      :ok = Fleetlm.Sessions.InboxServer.flush("user:offline")
+
+      assert_receive {:inbox_snapshot, conversations}, 500
+      entry = Enum.find(conversations, fn convo -> convo["session_id"] == session.id end)
+      assert entry
+      assert entry["last_message_id"]
+    end
+
+    test "dispatcher only fires when agent endpoint enabled" do
+      Participants.upsert_participant(%{id: "agent:bot", kind: "agent", display_name: "Bot"})
+
+      Application.put_env(:fleetlm, :agent_dispatcher, %{mode: :test, pid: self()})
+
+      Agents.upsert_endpoint!("agent:bot", %{
+        origin_url: "https://example.com/webhook",
+        status: "disabled"
+      })
+
+      session = create_session("user:client", "agent:bot")
+
+      {:ok, _} =
+        Sessions.append_message(session.id, %{
+          sender_id: "user:client",
+          kind: "text",
+          content: %{text: "queued"}
+        })
+
+      refute_receive {:agent_dispatch, _}
+
+      Agents.upsert_endpoint!("agent:bot", %{
+        origin_url: "https://example.com/webhook",
+        status: "enabled"
+      })
+
+      {:ok, _} =
+        Sessions.append_message(session.id, %{
+          sender_id: "user:client",
+          kind: "text",
+          content: %{text: "live"}
+        })
+
+      assert_receive {:agent_dispatch, payload}, 500
+      assert get_in(payload, ["message", "content", "text"]) == "live"
+      refute_receive {:agent_dispatch, _}, 100
+    after
+      Application.delete_env(:fleetlm, :agent_dispatcher)
     end
   end
 

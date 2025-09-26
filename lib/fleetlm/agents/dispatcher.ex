@@ -158,8 +158,8 @@ defmodule Fleetlm.Agents.Dispatcher do
   end
 
   defp build_payload(session, message) do
-    %{
-      "session" => %{
+    session_map =
+      %{
         "id" => session.id,
         "kind" => session.kind,
         "initiator_id" => session.initiator_id,
@@ -167,8 +167,11 @@ defmodule Fleetlm.Agents.Dispatcher do
         "metadata" => session.metadata,
         "last_message_id" => session.last_message_id,
         "last_message_at" => encode_datetime(session.last_message_at)
-      },
-      "message" => %{
+      }
+      |> stringify_map()
+
+    message_map =
+      %{
         "id" => Map.get(message, :id),
         "session_id" => Map.get(message, :session_id),
         "kind" => Map.get(message, :kind),
@@ -177,7 +180,11 @@ defmodule Fleetlm.Agents.Dispatcher do
         "sender_id" => Map.get(message, :sender_id),
         "inserted_at" => encode_datetime(Map.get(message, :inserted_at))
       }
-    }
+      |> stringify_map()
+      |> Map.update("content", %{}, &stringify_map/1)
+      |> Map.update("metadata", %{}, &stringify_map/1)
+
+    %{"session" => session_map, "message" => message_map}
   end
 
   defp encode_datetime(nil), do: nil
@@ -191,6 +198,14 @@ defmodule Fleetlm.Agents.Dispatcher do
   end
 
   defp to_headers(_), do: []
+
+  defp stringify_map(map) when is_map(map) do
+    map
+    |> Enum.map(fn {k, v} -> {to_string(k), v} end)
+    |> Enum.into(%{})
+  end
+
+  defp stringify_map(other), do: other
 
   defp maybe_add_auth(headers, %AgentEndpoint{auth_strategy: "bearer", auth_value: token})
        when is_binary(token) do
