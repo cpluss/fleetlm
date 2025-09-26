@@ -11,7 +11,7 @@ defmodule Fleetlm.Application do
       # Observability stack (PromEx + telemetry helpers)
       Fleetlm.Observability,
       Fleetlm.Repo,
-      Fleetlm.Chat.Supervisor,
+      Fleetlm.Sessions.Supervisor,
       {DNSCluster, query: Application.get_env(:fleetlm, :dns_cluster_query) || :ignore},
       pubsub_spec(),
       # Start a worker by calling: Fleetlm.Worker.start_link(arg)

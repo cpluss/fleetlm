@@ -9,6 +9,7 @@ defmodule Fleetlm.Sessions do
   alias Fleetlm.Participants
   alias Fleetlm.Sessions.ChatSession
   alias Fleetlm.Sessions.ChatMessage
+  alias Fleetlm.Sessions.SessionServer
   alias Ulid
 
   @default_limit 50
@@ -83,6 +84,18 @@ defmodule Fleetlm.Sessions do
             })
             |> Repo.update()
 
+          runtime_session =
+            session
+            |> Map.put(:last_message_id, message.id)
+            |> Map.put(:last_message_at, to_datetime(message.inserted_at))
+
+          message_for_runtime =
+            message
+            |> Map.from_struct()
+            |> Map.put(:session, runtime_session)
+
+          SessionServer.append_message(message_for_runtime)
+
           message
 
         {:error, changeset} ->
@@ -138,6 +151,9 @@ defmodule Fleetlm.Sessions do
   defp infer_kind_and_agent(_a, _b), do: {"human_dm", nil}
 
   defp shard_key_for(session_id), do: :erlang.phash2(session_id, 1024)
+
+  defp to_datetime(%NaiveDateTime{} = naive), do: DateTime.from_naive!(naive, "Etc/UTC")
+  defp to_datetime(%DateTime{} = dt), do: dt
 
   defp maybe_after_id(query, nil), do: query
 
