@@ -1,7 +1,7 @@
 defmodule FleetlmWeb.UserSocket do
   use Phoenix.Socket
 
-  channel "conversation:*", FleetlmWeb.ConversationChannel
+  channel "session:*", FleetlmWeb.SessionChannel
   channel "inbox:*", FleetlmWeb.InboxChannel
 
   @impl true

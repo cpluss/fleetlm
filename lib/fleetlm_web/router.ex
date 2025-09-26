@@ -23,8 +23,9 @@ defmodule FleetlmWeb.Router do
   scope "/api", FleetlmWeb do
     pipe_through :api
 
-    get "/conversations/:dm_key/messages", ConversationController, :index
-    post "/conversations/:dm_key/messages", ConversationController, :create
+    post "/sessions", SessionController, :create
+    get "/sessions/:session_id/messages", SessionController, :messages
+    post "/sessions/:session_id/messages", SessionController, :append_message
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development

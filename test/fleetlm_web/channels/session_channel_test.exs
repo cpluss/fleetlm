@@ -1,9 +1,9 @@
-defmodule FleetlmWeb.InboxChannelTest do
+defmodule FleetlmWeb.SessionChannelTest do
   use FleetlmWeb.ChannelCase
 
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
-  alias FleetlmWeb.InboxChannel
+  alias FleetlmWeb.SessionChannel
 
   setup do
     {:ok, _} =
@@ -26,6 +26,10 @@ defmodule FleetlmWeb.InboxChannelTest do
         peer_id: "agent:bot"
       })
 
+    {:ok, session: session}
+  end
+
+  test "join returns message history", %{session: session} do
     {:ok, _} =
       Sessions.append_message(session.id, %{
         sender_id: "user:alice",
@@ -33,22 +37,23 @@ defmodule FleetlmWeb.InboxChannelTest do
         content: %{text: "hello"}
       })
 
-    %{session: session}
-  end
-
-  test "joining returns inbox snapshot" do
     {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"participant_id" => "user:alice"})
 
-    {:ok, %{conversations: conversations}, _socket} =
-      subscribe_and_join(socket, InboxChannel, "inbox:user:alice")
+    session_id = session.id
 
-    assert [%{"session_id" => _}] = conversations
+    {:ok, reply, _socket} =
+      subscribe_and_join(socket, SessionChannel, "session:" <> session_id)
+
+    assert %{
+             session_id: ^session_id,
+             messages: [%{"content" => %{"text" => "hello"}}]
+           } = reply
   end
 
-  test "non owner cannot join" do
-    {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"participant_id" => "user:bob"})
+  test "only participants may join", %{session: session} do
+    {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"participant_id" => "user:mallory"})
 
     assert {:error, %{reason: "unauthorized"}} =
-             subscribe_and_join(socket, InboxChannel, "inbox:user:alice")
+             subscribe_and_join(socket, SessionChannel, "session:" <> session.id)
   end
 end
