@@ -45,3 +45,7 @@ fleetlm-*.tar
 # In case you use Node.js/npm, you want to ignore these.
 npm-debug.log
 /assets/node_modules/
+
+docs-site/node_modules
+docs-site/.docusaurus
+docs-site/build
