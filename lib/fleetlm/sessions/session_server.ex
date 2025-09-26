@@ -43,6 +43,47 @@ defmodule Fleetlm.Sessions.SessionServer do
     GenServer.call(via(session_id), :tail)
   end
 
+  @doc """
+  Calculate unread count for a participant from cached messages.
+  Returns the count if session is active, nil if not running (caller should use database).
+  """
+  @spec cached_unread_count(String.t(), String.t(), DateTime.t() | NaiveDateTime.t() | nil) ::
+          non_neg_integer() | nil
+  def cached_unread_count(session_id, participant_id, last_read_at) do
+    case GenServer.whereis(via(session_id)) do
+      # Session not running, caller should use database
+      nil ->
+        nil
+
+      _pid ->
+        try do
+          GenServer.call(via(session_id), {:unread_count, participant_id, last_read_at}, 1000)
+        catch
+          # Process died or timeout, use database fallback
+          :exit, _ -> nil
+        end
+    end
+  end
+
+  @doc """
+  Get inbox metadata (last message info) from cached messages.
+  Returns metadata if session is active, nil if not running.
+  """
+  @spec cached_inbox_metadata(String.t()) :: map() | nil
+  def cached_inbox_metadata(session_id) do
+    case GenServer.whereis(via(session_id)) do
+      nil ->
+        nil
+
+      _pid ->
+        try do
+          GenServer.call(via(session_id), :inbox_metadata, 1000)
+        catch
+          :exit, _ -> nil
+        end
+    end
+  end
+
   defp via(session_id), do: {:via, Registry, {Fleetlm.Sessions.SessionRegistry, session_id}}
 
   @impl true
@@ -66,6 +107,20 @@ defmodule Fleetlm.Sessions.SessionServer do
   def handle_call(:tail, _from, state) do
     maybe_put_owner(state.sandbox_owner)
     {:reply, {:ok, state.tail}, state}
+  end
+
+  @impl true
+  def handle_call({:unread_count, participant_id, last_read_at}, _from, state) do
+    maybe_put_owner(state.sandbox_owner)
+    count = calculate_unread_from_cache(state.tail, participant_id, last_read_at)
+    {:reply, count, state}
+  end
+
+  @impl true
+  def handle_call(:inbox_metadata, _from, state) do
+    maybe_put_owner(state.sandbox_owner)
+    metadata = extract_inbox_metadata(state.tail)
+    {:reply, metadata, state}
   end
 
   defp warm_cache(session_id) do
@@ -108,5 +163,42 @@ defmodule Fleetlm.Sessions.SessionServer do
       |> Map.put(:session, session)
     end)
     |> Enum.reverse()
+  end
+
+  defp calculate_unread_from_cache(messages, participant_id, last_read_at) do
+    cutoff_time = normalize_datetime(last_read_at)
+
+    messages
+    |> Enum.filter(fn message ->
+      # Count messages not sent by this participant
+      # And messages after their last read time
+      message.sender_id != participant_id and
+        (cutoff_time == nil or datetime_after?(message.inserted_at, cutoff_time))
+    end)
+    |> length()
+  end
+
+  defp extract_inbox_metadata([]), do: %{last_message_at: nil, last_message_id: nil}
+
+  defp extract_inbox_metadata([latest | _]) do
+    %{
+      last_message_at: latest.inserted_at,
+      last_message_id: latest.id
+    }
+  end
+
+  defp normalize_datetime(nil), do: nil
+  defp normalize_datetime(%DateTime{} = dt), do: DateTime.to_naive(dt)
+  defp normalize_datetime(%NaiveDateTime{} = naive), do: naive
+
+  defp datetime_after?(message_time, cutoff_time) do
+    message_naive = normalize_datetime(message_time)
+    cutoff_naive = normalize_datetime(cutoff_time)
+
+    case {message_naive, cutoff_naive} do
+      {nil, _} -> false
+      {_, nil} -> true
+      {msg, cutoff} -> NaiveDateTime.compare(msg, cutoff) == :gt
+    end
   end
 end

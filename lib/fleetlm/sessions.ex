@@ -92,27 +92,27 @@ defmodule Fleetlm.Sessions do
 
            %ChatMessage{}
            |> ChatMessage.changeset(message_attrs)
-          |> Repo.insert()
-          |> case do
-            {:ok, message} ->
-              {:ok, _} =
-                session
-                |> ChatSession.changeset(%{
-                  last_message_id: message.id,
-                  last_message_at: message.inserted_at
-                })
-                |> Repo.update()
+           |> Repo.insert()
+           |> case do
+             {:ok, message} ->
+               {:ok, _} =
+                 session
+                 |> ChatSession.changeset(%{
+                   last_message_id: message.id,
+                   last_message_at: message.inserted_at
+                 })
+                 |> Repo.update()
 
-              runtime_session =
-                session
-                |> Map.put(:last_message_id, message.id)
-                |> Map.put(:last_message_at, to_datetime(message.inserted_at))
+               runtime_session =
+                 session
+                 |> Map.put(:last_message_id, message.id)
+                 |> Map.put(:last_message_at, to_datetime(message.inserted_at))
 
-              dispatch_payload =
-                message
-                |> Map.from_struct()
-                |> Map.take([
-                  :id,
+               dispatch_payload =
+                 message
+                 |> Map.from_struct()
+                 |> Map.take([
+                   :id,
                    :session_id,
                    :sender_id,
                    :kind,
@@ -122,15 +122,15 @@ defmodule Fleetlm.Sessions do
                  ])
 
                message_for_runtime =
-                message
-                |> Map.from_struct()
-                |> Map.put(:session, runtime_session)
+                 message
+                 |> Map.from_struct()
+                 |> Map.put(:session, runtime_session)
 
                {message, message_for_runtime, runtime_session, dispatch_payload}
 
-            {:error, changeset} ->
-              Repo.rollback(changeset)
-          end
+             {:error, changeset} ->
+               Repo.rollback(changeset)
+           end
          end) do
       {:ok, {message, message_for_runtime, runtime_session, dispatch_payload}} ->
         SessionServer.append_message(message_for_runtime)
@@ -193,14 +193,15 @@ defmodule Fleetlm.Sessions do
   end
 
   @doc """
-  List recent sessions for a participant with unread counts in a single query.
+  List recent sessions for a participant with unread counts, using cache-first approach.
   Returns tuples of {session, unread_count}.
   """
-  @spec list_sessions_with_unread_counts(String.t(), keyword()) :: [{ChatSession.t(), non_neg_integer()}]
+  @spec list_sessions_with_unread_counts(String.t(), keyword()) :: [
+          {ChatSession.t(), non_neg_integer()}
+        ]
   def list_sessions_with_unread_counts(participant_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, @default_limit)
 
-    # Get sessions first, then calculate unread counts
     sessions =
       ChatSession
       |> where([s], s.initiator_id == ^participant_id or s.peer_id == ^participant_id)
@@ -208,24 +209,38 @@ defmodule Fleetlm.Sessions do
       |> limit(^limit)
       |> Repo.all()
 
-    # Calculate unread counts for each session
+    # Optimize: Batch cache lookups and fallback to single DB query
+    sessions_with_roles =
+      Enum.map(sessions, fn session ->
+        {session, participant_role(session, participant_id)}
+      end)
+
+    # Try to get all unread counts from cache first
+    {cached_counts, sessions_requiring_db} =
+      Enum.reduce(sessions_with_roles, {%{}, []}, fn {session, role}, {cache_acc, pending} ->
+        case role do
+          nil ->
+            {Map.put(cache_acc, session.id, 0), pending}
+
+          role ->
+            last_read_at = session_last_read_at(session, role)
+
+            case SessionServer.cached_unread_count(session.id, participant_id, last_read_at) do
+              nil -> {cache_acc, [{session, role} | pending]}
+              cached -> {Map.put(cache_acc, session.id, cached), pending}
+            end
+        end
+      end)
+
+    # Single optimized DB query for all cache misses
+    db_counts = fetch_unread_counts_from_db_optimized(sessions_requiring_db, participant_id)
+
+    unread_counts = Map.merge(db_counts, cached_counts)
+
     Enum.map(sessions, fn session ->
-      role = cond do
-        session.initiator_id == participant_id -> :initiator
-        session.peer_id == participant_id -> :peer
-        true -> nil
-      end
-
-      unread_count = case role do
-        :initiator -> do_unread_count(session, participant_id, :initiator_last_read_at)
-        :peer -> do_unread_count(session, participant_id, :peer_last_read_at)
-        _ -> 0
-      end
-
-      {session, unread_count}
+      {session, Map.get(unread_counts, session.id, 0)}
     end)
   end
-
 
   @doc """
   Get inbox snapshot with read-through caching.
@@ -239,6 +254,7 @@ defmodule Fleetlm.Sessions do
     case Cache.fetch_inbox_snapshot(participant_id) do
       {:ok, snapshot} ->
         snapshot
+
       _ ->
         # Cache miss - build new snapshot
         snapshot = build_inbox_snapshot(participant_id, limit: limit)
@@ -253,12 +269,23 @@ defmodule Fleetlm.Sessions do
     sessions_with_counts = list_sessions_with_unread_counts(participant_id, limit: limit)
 
     Enum.map(sessions_with_counts, fn {session, unread_count} ->
+      # Try to get fresher metadata from cache if session is active
+      {last_message_id, last_message_at} =
+        case Fleetlm.Sessions.SessionServer.cached_inbox_metadata(session.id) do
+          %{last_message_id: id, last_message_at: at} when not is_nil(id) ->
+            {id, encode_datetime(at)}
+
+          _ ->
+            # Fall back to database values
+            {session.last_message_id, encode_datetime(session.last_message_at)}
+        end
+
       %{
         "session_id" => session.id,
         "kind" => session.kind,
         "status" => session.status,
-        "last_message_id" => session.last_message_id,
-        "last_message_at" => encode_datetime(session.last_message_at),
+        "last_message_id" => last_message_id,
+        "last_message_at" => last_message_at,
         "agent_id" => session.agent_id,
         "initiator_id" => session.initiator_id,
         "peer_id" => session.peer_id,
@@ -286,6 +313,40 @@ defmodule Fleetlm.Sessions do
       nil -> 0
     end
   end
+
+
+  # Optimized version that uses a single query for all sessions
+  defp fetch_unread_counts_from_db_optimized([], _participant_id), do: %{}
+
+  defp fetch_unread_counts_from_db_optimized(sessions_with_role, participant_id) do
+    case sessions_with_role do
+      [] -> %{}
+      sessions_with_role ->
+        # Extract all session IDs for a single query
+        session_ids = Enum.map(sessions_with_role, fn {session, _role} -> session.id end)
+
+        # Single query that handles both initiator and peer cases
+        ChatMessage
+        |> join(:inner, [m], s in ChatSession, on: s.id == m.session_id)
+        |> where([_m, s], s.id in ^session_ids)
+        |> where([m, s],
+          (s.initiator_id == ^participant_id and m.sender_id != ^participant_id and
+           (is_nil(s.initiator_last_read_at) or m.inserted_at > s.initiator_last_read_at)) or
+          (s.peer_id == ^participant_id and m.sender_id != ^participant_id and
+           (is_nil(s.peer_last_read_at) or m.inserted_at > s.peer_last_read_at))
+        )
+        |> group_by([_m, s], s.id)
+        |> select([m, s], {s.id, count(m.id)})
+        |> Repo.all()
+        |> Map.new()
+    end
+  end
+
+
+  defp session_last_read_at(%ChatSession{} = session, :initiator),
+    do: session.initiator_last_read_at
+
+  defp session_last_read_at(%ChatSession{} = session, :peer), do: session.peer_last_read_at
 
   defp fetch_id!(attrs, key) do
     case Map.fetch(attrs, key) || Map.fetch(attrs, Atom.to_string(key)) do
@@ -395,7 +456,10 @@ defmodule Fleetlm.Sessions do
 
   defp do_unread_count(%ChatSession{} = session, participant_id, read_field) do
     read_at = Map.get(session, read_field)
+    do_unread_count_from_db(session, participant_id, read_at)
+  end
 
+  defp do_unread_count_from_db(%ChatSession{} = session, participant_id, read_at) do
     ChatMessage
     |> where([m], m.session_id == ^session.id)
     |> where([m], m.sender_id != ^participant_id)
@@ -416,6 +480,7 @@ defmodule Fleetlm.Sessions do
 
   defp refresh_inbox(participant_id, owner) do
     maybe_put_sandbox_owner(owner)
+
     case InboxSupervisor.ensure_started(participant_id) do
       {:ok, _pid} -> InboxServer.flush(participant_id)
       {:error, _} -> :ok

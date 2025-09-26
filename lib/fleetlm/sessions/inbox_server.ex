@@ -77,11 +77,9 @@ defmodule Fleetlm.Sessions.InboxServer do
     Sessions.get_inbox_snapshot(participant_id, limit: @snapshot_limit)
   end
 
-
   defp broadcast_snapshot(participant_id, snapshot) do
     Phoenix.PubSub.broadcast(@pubsub, "inbox:" <> participant_id, {:inbox_snapshot, snapshot})
   end
-
 
   defp maybe_allow_sandbox(nil), do: :ok
 

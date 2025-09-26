@@ -75,7 +75,6 @@ defmodule Fleetlm.SessionBehaviourTest do
       entry = Enum.find(conversations, fn convo -> convo["session_id"] == session.id end)
       assert entry
       assert entry["last_message_id"]
-
     end
 
     test "hundreds of inbound sessions produce unique inbox entries" do
@@ -109,6 +108,7 @@ defmodule Fleetlm.SessionBehaviourTest do
         {:ok, pid} = SessionSupervisor.ensure_started(id)
         allow_db(pid)
       end)
+
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:" <> recipient)
 
       :ok = Fleetlm.Sessions.InboxServer.flush(recipient)
