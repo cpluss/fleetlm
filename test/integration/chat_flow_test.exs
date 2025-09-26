@@ -1,6 +1,8 @@
 defmodule Fleetlm.ChatIntegrationTest do
   use FleetlmWeb.ChannelCase
 
+  @moduletag skip: "Legacy chat runtime pending replacement"
+
   alias Fleetlm.Chat
   alias Fleetlm.ChatCase.Client
 

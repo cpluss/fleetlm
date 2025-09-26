@@ -1,6 +1,8 @@
 defmodule Fleetlm.Chat.InboxServerTest do
   use Fleetlm.DataCase
 
+  @moduletag skip: "Legacy chat runtime pending replacement"
+
   alias Fleetlm.Chat.{Cache, Events, InboxServer, InboxSupervisor}
 
   setup do

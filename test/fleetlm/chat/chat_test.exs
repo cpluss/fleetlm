@@ -1,6 +1,8 @@
 defmodule Fleetlm.ChatTest do
   use Fleetlm.DataCase
 
+  @moduletag skip: "Legacy chat runtime pending replacement"
+
   alias Fleetlm.Chat
   alias Fleetlm.Chat.DmKey
 

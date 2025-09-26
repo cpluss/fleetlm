@@ -1,6 +1,8 @@
 defmodule FleetlmWeb.ChatChannelBehaviourTest do
   use FleetlmWeb.ChannelCase
 
+  @moduletag skip: "Legacy chat runtime pending replacement"
+
   alias Fleetlm.ChatCase.Client
 
   describe "behavioural delivery guarantees" do

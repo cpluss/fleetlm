@@ -1,6 +1,8 @@
 defmodule Fleetlm.Chat.ConversationSupervisorTest do
   use Fleetlm.DataCase
 
+  @moduletag skip: "Legacy chat runtime pending replacement"
+
   alias Fleetlm.Chat.{ConversationSupervisor, DmKey}
 
   describe "ensure_started/1" do

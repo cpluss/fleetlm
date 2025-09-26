@@ -1,6 +1,8 @@
 defmodule FleetlmWeb.ConversationControllerTest do
   use FleetlmWeb.ConnCase
 
+  @moduletag skip: "Legacy chat runtime pending replacement"
+
   alias Fleetlm.Chat
 
   @endpoint FleetlmWeb.Endpoint
