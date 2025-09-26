@@ -11,9 +11,9 @@ Complete redesign of the chat runtime to support multi-session, agent-integrated
 - Exit criteria: ERD committed, interface contracts agreed
 
 ## Phase 1 – Database & Migrations
-- Create migrations for new tables with indexes and per-session sequences (`chat_sessions.seq_name`)
-- `chat_sessions` columns: `id`, `initiator_id`, `peer_id`, `agent_id?`, `kind`, `status`, `metadata`, `seq_name`, `last_message_id`, `last_message_at`, timestamps
-- `chat_messages` columns: `id`, `session_id`, `sender_id`, `seq`, `kind`, `content` (JSONB), `metadata`, `shard_key`, timestamps
+- Create migrations for new tables keyed by ULIDs with supporting indexes
+- `chat_sessions` columns: `id` (ULID string), `initiator_id`, `peer_id`, `agent_id?`, `kind`, `status`, `metadata`, `last_message_id`, `last_message_at`, timestamps
+- `chat_messages` columns: `id` (ULID string), `session_id`, `sender_id`, `kind`, `content` (JSONB), `metadata`, `shard_key`, timestamps
 - `agent_endpoints`, `agent_delivery_logs` tables per blueprint
 - Exit criteria: `mix ecto.migrate` succeeds on fresh DB with schema matching design
 
@@ -62,4 +62,3 @@ Complete redesign of the chat runtime to support multi-session, agent-integrated
 - `mix ecto.migrate`
 - `mix precommit` before delivery
 - Manual webhook smoke test against stub endpoint
-

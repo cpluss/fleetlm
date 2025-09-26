@@ -11,31 +11,31 @@
 - timestamps
 
 ### chat_sessions
-- `id` (UUID)
+- `id` (ULID string)
 - `initiator_id` (FK to participants.id)
 - `peer_id` (FK to participants.id)
 - `agent_id` (FK to participants.id, nullable shortcut when either participant is an agent)
 - `kind` (`human_dm`, `agent_dm`)
 - `status` (`open`, `closed`, `archived`)
 - `metadata` (JSONB)
-- `seq_name` (Postgres sequence identifier for the session)
 - `last_message_id` (FK to chat_messages.id, nullable)
 - `last_message_at` (UTC timestamp, nullable)
 - `inserted_at`, `updated_at`
 
+
 ### chat_messages
-- `id` (UUID)
+- `id` (ULID string)
 - `session_id` (FK to chat_sessions.id)
 - `sender_id` (FK to participants.id)
-- `seq` (bigint, monotonic per session)
 - `kind` (`text`, `tool_call`, `system`, future variants)
 - `content` (JSONB, e.g. `{ "text": "Hello" }`)
 - `metadata` (JSONB for embeddings, reference ids, etc.)
 - `shard_key` (integer hash of session_id for distribution)
 - `inserted_at`, `updated_at`
 
+
 ### agent_endpoints
-- `id` (UUID)
+- `id` (ULID string)
 - `agent_id` (FK to participants.id)
 - `origin_url`
 - `auth_strategy` (`none`, `bearer`, `hmac`)
@@ -46,8 +46,9 @@
 - `status` (`enabled`, `disabled`)
 - timestamps
 
+
 ### agent_delivery_logs
-- `id` (UUID)
+- `id` (ULID string)
 - `session_id` (FK to chat_sessions.id)
 - `message_id` (FK to chat_messages.id)
 - `agent_id` (FK to participants.id)
@@ -63,14 +64,12 @@
 - Participant identifiers: `user:<slug>`, `agent:<slug>`, `system:<slug>`
 - Session kinds: `human_dm` for user↔user, `agent_dm` for user↔agent
 - Message kinds: `text`, `tool_call`, `system`; future-safe by storing `content` as JSONB
-- Sequences: `session_seq_<uuid>` stored in `chat_sessions.seq_name`
 
 ## Message Payload Contract
 ```json
 {
-  "id": "uuid",
-  "session_id": "uuid",
-  "seq": 42,
+  "id": "01JABCDXYZ1234567890ABCDEZ",
+  "session_id": "01JABCDE1234567890ABCDEFX",
   "kind": "text",
   "content": {"text": "Hello"},
   "metadata": {"role": "user"},
@@ -79,7 +78,7 @@
 }
 ```
 
-Clients must treat `content` as schema-per-kind and use `seq` for ordering + pagination (`after_seq`).
+Clients must treat `content` as schema-per-kind and use ULID ordering for pagination (`after_id`).
 
 ## Migration Approach
 - MVP drops legacy `dm_*` tables; developers reset databases during the rollout.
@@ -88,5 +87,3 @@ Clients must treat `content` as schema-per-kind and use `seq` for ordering + pag
 
 ## Open Questions
 - Should agent delivery retries be persisted as separate rows or JSON array? → Chosen: separate rows (`agent_delivery_logs`).
-- How to garbage-collect per-session sequences? → Background job when session closes.
-
