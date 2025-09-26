@@ -21,6 +21,11 @@ defmodule Fleetlm.Sessions.InboxServer do
 
   def via(participant_id), do: {:via, Registry, {Fleetlm.Sessions.InboxRegistry, participant_id}}
 
+  @spec flush(String.t()) :: :ok
+  def flush(participant_id) when is_binary(participant_id) do
+    GenServer.call(via(participant_id), :flush)
+  end
+
   @spec enqueue_update(String.t(), Sessions.ChatSession.t(), map()) :: :ok
   def enqueue_update(participant_id, session, message) do
     GenServer.cast(via(participant_id), {:updated, session, message})
@@ -37,6 +42,13 @@ defmodule Fleetlm.Sessions.InboxServer do
     snapshot = load_snapshot(state.participant_id)
     broadcast_snapshot(state.participant_id, snapshot)
     {:noreply, %{state | snapshot: snapshot}}
+  end
+
+  @impl true
+  def handle_call(:flush, _from, state) do
+    snapshot = refresh_snapshot(state.participant_id)
+    broadcast_snapshot(state.participant_id, snapshot)
+    {:reply, :ok, %{state | snapshot: snapshot}}
   end
 
   defp load_snapshot(participant_id) do

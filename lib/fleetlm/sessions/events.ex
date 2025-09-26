@@ -39,12 +39,15 @@ defmodule Fleetlm.Sessions.Events do
   end
 
   defp message_payload(message) do
+    content = stringify_map(Map.get(message, :content))
+    metadata = stringify_map(Map.get(message, :metadata))
+
     %{
       "id" => Map.get(message, :id),
       "session_id" => Map.get(message, :session_id),
       "kind" => Map.get(message, :kind),
-      "content" => Map.get(message, :content),
-      "metadata" => Map.get(message, :metadata),
+      "content" => content,
+      "metadata" => metadata,
       "sender_id" => Map.get(message, :sender_id),
       "inserted_at" => encode_datetime(Map.get(message, :inserted_at))
     }
@@ -53,4 +56,12 @@ defmodule Fleetlm.Sessions.Events do
   defp encode_datetime(%NaiveDateTime{} = naive), do: NaiveDateTime.to_iso8601(naive)
   defp encode_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   defp encode_datetime(nil), do: nil
+
+  defp stringify_map(map) when is_map(map) do
+    map
+    |> Enum.map(fn {k, v} -> {to_string(k), v} end)
+    |> Enum.into(%{})
+  end
+
+  defp stringify_map(_), do: %{}
 end

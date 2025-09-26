@@ -56,16 +56,27 @@ defmodule FleetlmWeb.SessionController do
   end
 
   defp render_message(message) do
+    content = stringify_map(message.content)
+    metadata = stringify_map(message.metadata)
+
     %{
       id: message.id,
       session_id: message.session_id,
       sender_id: message.sender_id,
       kind: message.kind,
-      content: message.content,
-      metadata: message.metadata,
+      content: content,
+      metadata: metadata,
       inserted_at: encode_datetime(message.inserted_at)
     }
   end
+
+  defp stringify_map(map) when is_map(map) do
+    map
+    |> Enum.map(fn {k, v} -> {to_string(k), v} end)
+    |> Enum.into(%{})
+  end
+
+  defp stringify_map(_), do: %{}
 
   defp encode_datetime(nil), do: nil
   defp encode_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
