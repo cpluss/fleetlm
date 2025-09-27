@@ -3,8 +3,9 @@ defmodule Fleetlm.Runtime.Supervisor do
   Root supervisor for the session runtime tree.
 
   Starts Cachex caches, registries, and the dynamic supervisors that manage
-  session/inbox servers. It anchors the runtime tree used by the session
-  gateway, making it easy to evolve into sharded ownership in later phases.
+  session/inbox servers. It also hosts the sharding control plane, which keeps
+  the consistent hash ring and slot owners in sync so the gateway sees a
+  cluster-wide load balancer instead of node-local state.
   """
 
   use Supervisor
@@ -21,6 +22,9 @@ defmodule Fleetlm.Runtime.Supervisor do
   def init(_arg) do
     children = [
       CacheSupervisor,
+      {Registry, keys: :unique, name: Fleetlm.Runtime.Sharding.LocalRegistry},
+      Fleetlm.Runtime.Sharding.Supervisor,
+      Fleetlm.Runtime.Sharding.Manager,
       {Registry, keys: :unique, name: Fleetlm.Runtime.SessionRegistry},
       {Registry, keys: :unique, name: Fleetlm.Runtime.InboxRegistry},
       {SessionSupervisor, []},

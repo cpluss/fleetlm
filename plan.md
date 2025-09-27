@@ -13,10 +13,10 @@
 - [x] Note follow-up integration risks in plan checklist (Gateway still delegates to `Sessions` today; Phase 3 must replace delegation with shard RPC and extend telemetry tags for slot ownership.)
 
 ## Phase 3 – Cluster & Shard Orchestration
-- [ ] Introduce consistent hash ring abstraction (256–1024 slots) with persistence + config knobs
-- [ ] Add libcluster + Horde supervision tree for shard ownership and dynamic distribution
-- [ ] Implement gateway lookup + retry semantics for shard ownership changes
-- [ ] Provide ops docs for shard topology configuration and health checks
+- [x] Introduce consistent hash ring abstraction (256–1024 slots) with persistence + config knobs
+- [x] Add libcluster + Horde supervision tree for shard ownership and dynamic distribution
+- [x] Implement gateway lookup + retry semantics for shard ownership changes
+- [x] Provide ops docs for shard topology configuration and health checks
 
 ## Phase 4 – Hot Path State & Durability
 - [ ] Design and implement ETS session rings + idempotency cache per shard slot

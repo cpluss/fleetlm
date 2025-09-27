@@ -4,8 +4,10 @@ defmodule Fleetlm.Runtime.TestHelper do
   alias Fleetlm.Runtime.Cache
   alias Fleetlm.Runtime.SessionSupervisor
   alias Fleetlm.Runtime.InboxSupervisor
+  alias Fleetlm.Runtime.Sharding.Supervisor, as: ShardSupervisor
 
   def reset do
+    terminate_horde_children(ShardSupervisor)
     # Terminate children forcefully but safely
     terminate_children_forcefully(Fleetlm.Runtime.SessionRegistry, SessionSupervisor)
     terminate_children_forcefully(Fleetlm.Runtime.InboxRegistry, InboxSupervisor)
@@ -38,6 +40,20 @@ defmodule Fleetlm.Runtime.TestHelper do
       end
     else
       :ok
+    end
+  end
+
+  defp terminate_horde_children(supervisor) do
+    case Process.whereis(supervisor) do
+      nil ->
+        :ok
+
+      _ ->
+        supervisor
+        |> Horde.DynamicSupervisor.which_children()
+        |> Enum.each(fn {_id, pid, _type, _modules} ->
+          Horde.DynamicSupervisor.terminate_child(supervisor, pid)
+        end)
     end
   end
 end

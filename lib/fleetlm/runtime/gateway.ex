@@ -6,7 +6,7 @@ defmodule Fleetlm.Runtime.Gateway do
   details to Phoenix controllers or channels.
   """
 
-  alias Fleetlm.Sessions
+  alias Fleetlm.Runtime.Router
   alias Fleetlm.Sessions.ChatMessage
   alias Fleetlm.Sessions.ChatSession
 
@@ -15,7 +15,7 @@ defmodule Fleetlm.Runtime.Gateway do
   """
   @spec append_message(String.t(), map()) :: {:ok, ChatMessage.t()} | {:error, term()}
   def append_message(session_id, attrs) when is_binary(session_id) and is_map(attrs) do
-    Sessions.append_message(session_id, attrs)
+    Router.append(session_id, attrs)
   end
 
   @doc """
@@ -23,7 +23,7 @@ defmodule Fleetlm.Runtime.Gateway do
   """
   @spec replay_messages(String.t(), keyword()) :: [ChatMessage.t()]
   def replay_messages(session_id, opts \\ []) when is_binary(session_id) and is_list(opts) do
-    Sessions.list_messages(session_id, opts)
+    Router.replay(session_id, opts)
   end
 
   @doc """
@@ -33,6 +33,6 @@ defmodule Fleetlm.Runtime.Gateway do
           {:ok, ChatSession.t()} | {:error, term()}
   def mark_read(session_id, participant_id, opts \\ [])
       when is_binary(session_id) and is_binary(participant_id) and is_list(opts) do
-    Sessions.mark_read(session_id, participant_id, opts)
+    Router.mark_read(session_id, participant_id, opts)
   end
 end

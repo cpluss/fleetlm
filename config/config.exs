@@ -13,6 +13,10 @@ config :fleetlm,
 
 config :fleetlm, :participant_tick_interval_ms, 1_000
 
+config :fleetlm, Fleetlm.Runtime.Sharding.HashRing,
+  slot_count: 512,
+  virtual_nodes_per_node: 128
+
 # Configures the endpoint
 config :fleetlm, FleetlmWeb.Endpoint,
   url: [host: "localhost"],
