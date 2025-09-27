@@ -1,6 +1,7 @@
 defmodule FleetlmWeb.SessionControllerTest do
   use FleetlmWeb.ConnCase
 
+  alias Fleetlm.Gateway
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
 
@@ -45,7 +46,7 @@ defmodule FleetlmWeb.SessionControllerTest do
       })
 
     {:ok, _} =
-      Sessions.append_message(session.id, %{
+      Gateway.append_message(session.id, %{
         sender_id: "user:alice",
         kind: "text",
         content: %{text: "hi"}
@@ -83,7 +84,7 @@ defmodule FleetlmWeb.SessionControllerTest do
       })
 
     {:ok, message} =
-      Sessions.append_message(session.id, %{
+      Gateway.append_message(session.id, %{
         sender_id: "user:alice",
         kind: "text",
         content: %{text: "ping"}

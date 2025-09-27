@@ -1,6 +1,7 @@
 defmodule FleetlmWeb.SessionChannelTest do
   use FleetlmWeb.ChannelCase
 
+  alias Fleetlm.Gateway
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
   alias Fleetlm.Sessions.SessionSupervisor
@@ -35,7 +36,7 @@ defmodule FleetlmWeb.SessionChannelTest do
 
   test "join returns message history", %{session: session} do
     {:ok, _} =
-      Sessions.append_message(session.id, %{
+      Gateway.append_message(session.id, %{
         sender_id: "user:alice",
         kind: "text",
         content: %{text: "hello"}

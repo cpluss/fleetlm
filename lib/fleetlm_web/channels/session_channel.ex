@@ -5,6 +5,7 @@ defmodule FleetlmWeb.SessionChannel do
 
   use FleetlmWeb, :channel
 
+  alias Fleetlm.Gateway
   alias Fleetlm.Sessions
   alias Fleetlm.Sessions.SessionServer
 
@@ -46,7 +47,7 @@ defmodule FleetlmWeb.SessionChannel do
       metadata: Map.get(content, "metadata", %{})
     }
 
-    case Sessions.append_message(session.id, attrs) do
+    case Gateway.append_message(session.id, attrs) do
       {:ok, _message} -> {:noreply, socket}
       {:error, reason} -> {:reply, {:error, %{error: inspect(reason)}}, socket}
     end

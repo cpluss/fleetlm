@@ -1,6 +1,7 @@
 defmodule FleetlmWeb.SessionController do
   use FleetlmWeb, :controller
 
+  alias Fleetlm.Gateway
   alias Fleetlm.Sessions
   alias Fleetlm.Sessions.ChatMessage
 
@@ -24,7 +25,7 @@ defmodule FleetlmWeb.SessionController do
     after_id = Map.get(params, "after_id")
     limit = parse_int(params["limit"], 50)
 
-    messages = Sessions.list_messages(session_id, limit: limit, after_id: after_id)
+    messages = Gateway.replay_messages(session_id, limit: limit, after_id: after_id)
     json(conn, %{messages: Enum.map(messages, &render_message/1)})
   end
 
@@ -36,7 +37,7 @@ defmodule FleetlmWeb.SessionController do
       metadata: Map.get(params, "metadata", %{})
     }
 
-    with {:ok, %ChatMessage{} = message} <- Sessions.append_message(session_id, attrs) do
+    with {:ok, %ChatMessage{} = message} <- Gateway.append_message(session_id, attrs) do
       json(conn, %{message: render_message(message)})
     end
   end
@@ -44,7 +45,7 @@ defmodule FleetlmWeb.SessionController do
   def mark_read(conn, %{"session_id" => session_id} = params) do
     with {:ok, participant_id} <- require_param(params, "participant_id"),
          {:ok, session} <-
-           Sessions.mark_read(session_id, participant_id,
+           Gateway.mark_read(session_id, participant_id,
              message_id: Map.get(params, "message_id")
            ) do
       json(conn, %{session: render_session(session)})

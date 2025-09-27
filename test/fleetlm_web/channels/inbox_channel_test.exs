@@ -1,6 +1,7 @@
 defmodule FleetlmWeb.InboxChannelTest do
   use FleetlmWeb.ChannelCase
 
+  alias Fleetlm.Gateway
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
   alias FleetlmWeb.InboxChannel
@@ -27,7 +28,7 @@ defmodule FleetlmWeb.InboxChannelTest do
       })
 
     {:ok, _} =
-      Sessions.append_message(session.id, %{
+      Gateway.append_message(session.id, %{
         sender_id: "user:alice",
         kind: "text",
         content: %{text: "hello"}

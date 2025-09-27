@@ -7,10 +7,10 @@
 - [x] Document baseline findings (bottlenecks, limits) in `docs/perf/phase1.md`
 
 ## Phase 2 – Gateway & Runtime Boundary Refactor
-- [ ] Extract stateless gateway service interfaces (append, replay, mark-read)
-- [ ] Update channels/controllers/tests to use the gateway boundary instead of direct Repo access
-- [ ] Ensure instrumentation from Phase 1 still reports through the new boundary
-- [ ] Note follow-up integration risks in plan checklist
+- [x] Extract stateless gateway service interfaces (append, replay, mark-read)
+- [x] Update channels/controllers/tests to use the gateway boundary instead of direct Repo access
+- [x] Ensure instrumentation from Phase 1 still reports through the new boundary
+- [x] Note follow-up integration risks in plan checklist (Gateway still delegates to `Sessions` today; Phase 3 must replace delegation with shard RPC and extend telemetry tags for slot ownership.)
 
 ## Phase 3 – Cluster & Shard Orchestration
 - [ ] Introduce consistent hash ring abstraction (256–1024 slots) with persistence + config knobs
