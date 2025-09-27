@@ -1,3 +1,90 @@
+defmodule Bench.MockWebhookReceiver do
+  @moduledoc """
+  Lightweight in-memory webhook receiver used by the benchmark suite.
+
+  Instead of issuing real HTTP requests, webhook deliveries are routed to this
+  GenServer which records delivery counts and replies immediately. This keeps
+  the dispatcher hot path lightweight and eliminates connection refused errors
+  during benchmarks while still exercising the delivery pipeline.
+  """
+
+  use GenServer
+
+  @response %Req.Response{
+    status: 200,
+    headers: %{},
+    body: "bench-mock",
+    trailers: %{},
+    private: %{}
+  }
+
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, :ok, Keyword.merge([name: __MODULE__], opts))
+  end
+
+  @spec ensure_started() :: {:ok, pid()} | {:error, term()}
+  def ensure_started do
+    case Process.whereis(__MODULE__) do
+      nil ->
+        case start_link() do
+          {:ok, pid} -> {:ok, pid}
+          {:error, {:already_started, pid}} -> {:ok, pid}
+          error -> error
+        end
+
+      pid when is_pid(pid) ->
+        {:ok, pid}
+    end
+  end
+
+  @spec pid() :: pid()
+  def pid do
+    case ensure_started() do
+      {:ok, pid} -> pid
+      _ -> raise "mock webhook receiver failed to start"
+    end
+  end
+
+  @spec reset() :: :ok
+  def reset do
+    ensure_started()
+    GenServer.cast(__MODULE__, :reset)
+  end
+
+  @spec deliver(map()) :: {:ok, Req.Response.t()} | {:error, term()}
+  def deliver(payload) when is_map(payload) do
+    ensure_started()
+    GenServer.call(__MODULE__, {:deliver, payload})
+  end
+
+  @spec stats() :: %{count: non_neg_integer()}
+  def stats do
+    ensure_started()
+    GenServer.call(__MODULE__, :stats)
+  end
+
+  @impl true
+  def init(:ok) do
+    {:ok, %{count: 0}}
+  end
+
+  @impl true
+  def handle_call({:deliver, _payload}, _from, state) do
+    updated_state = %{state | count: state.count + 1}
+    {:reply, {:ok, @response}, updated_state}
+  end
+
+  @impl true
+  def handle_call(:stats, _from, state) do
+    {:reply, state, state}
+  end
+
+  @impl true
+  def handle_cast(:reset, _state) do
+    {:noreply, %{count: 0}}
+  end
+end
+
 defmodule Bench.Helper do
   @moduledoc """
   Helper functions for performance benchmarks.
@@ -195,6 +282,17 @@ defmodule Bench.Helper do
     # Start the application
     {:ok, _} = Application.ensure_all_started(:fleetlm)
 
+    # Route agent dispatcher and webhook deliveries through the in-memory mock
+    {:ok, receiver_pid} = Bench.MockWebhookReceiver.ensure_started()
+    Bench.MockWebhookReceiver.reset()
+
+    Application.put_env(:fleetlm, :agent_dispatcher, %{mode: :test, pid: receiver_pid})
+
+    Application.put_env(:fleetlm, :webhook_delivery, %{
+      mode: :mock,
+      module: Bench.MockWebhookReceiver
+    })
+
     # Setup database for testing - only once
     Mix.Task.run("ecto.create", ["--quiet"])
     Mix.Task.run("ecto.migrate", ["--quiet"])
@@ -330,9 +428,10 @@ defmodule Bench.Helper do
   Benchmark function with query counting for optimization insights.
   """
   def benchmark_with_queries(name, fun) when is_function(fun, 0) do
-    {time_us, {result, queries}} = :timer.tc(fn ->
-      count_queries(fun)
-    end)
+    {time_us, {result, queries}} =
+      :timer.tc(fn ->
+        count_queries(fun)
+      end)
 
     time_ms = time_us / 1000
 

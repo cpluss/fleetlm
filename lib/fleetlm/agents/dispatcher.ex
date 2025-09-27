@@ -54,22 +54,6 @@ defmodule Fleetlm.Agents.Dispatcher do
     end
   end
 
-  # Fallback to original behavior if get_endpoint_status doesn't exist
-  defp dispatch_async_fallback(session, message) do
-    case Agents.get_endpoint(session.agent_id) do
-      %AgentEndpoint{status: "enabled"} = endpoint ->
-        Task.Supervisor.start_child(@dispatcher_supervisor, fn ->
-          deliver(endpoint, session, message)
-        end)
-
-      %AgentEndpoint{} ->
-        :ok
-
-      nil ->
-        :ok
-    end
-  end
-
   defp deliver_with_lazy_loading(agent_id, session, message) do
     case Agents.get_endpoint(agent_id) do
       %AgentEndpoint{status: "enabled"} = endpoint ->

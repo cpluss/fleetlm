@@ -21,10 +21,6 @@ defmodule Fleetlm.Agents.WebhookManager do
   alias Fleetlm.Repo
 
   @pool_name :webhook_delivery_pool
-  @circuit_breaker_name :webhook_circuit_breaker
-  @http_timeout :timer.seconds(10)
-  @circuit_breaker_failure_threshold 5
-  @circuit_breaker_reset_timeout :timer.minutes(1)
 
   ## Public API
 

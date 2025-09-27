@@ -94,7 +94,7 @@ defmodule Fleetlm.Agents.WebhookWorker do
     :telemetry.execute([:fleetlm, :agent, :delivery, :start], %{}, meta)
 
     # Prepare webhook payload
-    payload = %{
+    http_payload = %{
       session: %{
         id: session.id,
         agent_id: session.agent_id,
@@ -103,25 +103,33 @@ defmodule Fleetlm.Agents.WebhookWorker do
       message: message
     }
 
-    # Execute HTTP request
-    result = case deliver_http(state.http_client, endpoint, payload) do
-      {:ok, response} ->
-        success_telemetry(started_at, response, meta)
-        log_delivery_success(endpoint, session, message, response)
-        :success
+    # Execute delivery
+    delivery_result =
+      case webhook_delivery_mode() do
+        {:mock, handler} -> deliver_via_mock(handler, endpoint, session, message, http_payload)
+        :live -> deliver_http(state.http_client, endpoint, http_payload)
+      end
 
-      {:error, reason} ->
-        failure_telemetry(started_at, reason, meta)
-        log_delivery_failure(endpoint, session, message, reason)
-        :failure
-    end
+    result =
+      case delivery_result do
+        {:ok, response} ->
+          success_telemetry(started_at, response, meta)
+          log_delivery_success(endpoint, session, message, response)
+          :success
+
+        {:error, reason} ->
+          failure_telemetry(started_at, reason, meta)
+          log_delivery_failure(endpoint, session, message, reason)
+          :failure
+      end
 
     # Update stats
     updated_stats = %{
-      state.stats |
-      deliveries: state.stats.deliveries + 1,
-      successes: if(result == :success, do: state.stats.successes + 1, else: state.stats.successes),
-      failures: if(result == :failure, do: state.stats.failures + 1, else: state.stats.failures)
+      state.stats
+      | deliveries: state.stats.deliveries + 1,
+        successes:
+          if(result == :success, do: state.stats.successes + 1, else: state.stats.successes),
+        failures: if(result == :failure, do: state.stats.failures + 1, else: state.stats.failures)
     }
 
     # Notify manager of result
@@ -133,10 +141,10 @@ defmodule Fleetlm.Agents.WebhookWorker do
   defp deliver_http(http_client, endpoint, payload) do
     try do
       case Req.post(http_client,
-        url: endpoint.origin_url,
-        json: payload,
-        headers: endpoint.headers || %{}
-      ) do
+             url: endpoint.origin_url,
+             json: payload,
+             headers: endpoint.headers || %{}
+           ) do
         {:ok, %Req.Response{status: status} = response} when status in 200..299 ->
           {:ok, response}
 
@@ -149,6 +157,34 @@ defmodule Fleetlm.Agents.WebhookWorker do
     rescue
       error ->
         {:error, {:exception, error}}
+    end
+  end
+
+  defp deliver_via_mock(handler, endpoint, session, message, http_payload) do
+    payload = %{
+      endpoint: endpoint,
+      session: session,
+      message: message,
+      body: http_payload
+    }
+
+    try do
+      case handler do
+        fun when is_function(fun, 1) -> fun.(payload)
+        module when is_atom(module) -> apply(module, :deliver, [payload])
+      end
+    rescue
+      error -> {:error, {:mock_exception, error}}
+    catch
+      kind, reason -> {:error, {:mock_crash, kind, reason}}
+    end
+  end
+
+  defp webhook_delivery_mode do
+    case Application.get_env(:fleetlm, :webhook_delivery) do
+      %{mode: :mock, handler: handler} when is_function(handler, 1) -> {:mock, handler}
+      %{mode: :mock, module: module} when is_atom(module) -> {:mock, module}
+      _ -> :live
     end
   end
 
