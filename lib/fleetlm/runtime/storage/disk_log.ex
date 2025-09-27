@@ -11,6 +11,7 @@ defmodule Fleetlm.Runtime.Storage.DiskLog do
 
   @doc """
   Open (or create) the log file for the given slot.
+  Attempts repair if the log is corrupted.
   """
   @spec open(non_neg_integer(), keyword()) :: {:ok, handle()} | {:error, term()}
   def open(slot, opts \\ []) when is_integer(slot) and slot >= 0 do
@@ -20,12 +21,47 @@ defmodule Fleetlm.Runtime.Storage.DiskLog do
     path = Keyword.get(opts, :path, path_for(slot, dir: base_dir))
     name = Keyword.get(opts, :name, {:fleetlm_slot_log, slot})
 
-    :disk_log.open([
-      {:name, name},
-      {:file, String.to_charlist(path)},
-      {:repair, true},
-      {:type, :halt}
-    ])
+    case :disk_log.open([
+           {:name, name},
+           {:file, String.to_charlist(path)},
+           {:repair, true},
+           {:type, :halt}
+         ]) do
+      {:ok, handle} ->
+        {:ok, handle}
+
+      {:repaired, handle, {:recovered, recovered}, {:badbytes, bad_bytes}} ->
+        require Logger
+
+        Logger.warning(
+          "Disk log for slot #{slot} was corrupted, recovered #{recovered} entries, lost #{bad_bytes} bytes"
+        )
+
+        {:ok, handle}
+
+      {:error, {:badarg, _}} ->
+        require Logger
+        # Try to recover by moving corrupted file and creating new one
+        backup_path = "#{path}.corrupt.#{System.system_time(:second)}"
+
+        case File.rename(path, backup_path) do
+          :ok ->
+            Logger.warning("Moved corrupted log #{path} to #{backup_path}, creating new log")
+
+            :disk_log.open([
+              {:name, name},
+              {:file, String.to_charlist(path)},
+              {:repair, true},
+              {:type, :halt}
+            ])
+
+          _ ->
+            {:error, :log_repair_failed}
+        end
+
+      other ->
+        other
+    end
   end
 
   @doc """
@@ -45,14 +81,52 @@ defmodule Fleetlm.Runtime.Storage.DiskLog do
   def append(handle, %Entry{} = entry) do
     start = System.monotonic_time()
 
-    with :ok <- :disk_log.log(handle, entry),
-         :ok <- :disk_log.sync(handle) do
+    with :ok <- safe_log(handle, entry),
+         :ok <- safe_sync(handle) do
       duration = System.monotonic_time() - start
       duration_us = System.convert_time_unit(duration, :native, :microsecond)
       {:ok, duration_us}
     else
       {:error, _} = error -> error
       other -> {:error, other}
+    end
+  end
+
+  defp safe_log(handle, entry) do
+    try do
+      :disk_log.log(handle, entry)
+    catch
+      :error, :badarg -> {:error, :no_such_log}
+    end
+  end
+
+  defp safe_sync(handle) do
+    try do
+      :disk_log.sync(handle)
+    catch
+      :error, :badarg -> {:error, :no_such_log}
+    end
+  end
+
+  @doc """
+  Read all entries from the log for recovery purposes.
+  Returns entries in chronological order.
+  """
+  @spec read_all(handle()) :: {:ok, [Entry.t()]} | {:error, term()}
+  def read_all(handle) do
+    try do
+      case :disk_log.chunk(handle, :start) do
+        :eof ->
+          {:ok, []}
+
+        {continuation, terms} ->
+          collect_all_chunks(handle, continuation, terms)
+
+        {:error, _} = error ->
+          error
+      end
+    catch
+      :error, :badarg -> {:error, :no_such_log}
     end
   end
 
@@ -68,6 +142,19 @@ defmodule Fleetlm.Runtime.Storage.DiskLog do
     end
   catch
     :error, :badarg -> :ok
+  end
+
+  defp collect_all_chunks(handle, continuation, acc) do
+    case :disk_log.chunk(handle, continuation) do
+      :eof ->
+        {:ok, acc}
+
+      {new_continuation, terms} ->
+        collect_all_chunks(handle, new_continuation, acc ++ terms)
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   defp default_base_dir do

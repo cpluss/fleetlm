@@ -45,15 +45,17 @@ defmodule Fleetlm.Runtime.Sharding.Slots do
         if Process.alive?(pid) do
           :ok
         else
-          start_slot(slot)
+          start_slot_with_retry(slot, 3)
         end
 
       _ ->
-        start_slot(slot)
+        start_slot_with_retry(slot, 3)
     end
   end
 
-  defp start_slot(slot) do
+  defp start_slot_with_retry(_slot, 0), do: {:error, :max_retries_exceeded}
+
+  defp start_slot_with_retry(slot, retries) do
     spec = %{
       id: {:shard, slot},
       start: {SlotServer, :start_link, [slot]},
@@ -62,16 +64,36 @@ defmodule Fleetlm.Runtime.Sharding.Slots do
       type: :worker
     }
 
-    case Horde.DynamicSupervisor.start_child(Supervisor, spec) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, {:already_present, _pid}} -> :ok
-      {:error, :already_started} -> :ok
-      {:error, {:name_already_registered, _pid}} -> :ok
-      {:error, :name_conflict} -> :ok
-      other -> other
+    try do
+      case Horde.DynamicSupervisor.start_child(Supervisor, spec) do
+        {:ok, _pid} -> :ok
+        {:error, {:already_started, _pid}} -> :ok
+        {:error, {:already_present, _pid}} -> :ok
+        {:error, :already_started} -> :ok
+        {:error, {:name_already_registered, _pid}} -> :ok
+        {:error, :name_conflict} -> :ok
+        other -> other
+      end
+    catch
+      :exit, {:noproc, _} when retries > 0 ->
+        # Supervisor might be shutting down, wait and retry
+        Process.sleep(200 + :rand.uniform(300))
+        start_slot_with_retry(slot, retries - 1)
+
+      :exit, {:noproc, _} ->
+        {:error, :supervisor_unavailable}
+
+      :exit, reason when retries > 0 ->
+        require Logger
+        Logger.warning("Supervisor exit during slot #{slot} start (#{inspect(reason)}), retrying...")
+        Process.sleep(200 + :rand.uniform(300))
+        start_slot_with_retry(slot, retries - 1)
+
+      :exit, reason ->
+        {:error, {:supervisor_exit, reason}}
     end
   end
+
 
   @spec rebalance_all() :: :ok
   def rebalance_all do
@@ -83,7 +105,14 @@ defmodule Fleetlm.Runtime.Sharding.Slots do
       if owner == Node.self() do
         SlotServer.rebalance(slot)
       else
-        :erpc.cast(owner, SlotServer, :rebalance, [slot])
+        try do
+          :erpc.cast(owner, SlotServer, :rebalance, [slot])
+        catch
+          # Node might be down or unreachable
+          _, reason ->
+            require Logger
+            Logger.warning("Failed to rebalance slot #{slot} on #{owner}: #{inspect(reason)}")
+        end
       end
     end)
 

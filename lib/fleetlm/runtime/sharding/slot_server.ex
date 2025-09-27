@@ -98,7 +98,15 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
         ring_table = EtsRing.new()
         idem_table = IdempotencyCache.new()
 
-        Logger.debug("Shard #{slot} now accepting traffic on #{inspect(Node.self())}")
+        # Replay entries from disk log to restore idempotency cache and sequence tracker
+        {restored_seq_tracker, restored_count} = replay_from_disk_log(disk_log, ring_table, idem_table)
+
+        # Monitor the persistence worker
+        Process.monitor(worker)
+
+        Logger.debug(
+          "Shard #{slot} now accepting traffic on #{inspect(Node.self())} (restored #{restored_count} entries)"
+        )
 
         {:ok,
          %__MODULE__{
@@ -108,7 +116,7 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
            idempotency_table: idem_table,
            disk_log: disk_log,
            persistence_worker: worker,
-           seq_tracker: %{}
+           seq_tracker: restored_seq_tracker
          }}
       else
         {:error, reason} ->
@@ -149,9 +157,21 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
   end
 
   def handle_call({:await_persisted, message_id, timeout}, _from, state) do
-    case PersistenceWorker.await(state.persistence_worker, message_id, timeout) do
-      :ok -> {:reply, :ok, state}
-      {:error, :timeout} -> {:reply, {:error, :timeout}, state}
+    if Process.alive?(state.persistence_worker) do
+      try do
+        case PersistenceWorker.await(state.persistence_worker, message_id, timeout) do
+          :ok -> {:reply, :ok, state}
+          {:error, :timeout} -> {:reply, {:error, :timeout}, state}
+        end
+      catch
+        :exit, reason ->
+          Logger.warning("Persistence worker crashed during await: #{inspect(reason)}")
+          {:reply, {:error, :worker_crashed}, restart_persistence_worker(state)}
+      end
+    else
+      Logger.warning("Persistence worker is dead, restarting...")
+      new_state = restart_persistence_worker(state)
+      {:reply, {:error, :worker_dead}, new_state}
     end
   end
 
@@ -168,6 +188,23 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
 
       {:stop, {:handoff, expected}, %{state | status: :draining}}
     end
+  end
+
+  @impl true
+  def handle_info({:DOWN, _ref, :process, pid, reason}, %{persistence_worker: pid} = state) do
+    Logger.warning("Persistence worker #{inspect(pid)} died with reason: #{inspect(reason)}")
+    new_state = restart_persistence_worker(state)
+    {:noreply, new_state}
+  end
+
+  def handle_info({:DOWN, _ref, :process, _pid, _reason}, state) do
+    # Ignore DOWN messages from other processes
+    {:noreply, state}
+  end
+
+  def handle_info(msg, state) do
+    Logger.error("#{__MODULE__} received unexpected message: #{inspect(msg)}")
+    {:noreply, state}
   end
 
   @impl true
@@ -224,10 +261,11 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
 
         case DiskLog.append(state.disk_log, entry) do
           {:ok, duration_us} ->
-            PersistenceWorker.enqueue(state.persistence_worker, entry)
+            # Safely enqueue to persistence worker, restart if needed
+            new_state = safe_enqueue_persistence(state, entry)
 
             updated_state =
-              state
+              new_state
               |> maybe_track_seq(session_id, seq)
               |> cache_entry(session_id, idem_key, entry)
 
@@ -264,6 +302,73 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
     metadata = Map.get(attrs, :metadata) || %{}
     merged_metadata = Map.put(metadata, "seq", seq)
     attrs |> Map.put(:metadata, merged_metadata)
+  end
+
+  defp restart_persistence_worker(state) do
+    # Stop old worker if still alive
+    if is_pid(state.persistence_worker) and Process.alive?(state.persistence_worker) do
+      Process.exit(state.persistence_worker, :shutdown)
+    end
+
+    # Start new worker
+    case PersistenceWorker.start_link(slot: state.slot) do
+      {:ok, new_worker} ->
+        # Monitor the new worker
+        Process.monitor(new_worker)
+        Logger.info("Restarted persistence worker for slot #{state.slot}")
+        %{state | persistence_worker: new_worker}
+
+      {:error, reason} ->
+        Logger.error("Failed to restart persistence worker for slot #{state.slot}: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp safe_enqueue_persistence(state, entry) do
+    if Process.alive?(state.persistence_worker) do
+      try do
+        PersistenceWorker.enqueue(state.persistence_worker, entry)
+        state
+      catch
+        :exit, reason ->
+          Logger.warning("Persistence worker died during enqueue: #{inspect(reason)}")
+          restart_persistence_worker(state)
+      end
+    else
+      Logger.warning("Persistence worker dead during enqueue, restarting...")
+      new_state = restart_persistence_worker(state)
+
+      # Try to enqueue to new worker
+      if Process.alive?(new_state.persistence_worker) do
+        PersistenceWorker.enqueue(new_state.persistence_worker, entry)
+      end
+
+      new_state
+    end
+  end
+
+  defp replay_from_disk_log(disk_log, ring_table, idem_table) do
+    case DiskLog.read_all(disk_log) do
+      {:ok, entries} ->
+        seq_tracker =
+          entries
+          |> Enum.reduce(%{}, fn entry, acc ->
+            # Restore idempotency cache
+            :ok = IdempotencyCache.put(idem_table, entry.session_id, entry.idempotency_key, entry)
+
+            # Restore ETS ring with recent entries (keep only latest @ring_limit entries per session)
+            _ = EtsRing.put(ring_table, entry.session_id, entry, @ring_limit)
+
+            # Track highest sequence number per session
+            Map.update(acc, entry.session_id, entry.seq, &max(&1, entry.seq))
+          end)
+
+        {seq_tracker, length(entries)}
+
+      {:error, reason} ->
+        Logger.warning("Failed to read disk log for replay: #{inspect(reason)}")
+        {%{}, 0}
+    end
   end
 
   defp normalize_attrs(attrs) when is_map(attrs) do
