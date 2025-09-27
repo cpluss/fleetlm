@@ -25,7 +25,7 @@ defmodule Fleetlm.Observability.Telemetry do
   @cache_events [:fleetlm, :cache]
   @pubsub_broadcast_event [:fleetlm, :pubsub, :broadcast]
 
-  @spec measure_session_append(String.t(), map(), (() -> {term(), map()})) :: term()
+  @spec measure_session_append(String.t(), map(), (-> {term(), map()})) :: term()
   def measure_session_append(session_id, metadata \\ %{}, fun) when is_function(fun, 0) do
     base_metadata =
       metadata
@@ -55,7 +55,8 @@ defmodule Fleetlm.Observability.Telemetry do
   end
 
   @spec record_session_queue_depth(String.t(), non_neg_integer()) :: :ok
-  def record_session_queue_depth(session_id, queue_len) when is_integer(queue_len) and queue_len >= 0 do
+  def record_session_queue_depth(session_id, queue_len)
+      when is_integer(queue_len) and queue_len >= 0 do
     metadata = %{session_id: session_id}
     measurements = %{length: queue_len}
 
@@ -192,6 +193,7 @@ defmodule Fleetlm.Observability.Telemetry do
       inspect(value)
     end
   end
+
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_reason({:shutdown, inner}), do: format_reason(inner)

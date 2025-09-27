@@ -1,5 +1,5 @@
 defmodule Fleetlm.AgentsTest do
-  use Fleetlm.DataCase, async: true
+  use Fleetlm.DataCase, async: false
 
   alias Fleetlm.Agents
   alias Fleetlm.Agents.AgentEndpoint

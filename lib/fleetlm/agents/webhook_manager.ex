@@ -119,12 +119,14 @@ defmodule Fleetlm.Agents.WebhookManager do
   @impl true
   def handle_info({:delivery_result, result}, state) do
     # Update stats based on delivery results
-    updated_stats = case result do
-      :success ->
-        %{state.stats | deliveries_succeeded: state.stats.deliveries_succeeded + 1}
-      :failure ->
-        %{state.stats | deliveries_failed: state.stats.deliveries_failed + 1}
-    end
+    updated_stats =
+      case result do
+        :success ->
+          %{state.stats | deliveries_succeeded: state.stats.deliveries_succeeded + 1}
+
+        :failure ->
+          %{state.stats | deliveries_failed: state.stats.deliveries_failed + 1}
+      end
 
     {:noreply, %{state | stats: updated_stats}}
   end

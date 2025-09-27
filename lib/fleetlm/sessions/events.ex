@@ -10,7 +10,6 @@ defmodule Fleetlm.Sessions.Events do
 
   alias Fleetlm.Observability
   alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.InboxSupervisor
   alias Fleetlm.Sessions.InboxServer
 
   @pubsub Fleetlm.PubSub
@@ -28,6 +27,7 @@ defmodule Fleetlm.Sessions.Events do
     Observability.emit_pubsub_broadcast(topic, :session_message, pubsub_duration)
 
     {participant_count, inbox_duration} = notify_inboxes(message)
+
     Observability.record_session_fanout(session_id, :inbox, inbox_duration, %{
       participant_count: participant_count || 0
     })
@@ -47,9 +47,12 @@ defmodule Fleetlm.Sessions.Events do
         {_result, duration_us} =
           measure_duration_us(fn ->
             Enum.each(participants, fn participant_id ->
-              case InboxSupervisor.ensure_started(participant_id) do
-                {:ok, _pid} -> InboxServer.enqueue_update(participant_id, session, message)
-                {:error, _} -> :noop
+              case GenServer.whereis(InboxServer.via(participant_id)) do
+                pid when is_pid(pid) ->
+                  InboxServer.enqueue_update(participant_id, session, message)
+
+                nil ->
+                  :noop
               end
             end)
           end)

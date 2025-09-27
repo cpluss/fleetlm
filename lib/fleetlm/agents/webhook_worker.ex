@@ -264,7 +264,6 @@ defmodule Fleetlm.Agents.WebhookWorker do
 
   defp truncate_response(body), do: inspect(body)
 
-
   defp dispatcher_mode do
     case Application.get_env(:fleetlm, :agent_dispatcher, []) do
       %{mode: :test, pid: pid} when is_pid(pid) -> {:test, pid}
@@ -292,6 +291,4 @@ defmodule Fleetlm.Agents.WebhookWorker do
       }
     }
   end
-
-
 end

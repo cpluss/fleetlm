@@ -19,7 +19,6 @@ defmodule Fleetlm.Sessions do
   alias Fleetlm.Sessions.ChatSession
   alias Fleetlm.Sessions.ChatMessage
   alias Fleetlm.Sessions.SessionServer
-  alias Fleetlm.Sessions.InboxSupervisor
   alias Fleetlm.Sessions.InboxServer
   alias Fleetlm.Agents.Dispatcher
   alias Fleetlm.Observability
@@ -364,13 +363,14 @@ defmodule Fleetlm.Sessions do
     end
   end
 
-
   # Optimized version that uses a single query for all sessions
   defp fetch_unread_counts_from_db_optimized([], _participant_id), do: %{}
 
   defp fetch_unread_counts_from_db_optimized(sessions_with_role, participant_id) do
     case sessions_with_role do
-      [] -> %{}
+      [] ->
+        %{}
+
       sessions_with_role ->
         # Extract all session IDs for a single query
         session_ids = Enum.map(sessions_with_role, fn {session, _role} -> session.id end)
@@ -379,11 +379,12 @@ defmodule Fleetlm.Sessions do
         ChatMessage
         |> join(:inner, [m], s in ChatSession, on: s.id == m.session_id)
         |> where([_m, s], s.id in ^session_ids)
-        |> where([m, s],
+        |> where(
+          [m, s],
           (s.initiator_id == ^participant_id and m.sender_id != ^participant_id and
-           (is_nil(s.initiator_last_read_at) or m.inserted_at > s.initiator_last_read_at)) or
-          (s.peer_id == ^participant_id and m.sender_id != ^participant_id and
-           (is_nil(s.peer_last_read_at) or m.inserted_at > s.peer_last_read_at))
+             (is_nil(s.initiator_last_read_at) or m.inserted_at > s.initiator_last_read_at)) or
+            (s.peer_id == ^participant_id and m.sender_id != ^participant_id and
+               (is_nil(s.peer_last_read_at) or m.inserted_at > s.peer_last_read_at))
         )
         |> group_by([_m, s], s.id)
         |> select([m, s], {s.id, count(m.id)})
@@ -391,7 +392,6 @@ defmodule Fleetlm.Sessions do
         |> Map.new()
     end
   end
-
 
   defp session_last_read_at(%ChatSession{} = session, :initiator),
     do: session.initiator_last_read_at
@@ -634,9 +634,9 @@ defmodule Fleetlm.Sessions do
     do: from(m in query, where: m.inserted_at > ^naive)
 
   defp refresh_inbox(participant_id) do
-    case InboxSupervisor.ensure_started(participant_id) do
-      {:ok, _pid} -> InboxServer.flush(participant_id)
-      {:error, _} -> :ok
+    case GenServer.whereis(InboxServer.via(participant_id)) do
+      nil -> :ok
+      _pid -> InboxServer.flush(participant_id)
     end
   end
 end

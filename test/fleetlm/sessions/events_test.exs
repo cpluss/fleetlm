@@ -3,7 +3,7 @@ defmodule Fleetlm.Sessions.EventsTest do
 
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.{Cache, SessionSupervisor}
+  alias Fleetlm.Sessions.{Cache, InboxSupervisor, SessionSupervisor}
 
   setup do
     :ok = Cache.reset()
@@ -24,6 +24,12 @@ defmodule Fleetlm.Sessions.EventsTest do
 
     {:ok, pid} = SessionSupervisor.ensure_started(session.id)
     allow_sandbox_access(pid)
+
+    {:ok, alice_inbox} = InboxSupervisor.ensure_started(alice.id)
+    allow_sandbox_access(alice_inbox)
+
+    {:ok, bob_inbox} = InboxSupervisor.ensure_started(bob.id)
+    allow_sandbox_access(bob_inbox)
 
     %{session: session, alice: alice, bob: bob}
   end

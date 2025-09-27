@@ -84,6 +84,8 @@ defmodule Fleetlm.Sessions.SessionServer do
 
   @impl true
   def init(session_id) do
+    # Enable graceful shutdown for database cleanup during tests
+    Process.flag(:trap_exit, true)
     tail = warm_cache(session_id)
     {:ok, %{session_id: session_id, tail: tail}}
   end
@@ -114,6 +116,19 @@ defmodule Fleetlm.Sessions.SessionServer do
     {:reply, metadata, state}
   end
 
+  @impl true
+  def handle_info({:EXIT, _pid, _reason}, state) do
+    # Handle EXIT messages from trap_exit gracefully
+    {:noreply, state}
+  end
+
+  @impl true
+  def terminate(_reason, state) do
+    # Clean up cached data on shutdown
+    Cache.delete_tail(state.session_id)
+    :ok
+  end
+
   defp warm_cache(session_id) do
     case Cache.fetch_tail(session_id, limit: @tail_limit) do
       {:ok, messages} ->
@@ -130,7 +145,6 @@ defmodule Fleetlm.Sessions.SessionServer do
         messages
     end
   end
-
 
   defp preload_tail(session_id) do
     session = Sessions.get_session!(session_id)

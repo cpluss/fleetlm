@@ -44,7 +44,10 @@ defmodule Fleetlm.Agents.EndpointCache do
 
       {:error, _reason} ->
         # Cache error - fallback to database
-        Logger.warning("EndpointCache: Cache error for agent #{agent_id}, falling back to database")
+        Logger.warning(
+          "EndpointCache: Cache error for agent #{agent_id}, falling back to database"
+        )
+
         Agents.get_endpoint_status(agent_id)
     end
   end
@@ -111,9 +114,9 @@ defmodule Fleetlm.Agents.EndpointCache do
   @impl true
   def init(_opts) do
     # Start the cache with basic configuration
-    case Cachex.start_link(@cache_name, [
-      limit: 10000
-    ]) do
+    case Cachex.start_link(@cache_name,
+           limit: 10000
+         ) do
       {:ok, _pid} ->
         Logger.info("EndpointCache: Started with 15s TTL and LRU eviction")
         {:ok, %{}}
@@ -149,8 +152,10 @@ defmodule Fleetlm.Agents.EndpointCache do
       case Cachex.get(@cache_name, agent_id) do
         {:ok, nil} ->
           {cached_acc, [agent_id | missing_acc]}
+
         {:ok, status} ->
           {Map.put(cached_acc, agent_id, status), missing_acc}
+
         {:error, _} ->
           {cached_acc, [agent_id | missing_acc]}
       end

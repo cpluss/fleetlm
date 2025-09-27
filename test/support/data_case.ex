@@ -29,7 +29,7 @@ defmodule Fleetlm.DataCase do
 
   setup tags do
     Fleetlm.DataCase.setup_sandbox(tags)
-    Fleetlm.Chat.TestRuntime.reset()
+    # Only reset on exit - let tests run with whatever processes they create
     on_exit(fn -> Fleetlm.Chat.TestRuntime.reset() end)
     :ok
   end
@@ -38,7 +38,16 @@ defmodule Fleetlm.DataCase do
   Sets up the sandbox based on the test tags.
   """
   def setup_sandbox(tags) do
-    pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Fleetlm.Repo, shared: not tags[:async])
+    # Extended ownership timeout for GenServer cleanup
+    ownership_timeout = if tags[:async], do: 120_000, else: 300_000
+
+    pid =
+      Ecto.Adapters.SQL.Sandbox.start_owner!(
+        Fleetlm.Repo,
+        shared: not tags[:async],
+        ownership_timeout: ownership_timeout
+      )
+
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
   end
 
@@ -62,5 +71,4 @@ defmodule Fleetlm.DataCase do
     Ecto.Adapters.SQL.Sandbox.allow(Fleetlm.Repo, self(), pid)
     :ok
   end
-
 end

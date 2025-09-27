@@ -30,6 +30,17 @@ defmodule Fleetlm.Sessions.InboxSupervisor do
     end
   end
 
+  @spec has_started?(String.t()) :: {:ok, pid()} | {:error, :not_started}
+  def has_started?(participant_id) when is_binary(participant_id) do
+    case Registry.lookup(Fleetlm.Sessions.InboxRegistry, participant_id) do
+      [{pid, _}] ->
+        {:ok, pid}
+
+      [] ->
+        {:error, :not_started}
+    end
+  end
+
   @spec active_count() :: non_neg_integer()
   def active_count do
     case Process.whereis(Fleetlm.Sessions.InboxRegistry) do
