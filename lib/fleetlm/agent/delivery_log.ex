@@ -1,4 +1,4 @@
-defmodule Fleetlm.Agents.DeliveryLog do
+defmodule Fleetlm.Agent.DeliveryLog do
   @moduledoc """
   Ecto schema for persisted agent delivery attempts.
 

@@ -2,8 +2,8 @@ defmodule FleetlmWeb.SessionController do
   use FleetlmWeb, :controller
 
   alias Fleetlm.Runtime.Gateway
-  alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.ChatMessage
+  alias Fleetlm.Conversation
+  alias Fleetlm.Conversation.ChatMessage
 
   action_fallback FleetlmWeb.FallbackController
 
@@ -14,7 +14,7 @@ defmodule FleetlmWeb.SessionController do
       metadata: Map.get(params, "metadata", %{})
     }
 
-    with {:ok, session} <- Sessions.start_session(attrs) do
+    with {:ok, session} <- Conversation.start_session(attrs) do
       conn
       |> put_status(:created)
       |> json(%{session: render_session(session)})

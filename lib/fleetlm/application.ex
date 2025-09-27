@@ -15,9 +15,9 @@ defmodule Fleetlm.Application do
         Fleetlm.Observability,
         Fleetlm.Repo,
         Fleetlm.Runtime.Supervisor,
-        {Task.Supervisor, name: Fleetlm.Agents.DispatcherSupervisor},
+        {Task.Supervisor, name: Fleetlm.Agent.DispatcherSupervisor},
         # Agent endpoint status cache for hot path optimization
-        Fleetlm.Agents.EndpointCache,
+        Fleetlm.Agent.EndpointCache,
         # Pooled webhook delivery system
         webhook_manager_spec(),
         dns_cluster_spec(),
@@ -48,7 +48,7 @@ defmodule Fleetlm.Application do
     # Only start webhook manager if poolboy is available
     if Code.ensure_loaded?(:poolboy) do
       pool_size = Application.get_env(:fleetlm, :webhook_pool_size, 10)
-      {Fleetlm.Agents.WebhookManager, pool_size: pool_size}
+      {Fleetlm.Agent.WebhookManager, pool_size: pool_size}
     else
       # Return a no-op spec if poolboy is not available
       Supervisor.child_spec({Task, fn -> :ok end}, id: :webhook_manager_noop, restart: :temporary)

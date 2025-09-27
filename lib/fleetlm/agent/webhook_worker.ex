@@ -1,4 +1,4 @@
-defmodule Fleetlm.Agents.WebhookWorker do
+defmodule Fleetlm.Agent.WebhookWorker do
   @moduledoc """
   Individual webhook delivery worker with HTTP connection pooling.
 
@@ -9,8 +9,8 @@ defmodule Fleetlm.Agents.WebhookWorker do
   use GenServer
   require Logger
 
-  alias Fleetlm.Agents
-  alias Fleetlm.Agents.AgentEndpoint
+  alias Fleetlm.Agent
+  alias Fleetlm.Agent.AgentEndpoint
 
   @http_timeout :timer.seconds(10)
   @max_retries 2
@@ -74,7 +74,7 @@ defmodule Fleetlm.Agents.WebhookWorker do
 
       :live ->
         # Normal webhook delivery
-        case Agents.get_endpoint(agent_id) do
+        case Agent.get_endpoint(agent_id) do
           %AgentEndpoint{status: "enabled"} = endpoint ->
             deliver_webhook(endpoint, session, message, state)
 
@@ -145,7 +145,7 @@ defmodule Fleetlm.Agents.WebhookWorker do
     }
 
     # Notify manager of result
-    send(Fleetlm.Agents.WebhookManager, {:delivery_result, result})
+    send(Fleetlm.Agent.WebhookManager, {:delivery_result, result})
 
     {:noreply, %{state | stats: updated_stats}}
   end
@@ -221,7 +221,7 @@ defmodule Fleetlm.Agents.WebhookWorker do
   end
 
   defp log_delivery_success(endpoint, session, message, response) do
-    Agents.log_delivery(%{
+    Agent.log_delivery(%{
       agent_id: session.agent_id,
       session_id: session.id,
       message_id: message.id,
@@ -233,7 +233,7 @@ defmodule Fleetlm.Agents.WebhookWorker do
   end
 
   defp log_delivery_failure(endpoint, session, message, reason) do
-    Agents.log_delivery(%{
+    Agent.log_delivery(%{
       agent_id: session.agent_id,
       session_id: session.id,
       message_id: message.id,

@@ -9,7 +9,7 @@ defmodule Fleetlm.Runtime.InboxServer do
 
   use GenServer, restart: :transient
 
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
   alias Fleetlm.Runtime.Cache
 
   @pubsub Fleetlm.PubSub
@@ -27,7 +27,7 @@ defmodule Fleetlm.Runtime.InboxServer do
     GenServer.call(via(participant_id), :flush)
   end
 
-  @spec enqueue_update(String.t(), Sessions.ChatSession.t(), map()) :: :ok
+  @spec enqueue_update(String.t(), Conversation.ChatSession.t(), map()) :: :ok
   def enqueue_update(participant_id, session, message) do
     GenServer.cast(via(participant_id), {:updated, session, message})
   end
@@ -44,7 +44,7 @@ defmodule Fleetlm.Runtime.InboxServer do
   def handle_cast({:updated, _session, _message}, state) do
     # Invalidate cache to force fresh snapshot on next request
     Cache.delete_inbox_snapshot(state.participant_id)
-    snapshot = Sessions.get_inbox_snapshot(state.participant_id, limit: @snapshot_limit)
+    snapshot = Conversation.get_inbox_snapshot(state.participant_id, limit: @snapshot_limit)
     broadcast_snapshot(state.participant_id, snapshot)
 
     {:noreply, %{state | snapshot: snapshot}}
@@ -54,7 +54,7 @@ defmodule Fleetlm.Runtime.InboxServer do
   def handle_call(:flush, _from, state) do
     # Invalidate cache and get fresh snapshot
     Cache.delete_inbox_snapshot(state.participant_id)
-    snapshot = Sessions.get_inbox_snapshot(state.participant_id, limit: @snapshot_limit)
+    snapshot = Conversation.get_inbox_snapshot(state.participant_id, limit: @snapshot_limit)
     broadcast_snapshot(state.participant_id, snapshot)
     {:reply, :ok, %{state | snapshot: snapshot}}
   end

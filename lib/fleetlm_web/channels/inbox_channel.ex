@@ -6,7 +6,7 @@ defmodule FleetlmWeb.InboxChannel do
   use FleetlmWeb, :channel
 
   alias Fleetlm.Runtime.{Cache, InboxSupervisor}
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
 
   @impl true
   def join(
@@ -37,7 +37,7 @@ defmodule FleetlmWeb.InboxChannel do
         snapshot
 
       _ ->
-        Sessions.list_sessions_for_participant(participant_id)
+        Conversation.list_sessions_for_participant(participant_id)
         |> Enum.map(fn session ->
           %{
             "session_id" => session.id,

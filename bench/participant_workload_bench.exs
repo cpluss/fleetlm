@@ -13,7 +13,7 @@ defmodule ParticipantWorkloadBench do
   """
 
   import Bench.Helper
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
 
   def run_benchmarks(opts \\ []) do
     dataset_size = Keyword.get(opts, :dataset, :standard)
@@ -44,17 +44,17 @@ defmodule ParticipantWorkloadBench do
     %{
       "Human Inbox Check" => fn ->
         human = Enum.random(data.humans)
-        Sessions.get_inbox_snapshot(human)
+        Conversation.get_inbox_snapshot(human)
       end,
 
       "Human Session List" => fn ->
         human = Enum.random(data.humans)
-        Sessions.list_sessions_for_participant(human, limit: 20)
+        Conversation.list_sessions_for_participant(human, limit: 20)
       end,
 
       "Human Session List with Unread Counts" => fn ->
         human = Enum.random(data.humans)
-        Sessions.list_sessions_with_unread_counts(human, limit: 20)
+        Conversation.list_sessions_with_unread_counts(human, limit: 20)
       end,
 
       "Human Message Send" => fn ->
@@ -63,7 +63,7 @@ defmodule ParticipantWorkloadBench do
 
         # Only send if human is part of the session
         if human in [session.initiator_id, session.peer_id] do
-          Sessions.append_message(session.id, %{
+          Conversation.append_message(session.id, %{
             sender_id: human,
             kind: "text",
             content: %{text: "Human message"}
@@ -75,7 +75,7 @@ defmodule ParticipantWorkloadBench do
 
       "Session Creation" => fn ->
         [participant1, participant2] = Enum.take_random(data.all_participants, 2)
-        Sessions.start_session(%{
+        Conversation.start_session(%{
           initiator_id: participant1,
           peer_id: participant2
         })
@@ -89,7 +89,7 @@ defmodule ParticipantWorkloadBench do
         end)
 
         if session do
-          Sessions.mark_read(session.id, human)
+          Conversation.mark_read(session.id, human)
         else
           :skipped
         end
@@ -100,27 +100,27 @@ defmodule ParticipantWorkloadBench do
         human = Enum.random(data.humans)
         agent = Enum.random(data.agents)
 
-        {:ok, session} = Sessions.start_session(%{
+        {:ok, session} = Conversation.start_session(%{
           initiator_id: human,
           peer_id: agent
         })
 
         # Human sends message
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: human,
           kind: "text",
           content: %{text: "Hello agent"}
         })
 
         # Agent responds
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: agent,
           kind: "text",
           content: %{text: "Hello human"}
         })
 
         # Human checks inbox
-        Sessions.get_inbox_snapshot(human)
+        Conversation.get_inbox_snapshot(human)
       end,
 
       "Concurrent Human Activity" => fn ->
@@ -130,7 +130,7 @@ defmodule ParticipantWorkloadBench do
         |> Task.async_stream(
           fn human ->
             # Each human checks inbox and potentially sends a message
-            inbox = Sessions.get_inbox_snapshot(human)
+            inbox = Conversation.get_inbox_snapshot(human)
 
             # Sometimes send a message
             if :rand.uniform(3) == 1 do
@@ -139,7 +139,7 @@ defmodule ParticipantWorkloadBench do
               end)
 
               if session do
-                Sessions.append_message(session.id, %{
+                Conversation.append_message(session.id, %{
                   sender_id: human,
                   kind: "text",
                   content: %{text: "Concurrent message"}
@@ -157,7 +157,7 @@ defmodule ParticipantWorkloadBench do
 
       "Session History Load" => fn ->
         session = Enum.random(data.sessions)
-        Sessions.list_messages(session.id, limit: 50)
+        Conversation.list_messages(session.id, limit: 50)
       end
     }
   end
@@ -175,20 +175,20 @@ defmodule ParticipantWorkloadBench do
 
     # Analyze key operations
     benchmark_with_queries("Human Inbox Check", fn ->
-      Sessions.get_inbox_snapshot(human)
+      Conversation.get_inbox_snapshot(human)
     end)
 
     benchmark_with_queries("Session List with Unread Counts", fn ->
-      Sessions.list_sessions_with_unread_counts(human, limit: 20)
+      Conversation.list_sessions_with_unread_counts(human, limit: 20)
     end)
 
     benchmark_with_queries("Session Creation", fn ->
       [p1, p2] = Enum.take_random(data.all_participants, 2)
-      Sessions.start_session(%{initiator_id: p1, peer_id: p2})
+      Conversation.start_session(%{initiator_id: p1, peer_id: p2})
     end)
 
     benchmark_with_queries("Message Send", fn ->
-      Sessions.append_message(session.id, %{
+      Conversation.append_message(session.id, %{
         sender_id: human,
         kind: "text",
         content: %{text: "Analysis message"}
@@ -196,11 +196,11 @@ defmodule ParticipantWorkloadBench do
     end)
 
     benchmark_with_queries("Mark as Read", fn ->
-      Sessions.mark_read(session.id, human)
+      Conversation.mark_read(session.id, human)
     end)
 
     benchmark_with_queries("Session History Load", fn ->
-      Sessions.list_messages(session.id, limit: 50)
+      Conversation.list_messages(session.id, limit: 50)
     end)
 
     IO.puts("")
@@ -229,7 +229,7 @@ defmodule ParticipantWorkloadBench do
         fn ->
           data.all_participants
           |> Task.async_stream(
-            fn participant -> Sessions.get_inbox_snapshot(participant) end,
+            fn participant -> Conversation.get_inbox_snapshot(participant) end,
             timeout: :infinity,
             max_concurrency: participant_count
           )

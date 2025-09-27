@@ -1,4 +1,4 @@
-defmodule Fleetlm.Participants.Participant do
+defmodule Fleetlm.Conversation.Participant do
   use Ecto.Schema
   import Ecto.Changeset
 

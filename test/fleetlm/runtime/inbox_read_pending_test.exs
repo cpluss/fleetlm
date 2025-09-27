@@ -1,8 +1,8 @@
 defmodule Fleetlm.Runtime.MarkReadFallbackTest do
   use Fleetlm.DataCase, async: false
 
-  alias Fleetlm.Participants
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Conversation
   alias Fleetlm.Runtime.{InboxSupervisor, SessionSupervisor}
 
   setup do
@@ -21,7 +21,7 @@ defmodule Fleetlm.Runtime.MarkReadFallbackTest do
       })
 
     {:ok, session} =
-      Sessions.start_session(%{
+      Conversation.start_session(%{
         initiator_id: alice.id,
         peer_id: bob.id
       })
@@ -41,16 +41,16 @@ defmodule Fleetlm.Runtime.MarkReadFallbackTest do
     alice: alice
   } do
     {:ok, message} =
-      Sessions.append_message(session.id, %{
+      Conversation.append_message(session.id, %{
         sender_id: alice.id,
         kind: "text",
         content: %{text: "hey"}
       })
 
-    {:ok, updated} = Sessions.mark_read(session.id, bob.id)
+    {:ok, updated} = Conversation.mark_read(session.id, bob.id)
 
     assert updated.peer_last_read_id == message.id
-    assert Sessions.unread_count(updated, bob.id) == 0
+    assert Conversation.unread_count(updated, bob.id) == 0
   end
 
   test "mark_read returns :message_not_found when id outside session", %{
@@ -58,6 +58,6 @@ defmodule Fleetlm.Runtime.MarkReadFallbackTest do
     bob: bob
   } do
     assert {:error, :message_not_found} =
-             Sessions.mark_read(session.id, bob.id, message_id: "01FINVALID")
+             Conversation.mark_read(session.id, bob.id, message_id: "01FINVALID")
   end
 end

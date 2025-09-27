@@ -1,4 +1,4 @@
-defmodule Fleetlm.Agents do
+defmodule Fleetlm.Agent do
   @moduledoc """
   Context for managing agent participants and webhook endpoints.
   """
@@ -6,9 +6,9 @@ defmodule Fleetlm.Agents do
   import Ecto.Query
 
   alias Fleetlm.Repo
-  alias Fleetlm.Participants
-  alias Fleetlm.Participants.Participant
-  alias Fleetlm.Agents.{AgentEndpoint, DeliveryLog}
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Conversation.Participant
+  alias Fleetlm.Agent.{AgentEndpoint, DeliveryLog}
   alias Ulid
 
   @doc """
@@ -60,8 +60,8 @@ defmodule Fleetlm.Agents do
       |> Repo.insert_or_update!()
 
     # Update the endpoint cache with the new status
-    if Code.ensure_loaded?(Fleetlm.Agents.EndpointCache) do
-      Fleetlm.Agents.EndpointCache.warm_cache(agent_id, endpoint.status)
+    if Code.ensure_loaded?(Fleetlm.Agent.EndpointCache) do
+      Fleetlm.Agent.EndpointCache.warm_cache(agent_id, endpoint.status)
     end
 
     endpoint

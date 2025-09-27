@@ -1,4 +1,4 @@
-defmodule Fleetlm.Participants do
+defmodule Fleetlm.Conversation.Participants do
   @moduledoc """
   Context for managing participants (users, agents, system actors).
   """
@@ -6,7 +6,7 @@ defmodule Fleetlm.Participants do
   import Ecto.Query
 
   alias Fleetlm.Repo
-  alias Fleetlm.Participants.Participant
+  alias Fleetlm.Conversation.Participant
 
   @type participant_id :: String.t()
 

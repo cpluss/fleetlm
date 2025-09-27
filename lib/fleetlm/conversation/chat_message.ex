@@ -1,9 +1,9 @@
-defmodule Fleetlm.Sessions.ChatMessage do
+defmodule Fleetlm.Conversation.ChatMessage do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Fleetlm.Sessions.ChatSession
-  alias Fleetlm.Participants.Participant
+  alias Fleetlm.Conversation.ChatSession
+  alias Fleetlm.Conversation.Participant
   alias Ulid
 
   @primary_key {:id, :string, autogenerate: false}

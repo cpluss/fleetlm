@@ -1,8 +1,8 @@
 defmodule Fleetlm.Runtime.EventsTest do
   use Fleetlm.DataCase, async: false
 
-  alias Fleetlm.Participants
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Conversation
   alias Fleetlm.Runtime.{Cache, InboxSupervisor, SessionSupervisor}
 
   setup do
@@ -13,7 +13,7 @@ defmodule Fleetlm.Runtime.EventsTest do
     {:ok, bob} = ensure_participant("user:bob")
 
     {:ok, session} =
-      Sessions.start_session(%{
+      Conversation.start_session(%{
         initiator_id: alice.id,
         peer_id: bob.id
       })
@@ -36,7 +36,7 @@ defmodule Fleetlm.Runtime.EventsTest do
 
   test "appending messages emits session and inbox broadcasts", %{session: session, alice: alice} do
     {:ok, message} =
-      Sessions.append_message(session.id, %{
+      Conversation.append_message(session.id, %{
         sender_id: alice.id,
         kind: "text",
         content: %{text: "Hi Bob"}

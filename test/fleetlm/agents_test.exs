@@ -1,10 +1,10 @@
-defmodule Fleetlm.AgentsTest do
+defmodule Fleetlm.AgentTest do
   use Fleetlm.DataCase, async: false
 
-  alias Fleetlm.Agents
-  alias Fleetlm.Agents.AgentEndpoint
-  alias Fleetlm.Participants
-  alias Fleetlm.Sessions
+  alias Fleetlm.Agent
+  alias Fleetlm.Agent.AgentEndpoint
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Conversation
 
   setup do
     {:ok, participant} =
@@ -19,7 +19,7 @@ defmodule Fleetlm.AgentsTest do
 
   test "upsert_agent creates participant and endpoint", %{agent: agent} do
     {:ok, %{participant: participant, endpoint: endpoint}} =
-      Agents.upsert_agent(%{
+      Agent.upsert_agent(%{
         id: agent.id,
         display_name: "Test Agent",
         endpoint: %{
@@ -33,9 +33,9 @@ defmodule Fleetlm.AgentsTest do
   end
 
   test "get_endpoint returns stored endpoint", %{agent: agent} do
-    Agents.upsert_endpoint!(agent.id, %{origin_url: "https://example.com", auth_strategy: "none"})
+    Agent.upsert_endpoint!(agent.id, %{origin_url: "https://example.com", auth_strategy: "none"})
 
-    assert %AgentEndpoint{origin_url: "https://example.com"} = Agents.get_endpoint(agent.id)
+    assert %AgentEndpoint{origin_url: "https://example.com"} = Agent.get_endpoint(agent.id)
   end
 
   describe "dispatcher" do
@@ -62,19 +62,19 @@ defmodule Fleetlm.AgentsTest do
     end
 
     test "dispatches user messages to agent endpoint", %{agent: agent} do
-      Agents.upsert_endpoint!(agent.id, %{
+      Agent.upsert_endpoint!(agent.id, %{
         origin_url: "https://example.com",
         auth_strategy: "none"
       })
 
       {:ok, session} =
-        Sessions.start_session(%{
+        Conversation.start_session(%{
           initiator_id: "user:alice",
           peer_id: agent.id
         })
 
       {:ok, message} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: "user:alice",
           kind: "text",
           content: %{text: "hello"}
@@ -89,19 +89,19 @@ defmodule Fleetlm.AgentsTest do
     end
 
     test "does not dispatch messages sent by the agent", %{agent: agent} do
-      Agents.upsert_endpoint!(agent.id, %{
+      Agent.upsert_endpoint!(agent.id, %{
         origin_url: "https://example.com",
         auth_strategy: "none"
       })
 
       {:ok, session} =
-        Sessions.start_session(%{
+        Conversation.start_session(%{
           initiator_id: agent.id,
           peer_id: "user:alice"
         })
 
       {:ok, _message} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: agent.id,
           kind: "text",
           content: %{text: "ping"}

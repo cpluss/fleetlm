@@ -2,8 +2,8 @@ defmodule Fleetlm.Runtime.GatewayTest do
   use Fleetlm.DataCase
 
   alias Fleetlm.Runtime.Gateway
-  alias Fleetlm.Participants
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Conversation
 
   setup do
     {:ok, _} =
@@ -21,7 +21,7 @@ defmodule Fleetlm.Runtime.GatewayTest do
       })
 
     {:ok, session} =
-      Sessions.start_session(%{
+      Conversation.start_session(%{
         initiator_id: "user:alice",
         peer_id: "agent:bot"
       })

@@ -1,4 +1,4 @@
-defmodule Fleetlm.Agents.Dispatcher do
+defmodule Fleetlm.Agent.Dispatcher do
   @moduledoc """
   Asynchronous webhook dispatcher for agent sessions.
 
@@ -10,11 +10,11 @@ defmodule Fleetlm.Agents.Dispatcher do
 
   require Logger
 
-  alias Fleetlm.Agents
-  alias Fleetlm.Agents.AgentEndpoint
-  alias Fleetlm.Sessions
+  alias Fleetlm.Agent
+  alias Fleetlm.Agent.AgentEndpoint
+  alias Fleetlm.Conversation
 
-  @dispatcher_supervisor Fleetlm.Agents.DispatcherSupervisor
+  @dispatcher_supervisor Fleetlm.Agent.DispatcherSupervisor
 
   @spec maybe_dispatch(map(), map()) :: :ok
   def maybe_dispatch(session, message) do
@@ -30,8 +30,8 @@ defmodule Fleetlm.Agents.Dispatcher do
     case get_cached_endpoint_status(session.agent_id) do
       "enabled" ->
         # Use pooled webhook manager for efficient delivery
-        if Code.ensure_loaded?(Fleetlm.Agents.WebhookManager) do
-          Fleetlm.Agents.WebhookManager.deliver_async(session.agent_id, session, message)
+        if Code.ensure_loaded?(Fleetlm.Agent.WebhookManager) do
+          Fleetlm.Agent.WebhookManager.deliver_async(session.agent_id, session, message)
         else
           # Fallback to task supervisor approach
           Task.Supervisor.start_child(@dispatcher_supervisor, fn ->
@@ -46,16 +46,16 @@ defmodule Fleetlm.Agents.Dispatcher do
 
   defp get_cached_endpoint_status(agent_id) do
     # Try cache first, fallback to direct database query
-    if Code.ensure_loaded?(Fleetlm.Agents.EndpointCache) do
-      Fleetlm.Agents.EndpointCache.get_status(agent_id)
+    if Code.ensure_loaded?(Fleetlm.Agent.EndpointCache) do
+      Fleetlm.Agent.EndpointCache.get_status(agent_id)
     else
       # Fallback for when cache is not available
-      Agents.get_endpoint_status(agent_id)
+      Agent.get_endpoint_status(agent_id)
     end
   end
 
   defp deliver_with_lazy_loading(agent_id, session, message) do
-    case Agents.get_endpoint(agent_id) do
+    case Agent.get_endpoint(agent_id) do
       %AgentEndpoint{status: "enabled"} = endpoint ->
         deliver(endpoint, session, message)
 
@@ -172,14 +172,14 @@ defmodule Fleetlm.Agents.Dispatcher do
       |> Map.put(:message_id, message.id)
       |> Map.put(:agent_id, session.agent_id)
 
-    _ = Agents.log_delivery(log_attrs)
+    _ = Agent.log_delivery(log_attrs)
     :ok
   end
 
   defp maybe_mark_read(%{agent_id: nil}, _message), do: :ok
 
   defp maybe_mark_read(session, message) do
-    _ = Sessions.mark_read(session.id, session.agent_id, message_id: message.id)
+    _ = Conversation.mark_read(session.id, session.agent_id, message_id: message.id)
     :ok
   end
 

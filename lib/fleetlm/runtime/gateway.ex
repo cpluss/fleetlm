@@ -7,8 +7,8 @@ defmodule Fleetlm.Runtime.Gateway do
   """
 
   alias Fleetlm.Runtime.Router
-  alias Fleetlm.Sessions.ChatMessage
-  alias Fleetlm.Sessions.ChatSession
+  alias Fleetlm.Conversation.ChatMessage
+  alias Fleetlm.Conversation.ChatSession
 
   @doc """
   Append a message to the session and return the persisted record.

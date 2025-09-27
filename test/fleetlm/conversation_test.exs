@@ -1,10 +1,10 @@
-defmodule Fleetlm.SessionsTest do
+defmodule Fleetlm.ConversationTest do
   use Fleetlm.DataCase, async: false
 
-  alias Fleetlm.Participants
-  alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.ChatSession
-  alias Fleetlm.Sessions.ChatMessage
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Conversation
+  alias Fleetlm.Conversation.ChatSession
+  alias Fleetlm.Conversation.ChatMessage
 
   setup do
     {:ok, user_a} =
@@ -27,7 +27,7 @@ defmodule Fleetlm.SessionsTest do
   describe "start_session/1" do
     test "creates agent session when one participant is agent", %{user: user, agent: agent} do
       assert {:ok, %ChatSession{} = session} =
-               Sessions.start_session(%{
+               Conversation.start_session(%{
                  initiator_id: user.id,
                  peer_id: agent.id
                })
@@ -38,7 +38,7 @@ defmodule Fleetlm.SessionsTest do
 
     test "rejects sessions where both participants are the same", %{user: user} do
       assert {:error, %Ecto.Changeset{} = changeset} =
-               Sessions.start_session(%{
+               Conversation.start_session(%{
                  initiator_id: user.id,
                  peer_id: user.id
                })
@@ -51,7 +51,7 @@ defmodule Fleetlm.SessionsTest do
   describe "append_message/2" do
     setup %{user: user, agent: agent} do
       {:ok, session} =
-        Sessions.start_session(%{
+        Conversation.start_session(%{
           initiator_id: user.id,
           peer_id: agent.id
         })
@@ -61,13 +61,13 @@ defmodule Fleetlm.SessionsTest do
 
     test "persists message and updates session", %{session: session, user: user} do
       assert {:ok, %ChatMessage{} = message} =
-               Sessions.append_message(session.id, %{
+               Conversation.append_message(session.id, %{
                  sender_id: user.id,
                  kind: "text",
                  content: %{text: "hi"}
                })
 
-      updated_session = Sessions.get_session!(session.id)
+      updated_session = Conversation.get_session!(session.id)
       assert updated_session.last_message_id == message.id
       naive_dt = DateTime.from_naive!(message.inserted_at, "Etc/UTC")
       assert DateTime.compare(updated_session.last_message_at, naive_dt) == :eq
@@ -79,7 +79,7 @@ defmodule Fleetlm.SessionsTest do
       agent: agent
     } do
       {:ok, first} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: user.id,
           kind: "text",
           content: %{text: "hello"}
@@ -88,16 +88,16 @@ defmodule Fleetlm.SessionsTest do
       Process.sleep(5)
 
       {:ok, second} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: agent.id,
           kind: "system",
           content: %{text: "reply"}
         })
 
-      messages = Sessions.list_messages(session.id)
+      messages = Conversation.list_messages(session.id)
       assert Enum.map(messages, & &1.id) == [first.id, second.id]
 
-      tail = Sessions.list_messages(session.id, after_id: first.id)
+      tail = Conversation.list_messages(session.id, after_id: first.id)
       assert Enum.map(tail, & &1.id) == [second.id]
     end
 
@@ -110,26 +110,26 @@ defmodule Fleetlm.SessionsTest do
         })
 
       {:ok, other_session} =
-        Sessions.start_session(%{
+        Conversation.start_session(%{
           initiator_id: user.id,
           peer_id: other_user.id
         })
 
       {:ok, _} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: user.id,
           kind: "text",
           content: %{text: "primary"}
         })
 
       {:ok, _} =
-        Sessions.append_message(other_session.id, %{
+        Conversation.append_message(other_session.id, %{
           sender_id: user.id,
           kind: "text",
           content: %{text: "secondary"}
         })
 
-      messages = Sessions.list_messages(session.id)
+      messages = Conversation.list_messages(session.id)
       assert Enum.count(messages) == 1
       assert Enum.at(messages, 0).session_id == session.id
     end
@@ -138,13 +138,13 @@ defmodule Fleetlm.SessionsTest do
   describe "mark_read/3" do
     setup %{user: user, agent: agent} do
       {:ok, session} =
-        Sessions.start_session(%{
+        Conversation.start_session(%{
           initiator_id: user.id,
           peer_id: agent.id
         })
 
       {:ok, message} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: user.id,
           kind: "text",
           content: %{text: "hey"}
@@ -159,16 +159,16 @@ defmodule Fleetlm.SessionsTest do
       agent: agent
     } do
       {:ok, updated} =
-        Sessions.mark_read(session.id, agent.id, message_id: message.id)
+        Conversation.mark_read(session.id, agent.id, message_id: message.id)
 
       assert updated.peer_last_read_id == message.id
       assert match?(%DateTime{}, updated.peer_last_read_at)
-      assert Sessions.unread_count(updated, agent.id) == 0
+      assert Conversation.unread_count(updated, agent.id) == 0
     end
 
     test "rejects unknown participant", %{session: session, message: message} do
       assert {:error, :invalid_participant} =
-               Sessions.mark_read(session.id, "user:ghost", message_id: message.id)
+               Conversation.mark_read(session.id, "user:ghost", message_id: message.id)
     end
   end
 
@@ -182,18 +182,18 @@ defmodule Fleetlm.SessionsTest do
         })
 
       {:ok, agent_session} =
-        Sessions.start_session(%{
+        Conversation.start_session(%{
           initiator_id: user.id,
           peer_id: agent.id
         })
 
       {:ok, human_session} =
-        Sessions.start_session(%{
+        Conversation.start_session(%{
           initiator_id: user.id,
           peer_id: other_user.id
         })
 
-      sessions = Sessions.list_sessions_for_participant(user.id, limit: 10)
+      sessions = Conversation.list_sessions_for_participant(user.id, limit: 10)
       ids = MapSet.new(Enum.map(sessions, & &1.id))
 
       assert MapSet.member?(ids, agent_session.id)

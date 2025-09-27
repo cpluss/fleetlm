@@ -2,8 +2,8 @@ defmodule FleetlmWeb.SessionControllerTest do
   use FleetlmWeb.ConnCase
 
   alias Fleetlm.Runtime.Gateway
-  alias Fleetlm.Participants
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Conversation
 
   setup %{conn: conn} do
     {:ok, _} =
@@ -35,12 +35,12 @@ defmodule FleetlmWeb.SessionControllerTest do
            } =
              json_response(conn, 201)
 
-    assert Sessions.get_session!(id)
+    assert Conversation.get_session!(id)
   end
 
   test "GET /api/sessions/:id/messages returns messages", %{conn: conn} do
     {:ok, session} =
-      Sessions.start_session(%{
+      Conversation.start_session(%{
         initiator_id: "user:alice",
         peer_id: "agent:bot"
       })
@@ -59,7 +59,7 @@ defmodule FleetlmWeb.SessionControllerTest do
 
   test "POST /api/sessions/:id/messages appends message", %{conn: conn} do
     {:ok, session} =
-      Sessions.start_session(%{
+      Conversation.start_session(%{
         initiator_id: "user:alice",
         peer_id: "agent:bot"
       })
@@ -78,7 +78,7 @@ defmodule FleetlmWeb.SessionControllerTest do
 
   test "POST /api/sessions/:id/read marks session as read", %{conn: conn} do
     {:ok, session} =
-      Sessions.start_session(%{
+      Conversation.start_session(%{
         initiator_id: "user:alice",
         peer_id: "agent:bot"
       })

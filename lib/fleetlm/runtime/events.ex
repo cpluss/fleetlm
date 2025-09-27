@@ -9,7 +9,7 @@ defmodule Fleetlm.Runtime.Events do
   """
 
   alias Fleetlm.Observability
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
   alias Fleetlm.Runtime.InboxServer
 
   @pubsub Fleetlm.PubSub
@@ -103,7 +103,7 @@ defmodule Fleetlm.Runtime.Events do
   end
 
   defp ensure_participants(%{id: session_id} = session) do
-    full_session = Sessions.get_session!(session_id)
+    full_session = Conversation.get_session!(session_id)
 
     session
     |> Map.put(:initiator_id, full_session.initiator_id)

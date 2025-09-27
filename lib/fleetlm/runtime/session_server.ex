@@ -8,13 +8,13 @@ defmodule Fleetlm.Runtime.SessionServer do
   * Provides a lightweight `load_tail/1` API for channel joins
 
   The server does **not** own persistence—that work happens in
-  `Fleetlm.Sessions.append_message/2`—but it reacts to persisted changes to
+  `Fleetlm.Conversation.append_message/2`—but it reacts to persisted changes to
   keep the runtime consistent and fan-out real-time updates.
   """
 
   use GenServer, restart: :transient
 
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
   alias Fleetlm.Runtime.Cache
   alias Fleetlm.Runtime.Events
   alias Fleetlm.Runtime.SessionSupervisor
@@ -147,9 +147,9 @@ defmodule Fleetlm.Runtime.SessionServer do
   end
 
   defp preload_tail(session_id) do
-    session = Sessions.get_session!(session_id)
+    session = Conversation.get_session!(session_id)
 
-    Sessions.list_messages(session_id, limit: @tail_limit)
+    Conversation.list_messages(session_id, limit: @tail_limit)
     |> Enum.map(fn message ->
       message
       |> Map.from_struct()

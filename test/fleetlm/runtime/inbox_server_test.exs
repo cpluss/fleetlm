@@ -1,8 +1,8 @@
 defmodule Fleetlm.Runtime.InboxServerTest do
   use Fleetlm.DataCase, async: false
 
-  alias Fleetlm.Participants
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Conversation
   alias Fleetlm.Runtime.{Cache, InboxServer, InboxSupervisor, SessionSupervisor}
 
   setup do
@@ -34,7 +34,7 @@ defmodule Fleetlm.Runtime.InboxServerTest do
       {:ok, recipient} = ensure_participant("user:recipient")
 
       {:ok, session} =
-        Sessions.start_session(%{
+        Conversation.start_session(%{
           initiator_id: sender.id,
           peer_id: recipient.id
         })
@@ -55,15 +55,15 @@ defmodule Fleetlm.Runtime.InboxServerTest do
       recipient: recipient
     } do
       {:ok, _message} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: sender.id,
           kind: "text",
           content: %{text: "hello"}
         })
 
-      assert Sessions.unread_count(Sessions.get_session!(session.id), recipient.id) == 1
-      sessions = Sessions.list_sessions_for_participant(recipient.id)
-      assert Enum.any?(sessions, fn s -> Sessions.unread_count(s, recipient.id) == 1 end)
+      assert Conversation.unread_count(Conversation.get_session!(session.id), recipient.id) == 1
+      sessions = Conversation.list_sessions_for_participant(recipient.id)
+      assert Enum.any?(sessions, fn s -> Conversation.unread_count(s, recipient.id) == 1 end)
 
       assert_receive {:inbox_snapshot, snapshot}, 500
 
@@ -82,7 +82,7 @@ defmodule Fleetlm.Runtime.InboxServerTest do
       recipient: recipient
     } do
       {:ok, _message} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: sender.id,
           kind: "text",
           content: %{text: "hello"}
@@ -102,7 +102,7 @@ defmodule Fleetlm.Runtime.InboxServerTest do
       recipient: recipient
     } do
       {:ok, message} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: sender.id,
           kind: "text",
           content: %{text: "hello"}
@@ -113,7 +113,7 @@ defmodule Fleetlm.Runtime.InboxServerTest do
       assert entry
       assert Enum.any?(snapshot, &(&1["unread_count"] == 1))
 
-      {:ok, _} = Sessions.mark_read(session.id, recipient.id, message_id: message.id)
+      {:ok, _} = Conversation.mark_read(session.id, recipient.id, message_id: message.id)
 
       assert_receive {:inbox_snapshot, snapshot2}, 500
       entry2 = Enum.find(snapshot2, &(&1["session_id"] == session.id))

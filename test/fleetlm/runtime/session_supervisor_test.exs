@@ -1,8 +1,8 @@
 defmodule Fleetlm.Runtime.SessionSupervisorTest do
   use Fleetlm.DataCase, async: false
 
-  alias Fleetlm.Participants
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Conversation
   alias Fleetlm.Runtime.SessionSupervisor
 
   setup do
@@ -21,7 +21,7 @@ defmodule Fleetlm.Runtime.SessionSupervisorTest do
       })
 
     {:ok, session} =
-      Sessions.start_session(%{
+      Conversation.start_session(%{
         initiator_id: alice.id,
         peer_id: bob.id
       })

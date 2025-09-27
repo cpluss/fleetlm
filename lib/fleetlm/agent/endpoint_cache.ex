@@ -1,4 +1,4 @@
-defmodule Fleetlm.Agents.EndpointCache do
+defmodule Fleetlm.Agent.EndpointCache do
   @moduledoc """
   High-performance caching layer for agent endpoint status lookups.
 
@@ -13,7 +13,7 @@ defmodule Fleetlm.Agents.EndpointCache do
 
   use GenServer
   require Logger
-  alias Fleetlm.Agents
+  alias Fleetlm.Agent
 
   @cache_name :agent_endpoint_status_cache
   @default_ttl :timer.seconds(15)
@@ -48,7 +48,7 @@ defmodule Fleetlm.Agents.EndpointCache do
           "EndpointCache: Cache error for agent #{agent_id}, falling back to database"
         )
 
-        Agents.get_endpoint_status(agent_id)
+        Agent.get_endpoint_status(agent_id)
     end
   end
 
@@ -134,7 +134,7 @@ defmodule Fleetlm.Agents.EndpointCache do
   ## Private Functions
 
   defp load_and_cache_status(agent_id) do
-    case Agents.get_endpoint_status(agent_id) do
+    case Agent.get_endpoint_status(agent_id) do
       nil ->
         # Cache the nil result to avoid repeated database hits for non-existent agents
         Cachex.put(@cache_name, agent_id, nil, ttl: @default_ttl)
@@ -176,6 +176,6 @@ defmodule Fleetlm.Agents.EndpointCache do
 
   defp load_statuses_from_db(agent_ids) do
     # Use optimized batch query
-    Agents.get_endpoint_statuses(agent_ids)
+    Agent.get_endpoint_statuses(agent_ids)
   end
 end

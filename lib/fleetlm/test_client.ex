@@ -10,7 +10,7 @@ defmodule Fleetlm.TestClient do
     help [command]
   """
 
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
 
   def main([]) do
     print_usage(:stderr)
@@ -44,7 +44,7 @@ defmodule Fleetlm.TestClient do
     with {:ok, initiator} <- require_participant(opts[:initiator], :initiator),
          {:ok, peer} <- require_participant(opts[:peer], :peer) do
       {:ok, session} =
-        Sessions.start_session(%{initiator_id: initiator, peer_id: peer})
+        Conversation.start_session(%{initiator_id: initiator, peer_id: peer})
 
       {:ok, %{event: "session.created", session: render_session(session)}}
     else
@@ -64,7 +64,7 @@ defmodule Fleetlm.TestClient do
          {:ok, sender} <- require_participant(opts[:sender], :sender),
          {:ok, text} <- require_text(opts[:text]) do
       {:ok, message} =
-        Sessions.append_message(session_id, %{
+        Conversation.append_message(session_id, %{
           sender_id: sender,
           kind: "text",
           content: %{text: text}
@@ -89,7 +89,7 @@ defmodule Fleetlm.TestClient do
 
     with {:ok, session_id} <- require_session(opts[:session]) do
       messages =
-        Sessions.list_messages(session_id, limit: opts[:limit] || 50)
+        Conversation.list_messages(session_id, limit: opts[:limit] || 50)
         |> Enum.map(&render_message/1)
 
       {:ok, %{event: "session.history", session_id: session_id, messages: messages}}
@@ -103,7 +103,7 @@ defmodule Fleetlm.TestClient do
 
     with {:ok, participant} <- require_participant(opts[:participant], :participant) do
       sessions =
-        Sessions.list_sessions_for_participant(participant)
+        Conversation.list_sessions_for_participant(participant)
         |> Enum.map(&render_session/1)
 
       {:ok, %{event: "inbox.snapshot", participant: participant, sessions: sessions}}

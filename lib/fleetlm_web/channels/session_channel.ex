@@ -7,7 +7,7 @@ defmodule FleetlmWeb.SessionChannel do
 
   alias Fleetlm.Runtime.Gateway
   alias Fleetlm.Runtime.SessionServer
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
 
   @impl true
   def join(
@@ -54,7 +54,7 @@ defmodule FleetlmWeb.SessionChannel do
   end
 
   defp authorize(session_id, participant_id) do
-    session = Sessions.get_session!(session_id)
+    session = Conversation.get_session!(session_id)
 
     if participant_id in [session.initiator_id, session.peer_id] do
       {:ok, session}

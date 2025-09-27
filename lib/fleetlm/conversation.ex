@@ -1,4 +1,4 @@
-defmodule Fleetlm.Sessions do
+defmodule Fleetlm.Conversation do
   @moduledoc """
   Context boundary for the new session-based chat runtime.
 
@@ -14,13 +14,13 @@ defmodule Fleetlm.Sessions do
 
   alias Ecto.Changeset
   alias Fleetlm.Repo
-  alias Fleetlm.Participants
+  alias Fleetlm.Conversation.Participants
   alias Fleetlm.Runtime.Cache
-  alias Fleetlm.Sessions.ChatSession
-  alias Fleetlm.Sessions.ChatMessage
+  alias Fleetlm.Conversation.ChatSession
+  alias Fleetlm.Conversation.ChatMessage
   alias Fleetlm.Runtime.SessionServer
   alias Fleetlm.Runtime.InboxServer
-  alias Fleetlm.Agents.Dispatcher
+  alias Fleetlm.Agent.Dispatcher
   alias Fleetlm.Observability
   alias Ulid
 

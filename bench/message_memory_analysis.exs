@@ -13,7 +13,7 @@ defmodule MessageMemoryAnalysis do
   """
 
   import Bench.Helper
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
 
   def run_analysis do
     IO.puts("🔍 Message Memory Usage Analysis")
@@ -118,7 +118,7 @@ defmodule MessageMemoryAnalysis do
     sender = session.initiator_id
 
     # Warm cache scenario
-    Sessions.get_inbox_snapshot(sender)  # Warm up
+    Conversation.get_inbox_snapshot(sender)  # Warm up
     {memory_warm, time_warm} = measure_message_memory(session.id, sender, "Warm cache message")
     IO.puts("   Warm Cache: #{memory_warm}KB (#{Float.round(time_warm/1000, 2)}ms)")
 
@@ -157,7 +157,7 @@ defmodule MessageMemoryAnalysis do
   defp measure_message_memory(session_id, sender_id, content) do
     {time_us, memory_bytes} = :timer.tc(fn ->
       measure_memory(fn ->
-        Sessions.append_message(session_id, %{
+        Conversation.append_message(session_id, %{
           sender_id: sender_id,
           kind: "text",
           content: %{text: content}
@@ -174,7 +174,7 @@ defmodule MessageMemoryAnalysis do
     {time_us, memory_bytes} = :timer.tc(fn ->
       measure_memory(fn ->
         Enum.each(1..count, fn i ->
-          Sessions.append_message(session.id, %{
+          Conversation.append_message(session.id, %{
             sender_id: session.initiator_id,
             kind: "text",
             content: %{text: "Burst message #{i}"}
@@ -195,7 +195,7 @@ defmodule MessageMemoryAnalysis do
       measure_memory(fn ->
         sessions
         |> Task.async_stream(fn session ->
-          Sessions.append_message(session.id, %{
+          Conversation.append_message(session.id, %{
             sender_id: session.initiator_id,
             kind: "text",
             content: %{text: "Concurrent message"}
@@ -242,7 +242,7 @@ defmodule MessageMemoryAnalysis do
 
     %{
       "Small Message (Human)" => fn ->
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: session.initiator_id,
           kind: "text",
           content: %{text: "Hi"}
@@ -250,7 +250,7 @@ defmodule MessageMemoryAnalysis do
       end,
 
       "Large Message (Human)" => fn ->
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: session.initiator_id,
           kind: "text",
           content: %{text: String.duplicate("Large message content. ", 30)}
@@ -259,7 +259,7 @@ defmodule MessageMemoryAnalysis do
 
       "Message to Agent Session" => fn ->
         sender = if agent_session.initiator_id in data.agents, do: agent_session.peer_id, else: agent_session.initiator_id
-        Sessions.append_message(agent_session.id, %{
+        Conversation.append_message(agent_session.id, %{
           sender_id: sender,
           kind: "text",
           content: %{text: "Message to agent"}
@@ -268,7 +268,7 @@ defmodule MessageMemoryAnalysis do
 
       "Agent Response" => fn ->
         agent_id = if agent_session.initiator_id in data.agents, do: agent_session.initiator_id, else: agent_session.peer_id
-        Sessions.append_message(agent_session.id, %{
+        Conversation.append_message(agent_session.id, %{
           sender_id: agent_id,
           kind: "text",
           content: %{text: "Agent response"}
@@ -277,7 +277,7 @@ defmodule MessageMemoryAnalysis do
 
       "Cold Cache Message" => fn ->
         cleanup()  # Clear caches
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: session.initiator_id,
           kind: "text",
           content: %{text: "Cold cache test"}

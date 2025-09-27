@@ -1,7 +1,9 @@
 defmodule Fleetlm.SessionBehaviourTest do
   use Fleetlm.DataCase, async: false
 
-  alias Fleetlm.{Participants, Sessions, Agents}
+  alias Fleetlm.Conversation
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Agent
   alias Fleetlm.Runtime.{Cache, SessionServer, SessionSupervisor, InboxSupervisor, InboxServer}
 
   describe "session message delivery" do
@@ -15,7 +17,7 @@ defmodule Fleetlm.SessionBehaviourTest do
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "session:" <> session.id)
 
       {:ok, message} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: alice,
           kind: "text",
           content: %{text: "hello"}
@@ -34,7 +36,7 @@ defmodule Fleetlm.SessionBehaviourTest do
       session = create_session(alice, bob)
 
       {:ok, _} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: alice,
           kind: "text",
           content: %{text: "queued"}
@@ -56,7 +58,7 @@ defmodule Fleetlm.SessionBehaviourTest do
       session = create_session(sender, recipient)
 
       {:ok, _} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: sender,
           kind: "text",
           content: %{text: "Inbox once"}
@@ -87,7 +89,7 @@ defmodule Fleetlm.SessionBehaviourTest do
           session = create_session(sender_id, recipient)
 
           {:ok, _} =
-            Sessions.append_message(session.id, %{
+            Conversation.append_message(session.id, %{
               sender_id: sender_id,
               kind: "text",
               content: %{text: "bulk #{idx}"}
@@ -98,7 +100,7 @@ defmodule Fleetlm.SessionBehaviourTest do
 
       # Ensure all sessions are persisted before testing inbox aggregation
       Enum.each(session_ids, fn session_id ->
-        assert %Sessions.ChatSession{} = Sessions.get_session!(session_id)
+        assert %Conversation.ChatSession{} = Conversation.get_session!(session_id)
       end)
 
       {:ok, inbox_pid} = InboxSupervisor.ensure_started(recipient)
@@ -132,7 +134,7 @@ defmodule Fleetlm.SessionBehaviourTest do
 
       for n <- 1..10 do
         {:ok, _} =
-          Sessions.append_message(session.id, %{
+          Conversation.append_message(session.id, %{
             sender_id: alice,
             kind: "text",
             content: %{text: "message #{n}"}
@@ -141,7 +143,7 @@ defmodule Fleetlm.SessionBehaviourTest do
 
       :ok = Cache.reset()
 
-      messages = Sessions.list_messages(session.id, limit: 20)
+      messages = Conversation.list_messages(session.id, limit: 20)
       texts = Enum.map(messages, fn msg -> msg.content["text"] end)
       assert Enum.count(texts) == 10
       assert "message 1" in texts
@@ -156,7 +158,7 @@ defmodule Fleetlm.SessionBehaviourTest do
       session = create_session(alice, bob)
 
       {:ok, _} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: alice,
           kind: "text",
           content: %{text: "initial"}
@@ -178,7 +180,7 @@ defmodule Fleetlm.SessionBehaviourTest do
       session = create_session(sender, offline)
 
       {:ok, _} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: sender,
           kind: "text",
           content: %{text: "queued"}
@@ -203,7 +205,7 @@ defmodule Fleetlm.SessionBehaviourTest do
 
       Application.put_env(:fleetlm, :agent_dispatcher, %{mode: :test, pid: self()})
 
-      Agents.upsert_endpoint!("agent:bot", %{
+      Agent.upsert_endpoint!("agent:bot", %{
         origin_url: "https://example.com/webhook",
         status: "disabled"
       })
@@ -215,7 +217,7 @@ defmodule Fleetlm.SessionBehaviourTest do
       allow_db(agent_inbox_pid)
 
       {:ok, _} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: client,
           kind: "text",
           content: %{text: "queued"}
@@ -223,13 +225,13 @@ defmodule Fleetlm.SessionBehaviourTest do
 
       refute_receive {:agent_dispatch, _}
 
-      Agents.upsert_endpoint!("agent:bot", %{
+      Agent.upsert_endpoint!("agent:bot", %{
         origin_url: "https://example.com/webhook",
         status: "enabled"
       })
 
       {:ok, _} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: client,
           kind: "text",
           content: %{text: "live"}
@@ -246,7 +248,7 @@ defmodule Fleetlm.SessionBehaviourTest do
   defp create_session(a, b) do
     ensure_participant(a)
     ensure_participant(b)
-    {:ok, session} = Sessions.start_session(%{initiator_id: a, peer_id: b})
+    {:ok, session} = Conversation.start_session(%{initiator_id: a, peer_id: b})
     session
   end
 

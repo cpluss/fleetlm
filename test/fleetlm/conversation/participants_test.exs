@@ -1,8 +1,8 @@
-defmodule Fleetlm.ParticipantsTest do
+defmodule Fleetlm.Conversation.ParticipantsTest do
   use Fleetlm.DataCase, async: true
 
-  alias Fleetlm.Participants
-  alias Fleetlm.Participants.Participant
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Conversation.Participant
 
   describe "upsert_participant/1" do
     test "creates a participant" do

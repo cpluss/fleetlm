@@ -1,8 +1,8 @@
-defmodule Fleetlm.Agents.AgentEndpoint do
+defmodule Fleetlm.Agent.AgentEndpoint do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Fleetlm.Participants.Participant
+  alias Fleetlm.Conversation.Participant
   alias Ulid
 
   @primary_key {:id, :string, autogenerate: false}

@@ -1,4 +1,4 @@
-defmodule Fleetlm.Agents.WebhookManager do
+defmodule Fleetlm.Agent.WebhookManager do
   @moduledoc """
   Pooled webhook delivery system for agent endpoints.
 
@@ -16,8 +16,8 @@ defmodule Fleetlm.Agents.WebhookManager do
   use GenServer
   require Logger
 
-  alias Fleetlm.Agents
-  alias Fleetlm.Agents.{AgentEndpoint, EndpointCache}
+  alias Fleetlm.Agent
+  alias Fleetlm.Agent.{AgentEndpoint, EndpointCache}
   alias Fleetlm.Repo
 
   @pool_name :webhook_delivery_pool
@@ -84,7 +84,7 @@ defmodule Fleetlm.Agents.WebhookManager do
     # Start the worker pool
     pool_spec = [
       name: {:local, @pool_name},
-      worker_module: Fleetlm.Agents.WebhookWorker,
+      worker_module: Fleetlm.Agent.WebhookWorker,
       size: pool_size,
       max_overflow: div(pool_size, 2)
     ]
@@ -152,7 +152,7 @@ defmodule Fleetlm.Agents.WebhookManager do
       _ ->
         # Fallback to individual loading
         agent_ids
-        |> Enum.map(fn agent_id -> {agent_id, Agents.get_endpoint(agent_id)} end)
+        |> Enum.map(fn agent_id -> {agent_id, Agent.get_endpoint(agent_id)} end)
         |> Enum.filter(fn {_id, endpoint} -> endpoint && endpoint.status == "enabled" end)
         |> Map.new()
     end

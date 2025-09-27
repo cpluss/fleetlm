@@ -43,8 +43,8 @@ FleetLM is a real-time chat/messaging runtime built with Phoenix, designed for s
 - `Fleetlm.Runtime.Gateway` – Stateless boundary used by HTTP/WS entry points; the swap target for Phase 3 shard RPC.
 
 **Persistence (`lib/fleetlm/sessions.ex` + schemas)**
-- `Fleetlm.Sessions` – Ecto context for chat sessions and messages, orchestrating persistence plus runtime fan-out hooks.
-- `Fleetlm.Sessions.ChatSession` / `ChatMessage` – Schemas backing the session/message tables.
+- `Fleetlm.Conversation` – Ecto context for chat sessions and messages, orchestrating persistence plus runtime fan-out hooks.
+- `Fleetlm.Conversation.ChatSession` / `ChatMessage` – Schemas backing the session/message tables.
 
 **Real-time Communication (`lib/fleetlm_web/channels/`)**
 - `SessionChannel` – WebSocket channel for per-session messaging; delegates to the runtime gateway + session servers.
@@ -59,8 +59,8 @@ FleetLM is a real-time chat/messaging runtime built with Phoenix, designed for s
 
 ### Data Flow
 1. Messages arrive via WebSocket (`SessionChannel`) or REST controllers.
-2. Entry points call `Fleetlm.Runtime.Gateway` which proxies to `Fleetlm.Sessions`.
-3. Persistence occurs inside `Fleetlm.Sessions.append_message/2` (optimized SQL path).
+2. Entry points call `Fleetlm.Runtime.Gateway` which proxies to `Fleetlm.Conversation`.
+3. Persistence occurs inside `Fleetlm.Conversation.append_message/2` (optimized SQL path).
 4. The runtime `SessionServer` is notified, caches the message tail, and broadcasts via Phoenix PubSub.
 5. Inbox servers receive updates to refresh per-participant snapshots and unread counts.
 

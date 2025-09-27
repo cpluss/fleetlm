@@ -97,7 +97,9 @@ defmodule Bench.Helper do
   - Telemetry-based query counting for optimization insights
   """
 
-  alias Fleetlm.{Participants, Sessions, Agents}
+  alias Fleetlm.Conversation
+  alias Fleetlm.Conversation.Participants
+  alias Fleetlm.Agent
 
   # Automatically disable debug logging when this module is loaded
   require Logger
@@ -127,7 +129,7 @@ defmodule Bench.Helper do
           id = "agent:bench_bot_#{i}_#{:rand.uniform(999_999)}"
           # Create agent with endpoint
           {:ok, result} =
-            Agents.upsert_agent(%{
+            Agent.upsert_agent(%{
               id: id,
               name: id,
               endpoint: %{
@@ -149,7 +151,7 @@ defmodule Bench.Helper do
       [initiator, peer] = Enum.take_random(participants, 2)
 
       {:ok, session} =
-        Sessions.start_session(%{
+        Conversation.start_session(%{
           initiator_id: initiator,
           peer_id: peer
         })
@@ -164,7 +166,7 @@ defmodule Bench.Helper do
   def send_message_burst(session, sender_id, message_count \\ 5) do
     Enum.map(1..message_count, fn i ->
       {:ok, message} =
-        Sessions.append_message(session.id, %{
+        Conversation.append_message(session.id, %{
           sender_id: sender_id,
           kind: "text",
           content: %{text: "Benchmark message #{i} at #{DateTime.utc_now()}"}
@@ -242,13 +244,13 @@ defmodule Bench.Helper do
       case :rand.uniform(3) do
         1 ->
           # Check inbox
-          Sessions.get_inbox_snapshot(participant, limit: 5)
+          Conversation.get_inbox_snapshot(participant, limit: 5)
 
         2 ->
           # Send message if participant is in session
           if participant in [session.initiator_id, session.peer_id] do
             try do
-              Sessions.append_message(session.id, %{
+              Conversation.append_message(session.id, %{
                 sender_id: participant,
                 kind: "text",
                 content: %{text: "Activity message"}
@@ -264,7 +266,7 @@ defmodule Bench.Helper do
           # Mark messages as read
           if participant in [session.initiator_id, session.peer_id] do
             try do
-              Sessions.mark_read(session.id, participant)
+              Conversation.mark_read(session.id, participant)
             catch
               _, _ -> :error
             end
@@ -331,7 +333,7 @@ defmodule Bench.Helper do
     # Optionally warm up caches for realistic performance measurement
     if warm_caches do
       Enum.each(agents ++ humans, fn participant ->
-        Sessions.get_inbox_snapshot(participant, limit: 20)
+        Conversation.get_inbox_snapshot(participant, limit: 20)
       end)
     end
 

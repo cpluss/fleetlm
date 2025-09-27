@@ -1,9 +1,9 @@
 defmodule FleetlmWeb.SessionChannelTest do
   use FleetlmWeb.ChannelCase
 
-  alias Fleetlm.Participants
+  alias Fleetlm.Conversation.Participants
   alias Fleetlm.Runtime.{Gateway, SessionSupervisor}
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
   alias FleetlmWeb.SessionChannel
 
   setup do
@@ -22,7 +22,7 @@ defmodule FleetlmWeb.SessionChannelTest do
       })
 
     {:ok, session} =
-      Sessions.start_session(%{
+      Conversation.start_session(%{
         initiator_id: "user:alice",
         peer_id: "agent:bot"
       })

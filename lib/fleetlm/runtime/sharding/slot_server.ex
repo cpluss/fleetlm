@@ -14,7 +14,7 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
   use GenServer, restart: :transient
 
   alias Fleetlm.Runtime.Sharding.HashRing
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
 
   require Logger
 
@@ -72,7 +72,7 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
   @impl true
   def handle_call({:append, session_id, attrs}, _from, state) do
     with :ok <- ensure_owner(state) do
-      {:reply, Sessions.append_message(session_id, attrs), state}
+      {:reply, Conversation.append_message(session_id, attrs), state}
     else
       {:handoff, expected} -> handoff_reply(state, expected)
     end
@@ -80,7 +80,7 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
 
   def handle_call({:replay, session_id, opts}, _from, state) do
     with :ok <- ensure_owner(state) do
-      {:reply, Sessions.list_messages(session_id, opts), state}
+      {:reply, Conversation.list_messages(session_id, opts), state}
     else
       {:handoff, expected} -> handoff_reply(state, expected)
     end
@@ -88,7 +88,7 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
 
   def handle_call({:mark_read, session_id, participant_id, opts}, _from, state) do
     with :ok <- ensure_owner(state) do
-      {:reply, Sessions.mark_read(session_id, participant_id, opts), state}
+      {:reply, Conversation.mark_read(session_id, participant_id, opts), state}
     else
       {:handoff, expected} -> handoff_reply(state, expected)
     end

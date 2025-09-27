@@ -13,7 +13,7 @@ defmodule AgentWorkloadBench do
   """
 
   import Bench.Helper
-  alias Fleetlm.Sessions
+  alias Fleetlm.Conversation
 
   def run_benchmarks(opts \\ []) do
     dataset_size = Keyword.get(opts, :dataset, :standard)
@@ -44,12 +44,12 @@ defmodule AgentWorkloadBench do
     %{
       "Single Agent Inbox Check" => fn ->
         agent = Enum.random(data.agents)
-        Sessions.get_inbox_snapshot(agent)
+        Conversation.get_inbox_snapshot(agent)
       end,
 
       "Single Agent Session List" => fn ->
         agent = Enum.random(data.agents)
-        Sessions.list_sessions_for_participant(agent, limit: 20)
+        Conversation.list_sessions_for_participant(agent, limit: 20)
       end,
 
       "Agent Message Send" => fn ->
@@ -58,7 +58,7 @@ defmodule AgentWorkloadBench do
 
         # Only send if agent is part of the session
         if agent in [session.initiator_id, session.peer_id] do
-          Sessions.append_message(session.id, %{
+          Conversation.append_message(session.id, %{
             sender_id: agent,
             kind: "text",
             content: %{text: "Benchmark response"}
@@ -73,7 +73,7 @@ defmodule AgentWorkloadBench do
         data.agents
         |> Task.async_stream(
           fn agent ->
-            Sessions.get_inbox_snapshot(agent)
+            Conversation.get_inbox_snapshot(agent)
           end,
           timeout: :infinity,
           max_concurrency: length(data.agents)
@@ -86,7 +86,7 @@ defmodule AgentWorkloadBench do
         agent = Enum.random(data.agents)
 
         # Agent checks inbox
-        inbox = Sessions.get_inbox_snapshot(agent, limit: 5)
+        inbox = Conversation.get_inbox_snapshot(agent, limit: 5)
 
         # Agent responds to some sessions
         agent_sessions = Enum.filter(data.sessions, fn session ->
@@ -95,7 +95,7 @@ defmodule AgentWorkloadBench do
 
         response_count = min(length(agent_sessions), 2)
         Enum.each(Enum.take_random(agent_sessions, response_count), fn session ->
-          Sessions.append_message(session.id, %{
+          Conversation.append_message(session.id, %{
             sender_id: agent,
             kind: "text",
             content: %{text: "Workflow response"}
@@ -110,7 +110,7 @@ defmodule AgentWorkloadBench do
         Cachex.clear(:fleetlm_session_inboxes)
 
         agent = Enum.random(data.agents)
-        Sessions.get_inbox_snapshot(agent)
+        Conversation.get_inbox_snapshot(agent)
       end
     }
   end
@@ -127,21 +127,21 @@ defmodule AgentWorkloadBench do
 
     # Analyze key operations
     benchmark_with_queries("Single Agent Inbox (Warm Cache)", fn ->
-      Sessions.get_inbox_snapshot(agent)
+      Conversation.get_inbox_snapshot(agent)
     end)
 
     benchmark_with_queries("Single Agent Inbox (Cold Cache)", fn ->
       Cachex.clear(:fleetlm_session_inboxes)
-      Sessions.get_inbox_snapshot(agent)
+      Conversation.get_inbox_snapshot(agent)
     end)
 
     benchmark_with_queries("Agent Session List", fn ->
-      Sessions.list_sessions_for_participant(agent, limit: 20)
+      Conversation.list_sessions_for_participant(agent, limit: 20)
     end)
 
     benchmark_with_queries("Concurrent Agent Inbox (#{length(data.agents)} agents)", fn ->
       data.agents
-      |> Task.async_stream(fn a -> Sessions.get_inbox_snapshot(a) end,
+      |> Task.async_stream(fn a -> Conversation.get_inbox_snapshot(a) end,
                           timeout: :infinity, max_concurrency: length(data.agents))
       |> Enum.map(fn {:ok, result} -> result end)
     end)
