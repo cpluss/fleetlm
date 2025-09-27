@@ -2,6 +2,7 @@ defmodule Fleetlm.Runtime.GatewayTest do
   use Fleetlm.DataCase
 
   alias Fleetlm.Runtime.Gateway
+  alias Fleetlm.Runtime.Router
   alias Fleetlm.Conversation.Participants
   alias Fleetlm.Conversation
 
@@ -61,5 +62,20 @@ defmodule Fleetlm.Runtime.GatewayTest do
     assert is_integer(measurements.duration)
     assert metadata[:strategy]
     assert metadata[:kind] == "text"
+  end
+
+  test "append_message is idempotent for repeated idempotency key", %{session: session} do
+    attrs = %{
+      sender_id: session.initiator_id,
+      kind: "text",
+      content: %{text: "ping"},
+      idempotency_key: "dup-key"
+    }
+
+    assert {:ok, message1} = Gateway.append_message(session.id, attrs)
+    assert {:ok, message2} = Gateway.append_message(session.id, attrs)
+
+    assert message1.id == message2.id
+    assert :ok = Router.await_persistence(session.id, message1.id)
   end
 end

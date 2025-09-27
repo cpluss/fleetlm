@@ -12,6 +12,7 @@ defmodule Fleetlm.Observability.Telemetry do
   @session_append_event [:fleetlm, :session, :append]
   @session_fanout_event [:fleetlm, :session, :fanout]
   @session_queue_event [:fleetlm, :session, :queue, :length]
+  @disk_log_append_event [:fleetlm, :slot, :disk_log, :append]
 
   @conversation_started_event [:fleetlm, :conversation, :started]
   @conversation_stopped_event [:fleetlm, :conversation, :stopped]
@@ -73,6 +74,14 @@ defmodule Fleetlm.Observability.Telemetry do
 
     measurements = %{duration: duration_us, count: 1}
     :telemetry.execute(@session_fanout_event, measurements, meta)
+  end
+
+  @spec record_disk_log_append(non_neg_integer(), non_neg_integer(), map()) :: :ok
+  def record_disk_log_append(slot, duration_us, metadata \\ %{})
+      when is_integer(slot) and slot >= 0 and is_integer(duration_us) and duration_us >= 0 do
+    meta = Map.put(metadata, :slot, slot)
+    measurements = %{duration: duration_us, count: 1}
+    :telemetry.execute(@disk_log_append_event, measurements, meta)
   end
 
   @doc """

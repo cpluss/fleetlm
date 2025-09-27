@@ -19,10 +19,10 @@
 - [x] Provide ops docs for shard topology configuration and health checks
 
 ## Phase 4 – Hot Path State & Durability
-- [ ] Design and implement ETS session rings + idempotency cache per shard slot
-- [ ] Integrate `:disk_log` append-before-ack with rotation + fsync policy
-- [ ] Build async Postgres persistence worker fed from disk log tail
-- [ ] Extend instrumentation to capture disk write latency, fsync batches, and cache memory footprint
+- [x] Design and implement ETS session rings + idempotency cache per shard slot
+- [x] Integrate `:disk_log` append-before-ack with rotation + fsync policy
+- [x] Build async Postgres persistence worker fed from disk log tail
+- [x] Extend instrumentation to capture disk write latency and expose slot-level metrics (cache footprint gauge follow-up noted)
 
 ## Phase 5 – Client Protocol & Replay
 - [ ] Extend channel protocol to include seq/ack, TRY_AGAIN, and cursor resume parameters

@@ -15,13 +15,36 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
 
   alias Fleetlm.Runtime.Sharding.HashRing
   alias Fleetlm.Conversation
+  alias Fleetlm.Observability
+  alias Fleetlm.Runtime.Persistence.Worker, as: PersistenceWorker
+  alias Fleetlm.Runtime.Storage.{DiskLog, Entry, EtsRing, IdempotencyCache}
+  alias Ulid
 
   require Logger
 
-  defstruct [:slot, status: :accepting]
+  @ring_limit 64
+  @idempotency_ttl_ms :timer.minutes(15)
+
+  defstruct [
+    :slot,
+    :status,
+    :ring_table,
+    :idempotency_table,
+    :disk_log,
+    :persistence_worker,
+    seq_tracker: %{}
+  ]
 
   @type status :: :accepting | :draining
-  @type state :: %__MODULE__{slot: non_neg_integer(), status: status()}
+  @type state :: %__MODULE__{
+          slot: non_neg_integer(),
+          status: status(),
+          ring_table: :ets.tid(),
+          idempotency_table: :ets.tid(),
+          disk_log: :disk_log.log(),
+          persistence_worker: pid(),
+          seq_tracker: %{optional(String.t()) => non_neg_integer()}
+        }
   @local_registry Fleetlm.Runtime.Sharding.LocalRegistry
 
   @spec start_link(non_neg_integer()) :: GenServer.on_start()
@@ -46,6 +69,17 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
     end
   end
 
+  @spec await_persistence(non_neg_integer(), String.t(), timeout()) :: :ok | {:error, term()}
+  def await_persistence(slot, message_id, timeout \\ 5_000) do
+    case Registry.lookup(@local_registry, {:shard, slot}) do
+      [{pid, _}] ->
+        GenServer.call(pid, {:await_persisted, message_id, timeout}, timeout + 100)
+
+      [] ->
+        {:error, :noproc}
+    end
+  end
+
   @impl true
   def init(slot) do
     Process.flag(:trap_exit, true)
@@ -59,8 +93,28 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
 
       {:stop, {:wrong_owner, expected_node}}
     else
-      Logger.debug("Shard #{slot} now accepting traffic on #{inspect(Node.self())}")
-      {:ok, %__MODULE__{slot: slot}}
+      with {:ok, disk_log} <- DiskLog.open(slot),
+           {:ok, worker} <- PersistenceWorker.start_link(slot: slot) do
+        ring_table = EtsRing.new()
+        idem_table = IdempotencyCache.new()
+
+        Logger.debug("Shard #{slot} now accepting traffic on #{inspect(Node.self())}")
+
+        {:ok,
+         %__MODULE__{
+           slot: slot,
+           status: :accepting,
+           ring_table: ring_table,
+           idempotency_table: idem_table,
+           disk_log: disk_log,
+           persistence_worker: worker,
+           seq_tracker: %{}
+         }}
+      else
+        {:error, reason} ->
+          Logger.error("Shard #{slot} failed to open disk log: #{inspect(reason)}")
+          {:stop, {:log_open_failed, reason}}
+      end
     end
   end
 
@@ -72,7 +126,7 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
   @impl true
   def handle_call({:append, session_id, attrs}, _from, state) do
     with :ok <- ensure_owner(state) do
-      {:reply, Conversation.append_message(session_id, attrs), state}
+      handle_append(session_id, attrs, state)
     else
       {:handoff, expected} -> handoff_reply(state, expected)
     end
@@ -94,6 +148,13 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
     end
   end
 
+  def handle_call({:await_persisted, message_id, timeout}, _from, state) do
+    case PersistenceWorker.await(state.persistence_worker, message_id, timeout) do
+      :ok -> {:reply, :ok, state}
+      {:error, :timeout} -> {:reply, {:error, :timeout}, state}
+    end
+  end
+
   @impl true
   def handle_cast(:rebalance, %{slot: slot} = state) do
     expected = HashRing.owner_node(slot)
@@ -110,8 +171,18 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
   end
 
   @impl true
-  def terminate(reason, %{slot: slot}) do
+  def terminate(reason, %{
+        slot: slot,
+        disk_log: disk_log,
+        ring_table: ring,
+        idempotency_table: idem,
+        persistence_worker: worker
+      }) do
     Logger.debug("Shard #{slot} terminating with reason=#{inspect(reason)}")
+    if is_pid(worker), do: Process.exit(worker, :shutdown)
+    DiskLog.close(disk_log)
+    EtsRing.destroy(ring)
+    IdempotencyCache.destroy(idem)
     :ok
   end
 
@@ -129,5 +200,120 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
     Logger.debug("Shard #{state.slot} deferring request; expected owner #{inspect(expected)}")
 
     {:reply, {:error, :handoff}, %{state | status: :draining}}
+  end
+
+  defp handle_append(session_id, attrs, %{idempotency_table: idem_table} = state) do
+    {normalized, idem_key} = normalize_attrs(attrs)
+
+    case IdempotencyCache.fetch(idem_table, session_id, idem_key, ttl_ms: @idempotency_ttl_ms) do
+      {:hit, %Entry{payload: message}} ->
+        {:reply, {:ok, message}, state}
+
+      :miss ->
+        perform_append(session_id, normalized, idem_key, state)
+    end
+  end
+
+  defp perform_append(session_id, attrs, idem_key, state) do
+    seq = Map.get(state.seq_tracker, session_id, 0) + 1
+    attrs_with_seq = inject_sequence(attrs, seq)
+
+    case Conversation.append_message(session_id, attrs_with_seq) do
+      {:ok, message} = ok ->
+        entry = Entry.from_message(state.slot, seq, idem_key, message)
+
+        case DiskLog.append(state.disk_log, entry) do
+          {:ok, duration_us} ->
+            PersistenceWorker.enqueue(state.persistence_worker, entry)
+
+            updated_state =
+              state
+              |> maybe_track_seq(session_id, seq)
+              |> cache_entry(session_id, idem_key, entry)
+
+            Observability.record_disk_log_append(state.slot, duration_us)
+
+            {:reply, ok, updated_state}
+
+          {:error, reason} ->
+            Logger.error("Shard #{state.slot} failed to sync disk log: #{inspect(reason)}")
+            {:reply, {:error, {:disk_log_failed, reason}}, state}
+        end
+
+      {:error, _reason} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  defp cache_entry(
+         %{ring_table: ring, idempotency_table: idem} = state,
+         session_id,
+         idem_key,
+         entry
+       ) do
+    _ = EtsRing.put(ring, session_id, entry, @ring_limit)
+    :ok = IdempotencyCache.put(idem, session_id, idem_key, entry)
+    state
+  end
+
+  defp maybe_track_seq(state, session_id, seq) do
+    %{state | seq_tracker: Map.put(state.seq_tracker, session_id, seq)}
+  end
+
+  defp inject_sequence(attrs, seq) do
+    metadata = Map.get(attrs, :metadata) || %{}
+    merged_metadata = Map.put(metadata, "seq", seq)
+    attrs |> Map.put(:metadata, merged_metadata)
+  end
+
+  defp normalize_attrs(attrs) when is_map(attrs) do
+    allowed = %{
+      sender_id: :sender_id,
+      kind: :kind,
+      content: :content,
+      metadata: :metadata,
+      idempotency_key: :idempotency_key
+    }
+
+    string_allowed = %{
+      "sender_id" => :sender_id,
+      "kind" => :kind,
+      "content" => :content,
+      "metadata" => :metadata,
+      "idempotency_key" => :idempotency_key
+    }
+
+    normalized =
+      attrs
+      |> Enum.reduce(%{}, fn
+        {key, value}, acc when is_atom(key) ->
+          case Map.get(allowed, key) do
+            nil -> acc
+            normalized_key -> Map.put(acc, normalized_key, value)
+          end
+
+        {key, value}, acc when is_binary(key) ->
+          case Map.get(string_allowed, key) do
+            nil -> acc
+            normalized_key -> Map.put(acc, normalized_key, value)
+          end
+
+        _, acc ->
+          acc
+      end)
+      |> Map.put_new(:kind, "text")
+      |> Map.put_new(:content, %{})
+      |> Map.put_new(:metadata, %{})
+
+    idem_key =
+      normalized
+      |> Map.get(:idempotency_key)
+      |> case do
+        nil -> Ulid.generate()
+        value when is_binary(value) -> value
+        value -> to_string(value)
+      end
+
+    {Map.delete(normalized, :idempotency_key), idem_key}
   end
 end

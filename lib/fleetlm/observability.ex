@@ -21,4 +21,5 @@ defmodule Fleetlm.Observability do
   defdelegate record_session_fanout(session_id, type, duration_us, metadata \\ %{}), to: Telemetry
   defdelegate emit_cache_event(event, cache_name, key, duration_us \\ nil), to: Telemetry
   defdelegate emit_pubsub_broadcast(topic, event, duration_us), to: Telemetry
+  defdelegate record_disk_log_append(slot, duration_us, metadata \\ %{}), to: Telemetry
 end

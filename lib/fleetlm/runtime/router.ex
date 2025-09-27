@@ -11,7 +11,7 @@ defmodule Fleetlm.Runtime.Router do
   the internals of the shard owners without disrupting the HTTP/WS surface.
   """
 
-  alias Fleetlm.Runtime.Sharding.{HashRing, Slots}
+  alias Fleetlm.Runtime.Sharding.{HashRing, Slots, SlotServer}
 
   require Logger
 
@@ -34,6 +34,27 @@ defmodule Fleetlm.Runtime.Router do
   def mark_read(session_id, participant_id, opts \\ [])
       when is_binary(session_id) and is_binary(participant_id) and is_list(opts) do
     call_shard(session_id, {:mark_read, session_id, participant_id, opts})
+  end
+
+  @spec await_persistence(String.t(), String.t(), timeout()) :: :ok | {:error, term()}
+  def await_persistence(session_id, message_id, timeout \\ 5_000)
+      when is_binary(session_id) and is_binary(message_id) do
+    slot = HashRing.slot_for_session(session_id)
+    owner = HashRing.owner_node(slot)
+
+    with :ok <- ensure_owner(slot, owner) do
+      if owner == Node.self() do
+        SlotServer.await_persistence(slot, message_id, timeout)
+      else
+        try do
+          :erpc.call(owner, SlotServer, :await_persistence, [slot, message_id, timeout])
+        catch
+          :exit, reason -> {:error, {:remote_exit, reason}}
+        end
+      end
+    else
+      {:retry, reason} -> {:error, reason}
+    end
   end
 
   defp call_shard(session_id, message, attempt \\ 0)

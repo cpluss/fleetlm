@@ -42,3 +42,5 @@ config :fleetlm, :participant_tick_interval_ms, 100
 
 # Use local PubSub for tests to avoid Redis dependency
 config :fleetlm, :pubsub_adapter, :local
+
+config :fleetlm, :persistence_worker_mode, :noop
