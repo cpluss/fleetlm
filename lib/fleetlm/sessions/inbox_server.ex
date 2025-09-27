@@ -17,12 +17,7 @@ defmodule Fleetlm.Sessions.InboxServer do
 
   @spec start_link(String.t()) :: GenServer.on_start()
   def start_link(participant_id) when is_binary(participant_id) do
-    GenServer.start_link(__MODULE__, {participant_id, nil}, name: via(participant_id))
-  end
-
-  def start_link({participant_id, opts}) when is_binary(participant_id) and is_list(opts) do
-    owner = Keyword.get(opts, :sandbox_owner)
-    GenServer.start_link(__MODULE__, {participant_id, owner}, name: via(participant_id))
+    GenServer.start_link(__MODULE__, participant_id, name: via(participant_id))
   end
 
   def via(participant_id), do: {:via, Registry, {Fleetlm.Sessions.InboxRegistry, participant_id}}
@@ -38,33 +33,23 @@ defmodule Fleetlm.Sessions.InboxServer do
   end
 
   @impl true
-  def init({participant_id, owner}) do
-    maybe_put_owner(owner)
-    maybe_allow_sandbox(owner)
-    snapshot = load_snapshot(participant_id)
-    {:ok, %{participant_id: participant_id, snapshot: snapshot, sandbox_owner: owner}}
+  def init(participant_id) do
+    # Load snapshot lazily to avoid database access during init
+    {:ok, %{participant_id: participant_id, snapshot: nil}}
   end
 
   @impl true
   def handle_cast({:updated, _session, _message}, state) do
-    # Move database operations to async task to avoid blocking GenServer
-    participant_id = state.participant_id
-    sandbox_owner = state.sandbox_owner
+    # Invalidate cache to force fresh snapshot on next request
+    Cache.delete_inbox_snapshot(state.participant_id)
+    snapshot = Sessions.get_inbox_snapshot(state.participant_id, limit: @snapshot_limit)
+    broadcast_snapshot(state.participant_id, snapshot)
 
-    Task.start(fn ->
-      maybe_put_owner(sandbox_owner)
-      # Invalidate cache to force fresh snapshot on next request
-      Cache.delete_inbox_snapshot(participant_id)
-      snapshot = Sessions.get_inbox_snapshot(participant_id, limit: @snapshot_limit)
-      broadcast_snapshot(participant_id, snapshot)
-    end)
-
-    {:noreply, state}
+    {:noreply, %{state | snapshot: snapshot}}
   end
 
   @impl true
   def handle_call(:flush, _from, state) do
-    maybe_put_owner(state.sandbox_owner)
     # Invalidate cache and get fresh snapshot
     Cache.delete_inbox_snapshot(state.participant_id)
     snapshot = Sessions.get_inbox_snapshot(state.participant_id, limit: @snapshot_limit)
@@ -72,25 +57,10 @@ defmodule Fleetlm.Sessions.InboxServer do
     {:reply, :ok, %{state | snapshot: snapshot}}
   end
 
-  defp load_snapshot(participant_id) do
-    # Use read-through caching pattern
-    Sessions.get_inbox_snapshot(participant_id, limit: @snapshot_limit)
-  end
 
   defp broadcast_snapshot(participant_id, snapshot) do
     Phoenix.PubSub.broadcast(@pubsub, "inbox:" <> participant_id, {:inbox_snapshot, snapshot})
   end
 
-  defp maybe_allow_sandbox(nil), do: :ok
 
-  defp maybe_allow_sandbox(owner) when is_pid(owner) do
-    if Code.ensure_loaded?(Ecto.Adapters.SQL.Sandbox) do
-      Ecto.Adapters.SQL.Sandbox.allow(Fleetlm.Repo, owner, self())
-    else
-      :ok
-    end
-  end
-
-  defp maybe_put_owner(nil), do: :ok
-  defp maybe_put_owner(owner) when is_pid(owner), do: Process.put(:sandbox_owner, owner)
 end

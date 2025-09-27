@@ -1,71 +1,47 @@
-# FleetLM Agent Sessions Rewrite Plan
+# FleetLM Scaling Roadmap
 
-## Overview
-Complete redesign of the chat runtime to support multi-session, agent-integrated conversations while keeping write paths append-only. The new architecture introduces explicit chat sessions (two participants), first-class participants, webhook-capable agents, and delivery observability. Each phase keeps the system in a runnable state.
+## Phase 1 – Instrumentation & Baseline
+- [x] Add telemetry spans/counters for append latency, fan-out time, queue depth, and cache hit rate
+- [x] Wire metrics into PromEx dashboards with p50/p95/p99 panels
+- [x] Build lightweight k6/WebSocket load script + docs; capture current append→deliver latency + resource usage
+- [x] Document baseline findings (bottlenecks, limits) in `docs/perf/phase1.md`
 
-## Phase 0 – Domain Blueprint & Guard Rails
-- Finalize ERD for `participants`, `chat_sessions`, `chat_messages`, `agent_endpoints`, `agent_delivery_logs`
-- `chat_sessions` holds both participant identifiers (`initiator_id`, `peer_id`) plus optional `agent_id` shortcut
-- Document message payload contract (`kind`, `content`, `metadata`, `seq`)
-- Capture migration approach (drop & reseed for MVP)
-- Exit criteria: ERD committed, interface contracts agreed
+## Phase 2 – Gateway & Runtime Boundary Refactor
+- [ ] Extract stateless gateway service interfaces (append, replay, mark-read)
+- [ ] Update channels/controllers/tests to use the gateway boundary instead of direct Repo access
+- [ ] Ensure instrumentation from Phase 1 still reports through the new boundary
+- [ ] Note follow-up integration risks in plan checklist
 
-## Phase 1 – Database & Migrations
-- Create migrations for new tables keyed by ULIDs with supporting indexes
-- `chat_sessions` columns: `id` (ULID string), `initiator_id`, `peer_id`, `agent_id?`, `kind`, `status`, `metadata`, `last_message_id`, `last_message_at`, timestamps
-- `chat_messages` columns: `id` (ULID string), `session_id`, `sender_id`, `kind`, `content` (JSONB), `metadata`, `shard_key`, timestamps
-- `agent_endpoints`, `agent_delivery_logs` tables per blueprint
-- Exit criteria: `mix ecto.migrate` succeeds on fresh DB with schema matching design
+## Phase 3 – Cluster & Shard Orchestration
+- [ ] Introduce consistent hash ring abstraction (256–1024 slots) with persistence + config knobs
+- [ ] Add libcluster + Horde supervision tree for shard ownership and dynamic distribution
+- [ ] Implement gateway lookup + retry semantics for shard ownership changes
+- [ ] Provide ops docs for shard topology configuration and health checks
 
-## Phase 2 – Context Layer APIs
-- Contexts: `Fleetlm.Participants`, `Fleetlm.Agents`, `Fleetlm.Sessions`
-- Session creation enforces exactly two participants, allocates per-session sequence, inserts seed row
-- Message append uses single insert returning `seq` via stored sequence
-- Replace `Fleetlm.Chat` with new API; add temporary compatibility wrappers if needed
-- Exit criteria: Context unit tests cover session create/list and message append
+## Phase 4 – Hot Path State & Durability
+- [ ] Design and implement ETS session rings + idempotency cache per shard slot
+- [ ] Integrate `:disk_log` append-before-ack with rotation + fsync policy
+- [ ] Build async Postgres persistence worker fed from disk log tail
+- [ ] Extend instrumentation to capture disk write latency, fsync batches, and cache memory footprint
 
-## Phase 3 – Runtime & Caching
-- Implement `SessionServer` keyed by `session_id` (manages ordering, caching)
-- Update Cachex caches (`session_tails`, `inbox_snapshots`) to use `session_id`
-- Inbox runtime aggregates sessions per participant from `chat_sessions`
-- Telemetry hooks for session lifecycle and message append
-- Exit criteria: Supervision tree boots, runtime tests green
+## Phase 5 – Client Protocol & Replay
+- [ ] Extend channel protocol to include seq/ack, TRY_AGAIN, and cursor resume parameters
+- [ ] Support hot (ETS) + cold (`:disk_log`) replay flows, including gap fill validation
+- [ ] Update SDK/docs/examples to adopt new protocol (agents + humans)
+- [ ] Add reconnection tests (LiveView, channel, CLI) covering resume scenarios
 
-## Phase 4 – Webhook Agent Dispatcher
-- `AgentDispatcher` consumes message events where `agent_id` present and sender != agent
-- Deliver via `Req`, record outcomes in `agent_delivery_logs`, implement retry/backoff
-- Emit telemetry + PromEx metrics for delivery success/failure
-- Exit criteria: Integration tests simulate success/failure, logs captured
+## Phase 6 – Rebalance & Resilience
+- [ ] Implement shard drain → handoff pipeline with queued append forwarding
+- [ ] Add automated retries/backoff in gateways during drain + failure
+- [ ] Expose shard state + queue metrics via telemetry dashboards
+- [ ] Create runbook covering rolling deploys, node exits, and failure drills
 
-## Phase 5 – External Interfaces & Regression Test Coverage
-- REST: `/api/sessions` CRUD (create/list), `/api/sessions/:id/messages` (list/append)
-- WebSocket channels: topics `session:{session_id}` and `participant_inbox:{participant_id}`
-- Update CLI + tests to operate on session IDs and ULID ordering
-- Remove legacy DM endpoints
-- Reintroduce behavioural test coverage against the new runtime (port legacy DM tests, extend integration scenarios)
-- Exit criteria: Controller/channel tests green, behavioural suites cover inbox/session fan-out, no skipped legacy tests remain except read-receipt placeholders
+## Phase 7 – Scale Validation & Publication
+- [ ] Automate Fly.io (or equivalent) 3-node test harness with 10k WS clients
+- [ ] Record append→first-byte latency (p50/p95/p99), TRY_AGAIN rate, memory usage, and disk log growth
+- [ ] Induce rolling restart + shard moves; verify zero-gap delivery with cursor replay
+- [ ] Publish results + methodology in docs + landing page copy
 
-## Phase 6 – Admin LiveView & Observability
-- LiveViews for agent management (index/show/edit) and delivery logs
-- Session explorer (read-only) to inspect timelines for support
-- Extend PromEx dashboards with session + delivery metrics
-- Exit criteria: LiveView tests passing, dashboards compile
+---
 
-## Phase 7 – Cleanup & Post-Migration Tasks
-- Remove deprecated `dm_*` modules and caches
-- Drop compatibility shims and unused config
-- Update docs (README/AGENTS) to reflect new architecture
-- Run `mix precommit`
-- Exit criteria: repo clean, docs updated, precommit green
-
-## Validation Checklist (ongoing)
-- `mix test`
-- `mix ecto.migrate`
-- `mix precommit` before delivery
-- Manual webhook smoke test against stub endpoint
-
-## Active Work Log
-- 2025-03-?? – Restoring skipped legacy chat tests against `Fleetlm.Sessions`
-  - Port DM/unit specs to new context APIs (Sessions, Inbox runtime)
-  - Replace obsolete broadcast/read tests with equivalents or document blockers
-  - Ensure integration suite continues to cover high-load/inbox scenarios
+Progress tracking lives in this checklist. Complete a phase before moving on, update this file as tasks are finished, and report back after each phase.

@@ -39,7 +39,6 @@ defmodule Fleetlm.DataCase do
   """
   def setup_sandbox(tags) do
     pid = Ecto.Adapters.SQL.Sandbox.start_owner!(Fleetlm.Repo, shared: not tags[:async])
-    Process.put(:sandbox_owner, pid)
     on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
   end
 
@@ -60,7 +59,8 @@ defmodule Fleetlm.DataCase do
   end
 
   def allow_sandbox_access(pid) when is_pid(pid) do
-    owner = Process.get(:sandbox_owner) || self()
-    Ecto.Adapters.SQL.Sandbox.allow(Fleetlm.Repo, owner, pid)
+    Ecto.Adapters.SQL.Sandbox.allow(Fleetlm.Repo, self(), pid)
+    :ok
   end
+
 end

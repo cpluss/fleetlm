@@ -50,13 +50,21 @@ defmodule Fleetlm.Agents do
       |> Map.put(:agent_id, agent_id)
       |> Map.put_new(:id, Ulid.generate())
 
-    Repo.get_by(AgentEndpoint, agent_id: agent_id)
-    |> case do
-      nil -> %AgentEndpoint{}
-      endpoint -> endpoint
+    endpoint =
+      Repo.get_by(AgentEndpoint, agent_id: agent_id)
+      |> case do
+        nil -> %AgentEndpoint{}
+        endpoint -> endpoint
+      end
+      |> AgentEndpoint.changeset(attrs)
+      |> Repo.insert_or_update!()
+
+    # Update the endpoint cache with the new status
+    if Code.ensure_loaded?(Fleetlm.Agents.EndpointCache) do
+      Fleetlm.Agents.EndpointCache.warm_cache(agent_id, endpoint.status)
     end
-    |> AgentEndpoint.changeset(attrs)
-    |> Repo.insert_or_update!()
+
+    endpoint
   end
 
   @doc """

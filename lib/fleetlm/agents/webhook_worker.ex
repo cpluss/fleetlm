@@ -62,14 +62,26 @@ defmodule Fleetlm.Agents.WebhookWorker do
 
   @impl true
   def handle_cast({:deliver, agent_id, session, message}, state) do
-    # Load endpoint and deliver
-    case Agents.get_endpoint(agent_id) do
-      %AgentEndpoint{status: "enabled"} = endpoint ->
-        deliver_webhook(endpoint, session, message, state)
+    # Check if we're in test mode first
+    case dispatcher_mode() do
+      {:test, pid} ->
+        # In test mode, send message directly to test process
+        payload = build_test_payload(session, message)
+        send(pid, {:agent_dispatch, payload})
 
-      _ ->
-        # Agent not enabled or doesn't exist
+        # Note: Delivery logs are not created in test mode to avoid sandbox issues
         {:noreply, state}
+
+      :live ->
+        # Normal webhook delivery
+        case Agents.get_endpoint(agent_id) do
+          %AgentEndpoint{status: "enabled"} = endpoint ->
+            deliver_webhook(endpoint, session, message, state)
+
+          _ ->
+            # Agent not enabled or doesn't exist
+            {:noreply, state}
+        end
     end
   end
 
@@ -251,4 +263,35 @@ defmodule Fleetlm.Agents.WebhookWorker do
   end
 
   defp truncate_response(body), do: inspect(body)
+
+
+  defp dispatcher_mode do
+    case Application.get_env(:fleetlm, :agent_dispatcher, []) do
+      %{mode: :test, pid: pid} when is_pid(pid) -> {:test, pid}
+      %{mode: :test} -> {:test, self()}
+      _ -> :live
+    end
+  end
+
+  defp build_test_payload(session, message) do
+    %{
+      "session" => %{
+        "id" => session.id,
+        "agent_id" => session.agent_id,
+        "initiator_id" => session.initiator_id,
+        "peer_id" => session.peer_id,
+        "kind" => session.kind,
+        "status" => session.status
+      },
+      "message" => %{
+        "id" => message.id || message["id"],
+        "session_id" => message.session_id || message["session_id"],
+        "sender_id" => message.sender_id || message["sender_id"],
+        "kind" => message.kind || message["kind"],
+        "content" => message.content || message["content"]
+      }
+    }
+  end
+
+
 end

@@ -22,6 +22,7 @@ defmodule Fleetlm.Sessions do
   alias Fleetlm.Sessions.InboxSupervisor
   alias Fleetlm.Sessions.InboxServer
   alias Fleetlm.Agents.Dispatcher
+  alias Fleetlm.Observability
   alias Ulid
 
   @default_limit 50
@@ -78,12 +79,22 @@ defmodule Fleetlm.Sessions do
   """
   @spec append_message(String.t(), map()) :: {:ok, ChatMessage.t()} | {:error, Ecto.Changeset.t()}
   def append_message(session_id, attrs) when is_binary(session_id) and is_map(attrs) do
-    # Use optimized single-query approach if available, fallback to multi-query
-    case append_message_optimized(session_id, attrs) do
-      {:ok, message} -> {:ok, message}
-      {:fallback, _reason} -> append_message_fallback(session_id, attrs)
-      {:error, reason} -> {:error, reason}
-    end
+    kind = Map.get(attrs, :kind) || Map.get(attrs, "kind") || "text"
+
+    Observability.measure_session_append(session_id, %{kind: kind}, fn ->
+      # Use optimized single-query approach if available, fallback to multi-query
+      case append_message_optimized(session_id, attrs) do
+        {:ok, _message} = ok ->
+          {ok, %{strategy: :optimized}}
+
+        {:fallback, reason} ->
+          result = append_message_fallback(session_id, attrs)
+          {result, %{strategy: :fallback, fallback_reason: inspect(reason)}}
+
+        {:error, _reason} = error ->
+          {error, %{strategy: :optimized}}
+      end
+    end)
   end
 
   # Optimized single-SQL-statement approach
@@ -101,7 +112,8 @@ defmodule Fleetlm.Sessions do
         case execute_atomic_message_insert(message_attrs) do
           {:ok, result} ->
             message = struct(ChatMessage, result)
-            post_message_processing(message, session_id)
+            session = get_session!(session_id)
+            post_message_processing(message, session)
             {:ok, message}
 
           {:error, reason} ->
@@ -191,10 +203,8 @@ defmodule Fleetlm.Sessions do
       when is_binary(session_id) and is_binary(participant_id) do
     message_id = Keyword.get(opts, :message_id)
 
-    owner = Process.get(:sandbox_owner)
-
-    with {:ok, session} <- do_mark_read(session_id, participant_id, message_id, owner) do
-      _ = refresh_inbox(participant_id, owner)
+    with {:ok, session} <- do_mark_read(session_id, participant_id, message_id) do
+      _ = refresh_inbox(participant_id)
       {:ok, session}
     end
   end
@@ -467,14 +477,11 @@ defmodule Fleetlm.Sessions do
     }
   end
 
-  defp post_message_processing(message, session_id) do
-    # Build runtime session for dispatcher (minimal required data)
-    runtime_session = %{
-      id: session_id,
-      agent_id: message.session_agent_id,
-      last_message_id: message.id,
-      last_message_at: to_datetime(message.inserted_at)
-    }
+  defp post_message_processing(message, session) do
+    runtime_session =
+      session
+      |> Map.put(:last_message_id, message.id)
+      |> Map.put(:last_message_at, to_datetime(message.inserted_at))
 
     # Build dispatch payload
     dispatch_payload = %{
@@ -523,9 +530,8 @@ defmodule Fleetlm.Sessions do
   defp unwrap_transaction({:ok, result}), do: {:ok, result}
   defp unwrap_transaction({:error, reason}), do: {:error, reason}
 
-  defp do_mark_read(session_id, participant_id, message_id, owner) do
+  defp do_mark_read(session_id, participant_id, message_id) do
     Repo.transaction(fn ->
-      maybe_put_sandbox_owner(owner)
       session = Repo.get!(ChatSession, session_id)
 
       case participant_role(session, participant_id) do
@@ -627,18 +633,10 @@ defmodule Fleetlm.Sessions do
   defp maybe_after_time(query, %NaiveDateTime{} = naive),
     do: from(m in query, where: m.inserted_at > ^naive)
 
-  defp refresh_inbox(participant_id, owner) do
-    maybe_put_sandbox_owner(owner)
-
+  defp refresh_inbox(participant_id) do
     case InboxSupervisor.ensure_started(participant_id) do
       {:ok, _pid} -> InboxServer.flush(participant_id)
       {:error, _} -> :ok
     end
-  end
-
-  defp maybe_put_sandbox_owner(nil), do: :ok
-
-  defp maybe_put_sandbox_owner(owner) when is_pid(owner) do
-    Process.put(:sandbox_owner, owner)
   end
 end

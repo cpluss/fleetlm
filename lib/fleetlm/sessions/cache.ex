@@ -11,6 +11,7 @@ defmodule Fleetlm.Sessions.Cache do
   """
 
   alias Cachex
+  alias Fleetlm.Observability
 
   @tail_cache :fleetlm_session_tails
   @inbox_cache :fleetlm_session_inboxes
@@ -23,11 +24,24 @@ defmodule Fleetlm.Sessions.Cache do
   def fetch_tail(session_id, opts \\ []) do
     limit = Keyword.get(opts, :limit, @tail_limit)
 
-    case Cachex.get(@tail_cache, session_id) do
-      {:ok, nil} -> :miss
-      {:ok, events} when is_list(events) -> {:ok, Enum.take(events, limit)}
-      {:ok, _} -> :miss
-      {:error, reason} -> {:error, reason}
+    {result, duration_us} = timed(fn -> Cachex.get(@tail_cache, session_id) end)
+
+    case result do
+      {:ok, nil} ->
+        Observability.emit_cache_event(:miss, @tail_cache, session_id, duration_us)
+        :miss
+
+      {:ok, events} when is_list(events) ->
+        Observability.emit_cache_event(:hit, @tail_cache, session_id, duration_us)
+        {:ok, Enum.take(events, limit)}
+
+      {:ok, _} ->
+        Observability.emit_cache_event(:miss, @tail_cache, session_id, duration_us)
+        :miss
+
+      {:error, reason} ->
+        Observability.emit_cache_event(:miss, @tail_cache, session_id, duration_us)
+        {:error, reason}
     end
   end
 
@@ -67,10 +81,20 @@ defmodule Fleetlm.Sessions.Cache do
 
   @spec fetch_inbox_snapshot(String.t()) :: {:ok, any()} | :miss | {:error, term()}
   def fetch_inbox_snapshot(participant_id) do
-    case Cachex.get(@inbox_cache, participant_id) do
-      {:ok, nil} -> :miss
-      {:ok, snapshot} -> {:ok, snapshot}
-      {:error, reason} -> {:error, reason}
+    {result, duration_us} = timed(fn -> Cachex.get(@inbox_cache, participant_id) end)
+
+    case result do
+      {:ok, nil} ->
+        Observability.emit_cache_event(:miss, @inbox_cache, participant_id, duration_us)
+        :miss
+
+      {:ok, snapshot} ->
+        Observability.emit_cache_event(:hit, @inbox_cache, participant_id, duration_us)
+        {:ok, snapshot}
+
+      {:error, reason} ->
+        Observability.emit_cache_event(:miss, @inbox_cache, participant_id, duration_us)
+        {:error, reason}
     end
   end
 
@@ -95,6 +119,15 @@ defmodule Fleetlm.Sessions.Cache do
          :ok <- normalize(Cachex.clear(@inbox_cache)) do
       :ok
     end
+  end
+
+  defp timed(fun) when is_function(fun, 0) do
+    start = System.monotonic_time()
+    result = fun.()
+    duration = System.monotonic_time() - start
+    duration_us = System.convert_time_unit(duration, :native, :microsecond)
+
+    {result, duration_us}
   end
 
   defp normalize(:ok), do: :ok

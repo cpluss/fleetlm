@@ -12,7 +12,7 @@ defmodule Fleetlm.Sessions.InboxServerTest do
   end
 
   describe "InboxServer state hydration" do
-    test "loads cached snapshot on init" do
+    test "initializes with nil snapshot (lazy loading)" do
       participant = "user:cached"
       snapshot = [%{"session_id" => "existing"}]
 
@@ -22,7 +22,9 @@ defmodule Fleetlm.Sessions.InboxServerTest do
       allow_sandbox_access(pid)
       state = :sys.get_state(pid)
 
-      assert state.snapshot == snapshot
+      # Snapshot should be nil initially (lazy loading)
+      assert state.snapshot == nil
+      assert state.participant_id == participant
     end
   end
 

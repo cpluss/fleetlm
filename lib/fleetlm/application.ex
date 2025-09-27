@@ -20,10 +20,11 @@ defmodule Fleetlm.Application do
         Fleetlm.Agents.EndpointCache,
         # Pooled webhook delivery system
         webhook_manager_spec(),
-        {DNSCluster, query: Application.get_env(:fleetlm, :dns_cluster_query) || :ignore},
+        dns_cluster_spec(),
         pubsub_spec()
       ]
       |> Enum.concat(cluster_children(topologies))
+      |> Enum.reject(&is_nil/1)
       |> Enum.concat([
         # Start to serve requests, typically the last entry
         FleetlmWeb.Endpoint
@@ -75,5 +76,15 @@ defmodule Fleetlm.Application do
     [
       {Cluster.Supervisor, [topologies, [name: Fleetlm.ClusterSupervisor]]}
     ]
+  end
+
+  defp dns_cluster_spec do
+    query = Application.get_env(:fleetlm, :dns_cluster_query) || :ignore
+
+    if Code.ensure_loaded?(DNSCluster) and query != :ignore do
+      {DNSCluster, query: query}
+    else
+      nil
+    end
   end
 end

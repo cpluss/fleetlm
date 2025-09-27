@@ -16,6 +16,9 @@ defmodule Fleetlm.Observability do
   defdelegate inbox_started(participant_id), to: Telemetry
   defdelegate inbox_stopped(participant_id, reason), to: Telemetry
   defdelegate message_sent(dm_key, sender_id, recipient_id, metadata \\ %{}), to: Telemetry
+  defdelegate measure_session_append(session_id, metadata \\ %{}, fun), to: Telemetry
+  defdelegate record_session_queue_depth(session_id, queue_len), to: Telemetry
+  defdelegate record_session_fanout(session_id, type, duration_us, metadata \\ %{}), to: Telemetry
   defdelegate emit_cache_event(event, cache_name, key, duration_us \\ nil), to: Telemetry
   defdelegate emit_pubsub_broadcast(topic, event, duration_us), to: Telemetry
 end

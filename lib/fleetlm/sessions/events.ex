@@ -8,6 +8,8 @@ defmodule Fleetlm.Sessions.Events do
   to shape payloads sent to clients.
   """
 
+  alias Fleetlm.Observability
+  alias Fleetlm.Sessions
   alias Fleetlm.Sessions.InboxSupervisor
   alias Fleetlm.Sessions.InboxServer
 
@@ -15,26 +17,44 @@ defmodule Fleetlm.Sessions.Events do
 
   def publish_message(%{session_id: session_id} = message) do
     payload = message_payload(message)
-    Phoenix.PubSub.broadcast(@pubsub, "session:" <> session_id, {:session_message, payload})
+    topic = "session:" <> session_id
 
-    notify_inboxes(message)
+    {_pubsub_result, pubsub_duration} =
+      measure_duration_us(fn ->
+        Phoenix.PubSub.broadcast(@pubsub, topic, {:session_message, payload})
+      end)
+
+    Observability.record_session_fanout(session_id, :pubsub, pubsub_duration, %{topic: topic})
+    Observability.emit_pubsub_broadcast(topic, :session_message, pubsub_duration)
+
+    {participant_count, inbox_duration} = notify_inboxes(message)
+    Observability.record_session_fanout(session_id, :inbox, inbox_duration, %{
+      participant_count: participant_count || 0
+    })
+
     :ok
   end
 
   defp notify_inboxes(message) do
     case Map.get(message, :session) do
       nil ->
-        :ok
+        {0, 0}
 
       session ->
+        session = ensure_participants(session)
         participants = [session.initiator_id, session.peer_id]
 
-        Enum.each(participants, fn participant_id ->
-          case InboxSupervisor.ensure_started(participant_id) do
-            {:ok, _pid} -> InboxServer.enqueue_update(participant_id, session, message)
-            {:error, _} -> :noop
-          end
-        end)
+        {_result, duration_us} =
+          measure_duration_us(fn ->
+            Enum.each(participants, fn participant_id ->
+              case InboxSupervisor.ensure_started(participant_id) do
+                {:ok, _pid} -> InboxServer.enqueue_update(participant_id, session, message)
+                {:error, _} -> :noop
+              end
+            end)
+          end)
+
+        {length(participants), duration_us}
     end
   end
 
@@ -64,4 +84,28 @@ defmodule Fleetlm.Sessions.Events do
   end
 
   defp stringify_map(_), do: %{}
+
+  defp measure_duration_us(fun) when is_function(fun, 0) do
+    start = System.monotonic_time()
+    result = fun.()
+    duration = System.monotonic_time() - start
+    duration_us = System.convert_time_unit(duration, :native, :microsecond)
+
+    {result, duration_us}
+  end
+
+  defp ensure_participants(%{initiator_id: initiator_id, peer_id: peer_id} = session)
+       when not is_nil(initiator_id) and not is_nil(peer_id) do
+    session
+  end
+
+  defp ensure_participants(%{id: session_id} = session) do
+    full_session = Sessions.get_session!(session_id)
+
+    session
+    |> Map.put(:initiator_id, full_session.initiator_id)
+    |> Map.put(:peer_id, full_session.peer_id)
+  end
+
+  defp ensure_participants(session), do: session
 end
