@@ -1,9 +1,9 @@
-defmodule Fleetlm.Sessions.InboxServerTest do
+defmodule Fleetlm.Runtime.InboxServerTest do
   use Fleetlm.DataCase, async: false
 
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.{Cache, InboxServer, InboxSupervisor, SessionSupervisor}
+  alias Fleetlm.Runtime.{Cache, InboxServer, InboxSupervisor, SessionSupervisor}
 
   setup do
     :ok = Cache.reset()

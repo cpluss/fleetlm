@@ -75,7 +75,7 @@ When v0.3 lands, FleetLM will call your webhook directly with HMAC-signed payloa
 
 ## Core capabilities
 
-- **Persistent conversations** stored in Postgres with deterministic DM keys (`Fleetlm.Chat.generate_dm_key/2`) for idempotent routing.
+- **Persistent sessions** stored in Postgres via the `Fleetlm.Sessions` context, keeping humans and agents in sync.
 - **Realtime fan-out** through Phoenix Channels and REST fallbacks when WebSockets are blocked.
 - **Inbox intelligence** with per-participant supervisors that track unread counts, last message previews, and cache snapshots for fast reconnects.
 - **Scalable runtime** built on DynamicSupervisors, Redis-ready PubSub, and Cachex-backed hot caches.
@@ -95,10 +95,11 @@ When v0.3 lands, FleetLM will call your webhook directly with HMAC-signed payloa
 
 | Concern | FleetLM module | Notes |
 | --- | --- | --- |
-| API surface | `Fleetlm.Chat`, REST controllers, WebSocket channels | Deterministic DM keys, history fetch, message send |
-| Write serialization | `ConversationServer` | One GenServer per DM for ordered persistence and event fan-out |
-| Inbox state | `InboxServer` | Aggregates threads per participant, debounced updates over PubSub |
-| Caching | `Cachex` via `Chat.Cache` | Conversation tails, inbox snapshots, read cursors |
+| API surface | `Fleetlm.Runtime.Gateway`, REST controllers, WebSocket channels | Stateless boundary for append/replay/mark-read |
+| Session orchestration | `Fleetlm.Runtime.SessionServer` | One GenServer per session for ordered fan-out and cache hydration |
+| Inbox state | `Fleetlm.Runtime.InboxServer` | Aggregates sessions per participant, debounced updates over PubSub |
+| Caching | `Cachex` via `Fleetlm.Runtime.Cache` | Session tails, inbox snapshots, read cursors |
+| Persistence | `Fleetlm.Sessions` | Ecto context + schemas for sessions/messages |
 | Observability | `Fleetlm.Observability` | PromEx metrics, OpenTelemetry spans |
 | Tooling | `scripts/test_client.exs` | JSONL CLI for humans or LLM agents |
 

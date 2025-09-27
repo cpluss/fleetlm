@@ -1,9 +1,9 @@
-defmodule Fleetlm.Sessions.SessionSupervisorTest do
+defmodule Fleetlm.Runtime.SessionSupervisorTest do
   use Fleetlm.DataCase, async: false
 
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.SessionSupervisor
+  alias Fleetlm.Runtime.SessionSupervisor
 
   setup do
     {:ok, alice} =

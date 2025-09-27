@@ -1,14 +1,14 @@
-defmodule Fleetlm.Chat.TestRuntime do
+defmodule Fleetlm.Runtime.TestHelper do
   @moduledoc false
 
-  alias Fleetlm.Sessions.Cache
-  alias Fleetlm.Sessions.SessionSupervisor
-  alias Fleetlm.Sessions.InboxSupervisor
+  alias Fleetlm.Runtime.Cache
+  alias Fleetlm.Runtime.SessionSupervisor
+  alias Fleetlm.Runtime.InboxSupervisor
 
   def reset do
     # Terminate children forcefully but safely
-    terminate_children_forcefully(Fleetlm.Sessions.SessionRegistry, SessionSupervisor)
-    terminate_children_forcefully(Fleetlm.Sessions.InboxRegistry, InboxSupervisor)
+    terminate_children_forcefully(Fleetlm.Runtime.SessionRegistry, SessionSupervisor)
+    terminate_children_forcefully(Fleetlm.Runtime.InboxRegistry, InboxSupervisor)
 
     # Reset caches after all processes have terminated
     _ = Cache.reset()

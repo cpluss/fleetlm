@@ -1,8 +1,8 @@
 defmodule FleetlmWeb.InboxChannelTest do
   use FleetlmWeb.ChannelCase
 
-  alias Fleetlm.Gateway
   alias Fleetlm.Participants
+  alias Fleetlm.Runtime.Gateway
   alias Fleetlm.Sessions
   alias FleetlmWeb.InboxChannel
 

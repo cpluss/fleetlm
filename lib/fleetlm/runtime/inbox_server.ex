@@ -1,4 +1,4 @@
-defmodule Fleetlm.Sessions.InboxServer do
+defmodule Fleetlm.Runtime.InboxServer do
   @moduledoc """
   Per-participant server that materialises inbox snapshots.
 
@@ -10,7 +10,7 @@ defmodule Fleetlm.Sessions.InboxServer do
   use GenServer, restart: :transient
 
   alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.Cache
+  alias Fleetlm.Runtime.Cache
 
   @pubsub Fleetlm.PubSub
   @snapshot_limit 200
@@ -20,7 +20,7 @@ defmodule Fleetlm.Sessions.InboxServer do
     GenServer.start_link(__MODULE__, participant_id, name: via(participant_id))
   end
 
-  def via(participant_id), do: {:via, Registry, {Fleetlm.Sessions.InboxRegistry, participant_id}}
+  def via(participant_id), do: {:via, Registry, {Fleetlm.Runtime.InboxRegistry, participant_id}}
 
   @spec flush(String.t()) :: :ok
   def flush(participant_id) when is_binary(participant_id) do

@@ -35,42 +35,39 @@ FleetLM is a real-time chat/messaging runtime built with Phoenix, designed for s
 
 ### Core Components
 
-**Chat System (`lib/fleetlm/chat/`)**
-- `Chat` - Main context module providing high-level API for messaging operations
-- `ThreadServer` - GenServer managing individual thread state and message caching (40 message limit)
-- `ThreadSupervisor` - Dynamic supervisor for thread processes
-- Thread data models: `Thread`, `Participant`, `Message`
+**Session Runtime (`lib/fleetlm/runtime/`)**
+- `Fleetlm.Runtime.Supervisor` – Root supervisor booting caches, registries, and dynamic supervisors for the runtime tree.
+- `Fleetlm.Runtime.SessionSupervisor` / `SessionServer` – Per-session GenServer processes that broadcast updates, maintain hot tails, and serve channel joins.
+- `Fleetlm.Runtime.InboxSupervisor` / `InboxServer` – Per-participant processes that materialize inbox snapshots and manage unread counts.
+- `Fleetlm.Runtime.Cache` / `CacheSupervisor` – Cachex-backed stores for session tails and inbox snapshots.
+- `Fleetlm.Runtime.Gateway` – Stateless boundary used by HTTP/WS entry points; the swap target for Phase 3 shard RPC.
+
+**Persistence (`lib/fleetlm/sessions.ex` + schemas)**
+- `Fleetlm.Sessions` – Ecto context for chat sessions and messages, orchestrating persistence plus runtime fan-out hooks.
+- `Fleetlm.Sessions.ChatSession` / `ChatMessage` – Schemas backing the session/message tables.
 
 **Real-time Communication (`lib/fleetlm_web/channels/`)**
-- `ThreadChannel` - WebSocket channel for real-time messaging in threads
-- `ParticipantChannel` - Channel for participant-specific events and updates
-- Uses Phoenix PubSub for message broadcasting across nodes
+- `SessionChannel` – WebSocket channel for per-session messaging; delegates to the runtime gateway + session servers.
+- `InboxChannel` – Participant inbox stream powered by inbox servers and Cachex snapshots.
+- Uses Phoenix PubSub for message broadcasting across nodes.
 
 **Key Architecture Patterns**
-- Each thread runs as a separate GenServer process for isolation and concurrency
-- Registry-based process discovery (`Fleetlm.Chat.ThreadRegistry`)
-- Message sharding using `:erlang.phash2/2` for horizontal scaling
-- Per-thread message caching (last 40 messages) for performance
-- Postgres persistence with Ecto for all data
+- Each active session runs as a dedicated GenServer process for isolation and concurrency.
+- Registry-based process discovery (`Fleetlm.Runtime.SessionRegistry` / `InboxRegistry`).
+- Cachex-assisted fan-out for low-latency session tails and inbox data.
+- Postgres persistence with Ecto for all data.
 
 ### Data Flow
-1. Messages sent via WebSocket to `ThreadChannel`
-2. Channel calls `Chat.dispatch_message/2`
-3. Ensures `ThreadServer` process exists for the thread
-4. `ThreadServer` persists message via `Chat.send_message/2`
-5. Broadcasts to thread participants via Phoenix PubSub
-6. Updates in-memory cache and participant metadata
-
-### Thread Types
-- `dm` - Direct messages between two participants (requires `dm_key`)
-- `room` - Group conversations
-- `broadcast` - One-to-many messaging
+1. Messages arrive via WebSocket (`SessionChannel`) or REST controllers.
+2. Entry points call `Fleetlm.Runtime.Gateway` which proxies to `Fleetlm.Sessions`.
+3. Persistence occurs inside `Fleetlm.Sessions.append_message/2` (optimized SQL path).
+4. The runtime `SessionServer` is notified, caches the message tail, and broadcasts via Phoenix PubSub.
+5. Inbox servers receive updates to refresh per-participant snapshots and unread counts.
 
 ### Database Schema
-- Binary UUIDs for all primary keys
-- Threads have participants (many-to-many with roles)
-- Messages belong to threads and have senders
-- Read cursors tracked per participant for unread counts
+- ULIDs for primary keys across sessions and messages.
+- Sessions store initiator/peer identifiers, metadata, and last-read timestamps.
+- Messages belong to sessions, capture sender metadata, and are sharded by `shard_key` for future distribution work.
 
 ## Testing
 
@@ -84,5 +81,5 @@ FleetLM is a real-time chat/messaging runtime built with Phoenix, designed for s
 - Always run `mix precommit` before committing changes
 - Use the `:req` library for HTTP requests (already included)
 - Follow existing patterns in AGENTS.md for Phoenix/Elixir conventions
-- Thread processes are `:temporary` restart - they terminate when no longer needed
+- Session processes are `:temporary` restart - they terminate when no longer needed
 - WebSocket authentication handled via `user_socket.ex` (JWT-based)

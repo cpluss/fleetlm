@@ -1,9 +1,9 @@
-defmodule Fleetlm.Sessions.MarkReadFallbackTest do
+defmodule Fleetlm.Runtime.MarkReadFallbackTest do
   use Fleetlm.DataCase, async: false
 
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.{InboxSupervisor, SessionSupervisor}
+  alias Fleetlm.Runtime.{InboxSupervisor, SessionSupervisor}
 
   setup do
     {:ok, alice} =

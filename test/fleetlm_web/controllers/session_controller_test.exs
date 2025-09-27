@@ -1,7 +1,7 @@
 defmodule FleetlmWeb.SessionControllerTest do
   use FleetlmWeb.ConnCase
 
-  alias Fleetlm.Gateway
+  alias Fleetlm.Runtime.Gateway
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
 

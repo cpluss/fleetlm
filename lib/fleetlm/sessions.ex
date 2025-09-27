@@ -15,11 +15,11 @@ defmodule Fleetlm.Sessions do
   alias Ecto.Changeset
   alias Fleetlm.Repo
   alias Fleetlm.Participants
-  alias Fleetlm.Sessions.Cache
+  alias Fleetlm.Runtime.Cache
   alias Fleetlm.Sessions.ChatSession
   alias Fleetlm.Sessions.ChatMessage
-  alias Fleetlm.Sessions.SessionServer
-  alias Fleetlm.Sessions.InboxServer
+  alias Fleetlm.Runtime.SessionServer
+  alias Fleetlm.Runtime.InboxServer
   alias Fleetlm.Agents.Dispatcher
   alias Fleetlm.Observability
   alias Ulid
@@ -320,7 +320,7 @@ defmodule Fleetlm.Sessions do
     Enum.map(sessions_with_counts, fn {session, unread_count} ->
       # Try to get fresher metadata from cache if session is active
       {last_message_id, last_message_at} =
-        case Fleetlm.Sessions.SessionServer.cached_inbox_metadata(session.id) do
+        case SessionServer.cached_inbox_metadata(session.id) do
           %{last_message_id: id, last_message_at: at} when not is_nil(id) ->
             {id, encode_datetime(at)}
 

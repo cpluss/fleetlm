@@ -1,7 +1,7 @@
-defmodule Fleetlm.GatewayTest do
+defmodule Fleetlm.Runtime.GatewayTest do
   use Fleetlm.DataCase
 
-  alias Fleetlm.Gateway
+  alias Fleetlm.Runtime.Gateway
   alias Fleetlm.Participants
   alias Fleetlm.Sessions
 

@@ -14,7 +14,7 @@ defmodule Fleetlm.Application do
         # Observability stack (PromEx + telemetry helpers)
         Fleetlm.Observability,
         Fleetlm.Repo,
-        Fleetlm.Sessions.Supervisor,
+        Fleetlm.Runtime.Supervisor,
         {Task.Supervisor, name: Fleetlm.Agents.DispatcherSupervisor},
         # Agent endpoint status cache for hot path optimization
         Fleetlm.Agents.EndpointCache,

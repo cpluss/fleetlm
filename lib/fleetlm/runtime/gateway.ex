@@ -1,4 +1,4 @@
-defmodule Fleetlm.Gateway do
+defmodule Fleetlm.Runtime.Gateway do
   @moduledoc """
   Stateless boundary used by gateway processes (HTTP/WS) to interact with
   the chat session runtime. This layer is intentionally thin today so we can

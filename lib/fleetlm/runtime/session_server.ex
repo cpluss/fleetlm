@@ -1,10 +1,10 @@
-defmodule Fleetlm.Sessions.SessionServer do
+defmodule Fleetlm.Runtime.SessionServer do
   @moduledoc """
   Per-session GenServer responsible for orchestrating runtime state.
 
   Each active session has a dedicated process that:
   * Hydrates and maintains the cached tail in Cachex
-  * Broadcasts session messages via `Fleetlm.Sessions.Events`
+  * Broadcasts session messages via `Fleetlm.Runtime.Events`
   * Provides a lightweight `load_tail/1` API for channel joins
 
   The server does **not** own persistence—that work happens in
@@ -15,9 +15,9 @@ defmodule Fleetlm.Sessions.SessionServer do
   use GenServer, restart: :transient
 
   alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.Cache
-  alias Fleetlm.Sessions.Events
-  alias Fleetlm.Sessions.SessionSupervisor
+  alias Fleetlm.Runtime.Cache
+  alias Fleetlm.Runtime.Events
+  alias Fleetlm.Runtime.SessionSupervisor
   alias Fleetlm.Observability
 
   @tail_limit 100
@@ -80,7 +80,7 @@ defmodule Fleetlm.Sessions.SessionServer do
     end
   end
 
-  defp via(session_id), do: {:via, Registry, {Fleetlm.Sessions.SessionRegistry, session_id}}
+  defp via(session_id), do: {:via, Registry, {Fleetlm.Runtime.SessionRegistry, session_id}}
 
   @impl true
   def init(session_id) do

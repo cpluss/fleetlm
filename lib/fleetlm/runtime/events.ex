@@ -1,4 +1,4 @@
-defmodule Fleetlm.Sessions.Events do
+defmodule Fleetlm.Runtime.Events do
   @moduledoc """
   PubSub fan-out helpers for session messages and inbox updates.
 
@@ -10,7 +10,7 @@ defmodule Fleetlm.Sessions.Events do
 
   alias Fleetlm.Observability
   alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.InboxServer
+  alias Fleetlm.Runtime.InboxServer
 
   @pubsub Fleetlm.PubSub
 

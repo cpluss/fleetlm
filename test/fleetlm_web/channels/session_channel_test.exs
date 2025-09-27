@@ -1,10 +1,9 @@
 defmodule FleetlmWeb.SessionChannelTest do
   use FleetlmWeb.ChannelCase
 
-  alias Fleetlm.Gateway
   alias Fleetlm.Participants
+  alias Fleetlm.Runtime.{Gateway, SessionSupervisor}
   alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.SessionSupervisor
   alias FleetlmWeb.SessionChannel
 
   setup do

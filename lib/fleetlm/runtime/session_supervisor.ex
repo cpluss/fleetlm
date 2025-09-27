@@ -1,4 +1,4 @@
-defmodule Fleetlm.Sessions.SessionSupervisor do
+defmodule Fleetlm.Runtime.SessionSupervisor do
   @moduledoc """
   DynamicSupervisor responsible for starting `SessionServer` processes.
 
@@ -9,7 +9,7 @@ defmodule Fleetlm.Sessions.SessionSupervisor do
 
   use DynamicSupervisor
 
-  @registry Fleetlm.Sessions.SessionRegistry
+  @registry Fleetlm.Runtime.SessionRegistry
 
   def start_link(arg) do
     DynamicSupervisor.start_link(__MODULE__, arg, name: __MODULE__)
@@ -27,7 +27,7 @@ defmodule Fleetlm.Sessions.SessionSupervisor do
         {:ok, pid}
 
       [] ->
-        child = {Fleetlm.Sessions.SessionServer, session_id}
+        child = {Fleetlm.Runtime.SessionServer, session_id}
         DynamicSupervisor.start_child(__MODULE__, child)
     end
   end

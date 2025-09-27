@@ -1,4 +1,4 @@
-defmodule Fleetlm.Sessions.InboxSupervisor do
+defmodule Fleetlm.Runtime.InboxSupervisor do
   @moduledoc """
   DynamicSupervisor for `InboxServer` processes.
 
@@ -20,19 +20,19 @@ defmodule Fleetlm.Sessions.InboxSupervisor do
 
   @spec ensure_started(String.t()) :: {:ok, pid()} | {:error, term()}
   def ensure_started(participant_id) when is_binary(participant_id) do
-    case Registry.lookup(Fleetlm.Sessions.InboxRegistry, participant_id) do
+    case Registry.lookup(Fleetlm.Runtime.InboxRegistry, participant_id) do
       [{pid, _}] ->
         {:ok, pid}
 
       [] ->
-        child = {Fleetlm.Sessions.InboxServer, participant_id}
+        child = {Fleetlm.Runtime.InboxServer, participant_id}
         DynamicSupervisor.start_child(__MODULE__, child)
     end
   end
 
   @spec has_started?(String.t()) :: {:ok, pid()} | {:error, :not_started}
   def has_started?(participant_id) when is_binary(participant_id) do
-    case Registry.lookup(Fleetlm.Sessions.InboxRegistry, participant_id) do
+    case Registry.lookup(Fleetlm.Runtime.InboxRegistry, participant_id) do
       [{pid, _}] ->
         {:ok, pid}
 
@@ -43,9 +43,9 @@ defmodule Fleetlm.Sessions.InboxSupervisor do
 
   @spec active_count() :: non_neg_integer()
   def active_count do
-    case Process.whereis(Fleetlm.Sessions.InboxRegistry) do
+    case Process.whereis(Fleetlm.Runtime.InboxRegistry) do
       nil -> 0
-      _ -> Registry.count(Fleetlm.Sessions.InboxRegistry)
+      _ -> Registry.count(Fleetlm.Runtime.InboxRegistry)
     end
   end
 end

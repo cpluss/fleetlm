@@ -13,7 +13,7 @@ defmodule FleetlmWeb.ChannelCase do
 
   setup tags do
     Fleetlm.DataCase.setup_sandbox(tags)
-    Fleetlm.Chat.TestRuntime.reset()
+    Fleetlm.Runtime.TestHelper.reset()
     :ok
   end
 end

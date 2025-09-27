@@ -1,4 +1,4 @@
-defmodule Fleetlm.Sessions.Cache do
+defmodule Fleetlm.Runtime.Cache do
   @moduledoc """
   Cachex-backed helpers for the session runtime.
 

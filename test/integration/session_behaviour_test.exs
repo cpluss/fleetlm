@@ -2,7 +2,7 @@ defmodule Fleetlm.SessionBehaviourTest do
   use Fleetlm.DataCase, async: false
 
   alias Fleetlm.{Participants, Sessions, Agents}
-  alias Fleetlm.Sessions.{Cache, SessionServer, SessionSupervisor, InboxSupervisor}
+  alias Fleetlm.Runtime.{Cache, SessionServer, SessionSupervisor, InboxSupervisor, InboxServer}
 
   describe "session message delivery" do
     test "each message emits a single session event" do
@@ -69,7 +69,7 @@ defmodule Fleetlm.SessionBehaviourTest do
       allow_db(session_pid)
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:" <> recipient)
 
-      :ok = Fleetlm.Sessions.InboxServer.flush(recipient)
+      :ok = InboxServer.flush(recipient)
 
       assert_receive {:inbox_snapshot, conversations}, 500
       entry = Enum.find(conversations, fn convo -> convo["session_id"] == session.id end)
@@ -111,7 +111,7 @@ defmodule Fleetlm.SessionBehaviourTest do
 
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:" <> recipient)
 
-      :ok = Fleetlm.Sessions.InboxServer.flush(recipient)
+      :ok = InboxServer.flush(recipient)
 
       assert_receive {:inbox_snapshot, conversations}, 1000
       session_ids = MapSet.new(session_ids)
@@ -184,13 +184,13 @@ defmodule Fleetlm.SessionBehaviourTest do
           content: %{text: "queued"}
         })
 
-      assert [] == Registry.lookup(Fleetlm.Sessions.InboxRegistry, offline)
+      assert [] == Registry.lookup(Fleetlm.Runtime.InboxRegistry, offline)
 
       {:ok, inbox_pid} = InboxSupervisor.ensure_started(offline)
       allow_db(inbox_pid)
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:" <> offline)
 
-      :ok = Fleetlm.Sessions.InboxServer.flush(offline)
+      :ok = InboxServer.flush(offline)
 
       assert_receive {:inbox_snapshot, conversations}, 500
       entry = Enum.find(conversations, fn convo -> convo["session_id"] == session.id end)

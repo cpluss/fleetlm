@@ -7,7 +7,7 @@ defmodule Fleetlm.Observability.Telemetry do
   backends or state management.
   """
 
-  alias Fleetlm.Chat.{ConversationSupervisor, InboxSupervisor}
+  alias Fleetlm.Runtime.{SessionSupervisor, InboxSupervisor}
 
   @session_append_event [:fleetlm, :session, :append]
   @session_fanout_event [:fleetlm, :session, :fanout]
@@ -100,7 +100,7 @@ defmodule Fleetlm.Observability.Telemetry do
   """
   @spec publish_conversation_active_count() :: :ok
   def publish_conversation_active_count do
-    count = ConversationSupervisor.active_count()
+    count = SessionSupervisor.active_count()
     :telemetry.execute(@conversation_active_event, %{count: count}, %{scope: :global})
   end
 

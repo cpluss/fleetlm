@@ -5,9 +5,8 @@ defmodule FleetlmWeb.InboxChannel do
 
   use FleetlmWeb, :channel
 
+  alias Fleetlm.Runtime.{Cache, InboxSupervisor}
   alias Fleetlm.Sessions
-  alias Fleetlm.Sessions.InboxSupervisor
-  alias Fleetlm.Sessions.Cache
 
   @impl true
   def join(

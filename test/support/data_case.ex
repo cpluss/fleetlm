@@ -30,7 +30,7 @@ defmodule Fleetlm.DataCase do
   setup tags do
     Fleetlm.DataCase.setup_sandbox(tags)
     # Only reset on exit - let tests run with whatever processes they create
-    on_exit(fn -> Fleetlm.Chat.TestRuntime.reset() end)
+    on_exit(fn -> Fleetlm.Runtime.TestHelper.reset() end)
     :ok
   end
 

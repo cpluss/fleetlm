@@ -1,7 +1,7 @@
 defmodule FleetlmWeb.SessionController do
   use FleetlmWeb, :controller
 
-  alias Fleetlm.Gateway
+  alias Fleetlm.Runtime.Gateway
   alias Fleetlm.Sessions
   alias Fleetlm.Sessions.ChatMessage
 
