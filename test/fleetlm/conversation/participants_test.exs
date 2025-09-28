@@ -1,5 +1,5 @@
 defmodule Fleetlm.Conversation.ParticipantsTest do
-  use Fleetlm.DataCase, async: true
+  use Fleetlm.DataCase
 
   alias Fleetlm.Conversation.Participants
   alias Fleetlm.Conversation.Participant

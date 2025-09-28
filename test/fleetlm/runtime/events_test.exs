@@ -42,16 +42,30 @@ defmodule Fleetlm.Runtime.EventsTest do
         content: %{text: "Hi Bob"}
       })
 
-    assert_receive {:session_message, payload}, 500
+    assert_receive {:session_message, payload}, 1000
     assert payload["id"] == message.id
     assert payload["session_id"] == session.id
     assert payload["content"]["text"] == "Hi Bob"
 
-    Enum.each([alice.id, session.peer_id], fn _participant_id ->
-      assert_receive {:inbox_snapshot, snapshot}, 500
+    Process.sleep(100)
+
+    # Flush inbox servers to ensure fresh snapshots with updated unread counts
+    Fleetlm.Runtime.InboxServer.flush(alice.id)
+    Fleetlm.Runtime.InboxServer.flush(session.peer_id)
+
+    Enum.each([alice.id, session.peer_id], fn participant_id ->
+      assert_receive {:inbox_snapshot, snapshot}, 1000
       assert Enum.any?(snapshot, &(&1["session_id"] == session.id))
       entry = Enum.find(snapshot, &(&1["session_id"] == session.id))
-      assert entry["unread_count"] >= 0
+
+      # Verify the unread count is correct based on who sent the message
+      if participant_id == alice.id do
+        # Alice sent the message, so her unread count should be 0
+        assert entry["unread_count"] == 0
+      else
+        # Bob received the message, so his unread count should be 1
+        assert entry["unread_count"] == 1
+      end
     end)
   end
 

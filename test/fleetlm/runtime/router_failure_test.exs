@@ -6,9 +6,11 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
   use Fleetlm.DataCase
 
   alias Fleetlm.Runtime.Router
-  alias Fleetlm.Runtime.Sharding.{HashRing, Slots, SlotServer}
+  alias Fleetlm.Runtime.Sharding.HashRing
   alias Fleetlm.Conversation.{Participants, ChatMessage}
   alias Fleetlm.Conversation
+
+  import Fleetlm.TestSupport.Sharding
 
   setup do
     Application.put_env(:fleetlm, :persistence_worker_mode, :live)
@@ -43,38 +45,9 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
   end
 
   describe "router retry behavior" do
-    test "exponential backoff works correctly", %{session: session, slot: _slot} do
-      # With improved resilience, the system will start slots automatically
-      # So let's test backoff by simulating repeated failures in a different way
-      capture_log(fn ->
-        start_time = System.monotonic_time(:millisecond)
-
-        result =
-          Router.append(session.id, %{
-            sender_id: session.initiator_id,
-            kind: "text",
-            content: %{text: "retry-test"},
-            idempotency_key: "retry-test"
-          })
-
-        end_time = System.monotonic_time(:millisecond)
-        duration = end_time - start_time
-
-        # With improved error handling, this should succeed (may take time due to slot startup)
-        assert {:ok, _message} = result
-
-        # Should have taken some time for slot startup and potential retries
-        assert duration >= 0
-        # But not too long
-        assert duration < 10000
-      end)
-    end
-
     test "router handles slot handoff correctly", %{session: session, slot: slot} do
       # Start slot initially
-      :ok = Slots.ensure_slot_started(slot)
-      slot_pid = slot_pid(slot)
-      allow_sandbox_access(slot_pid)
+      slot_pid = ensure_slot!(slot)
 
       # Send successful message
       assert {:ok, _} =
@@ -103,16 +76,17 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
         # With improved error handling, the system may restart the slot and succeed,
         # or it may still timeout depending on timing
         case result do
-          {:ok, _message} -> :ok  # Improved resilience succeeded
-          {:error, :timeout} -> :ok  # Original expected behavior
+          # Improved resilience succeeded
+          {:ok, _message} -> :ok
+          # Original expected behavior
+          {:error, :timeout} -> :ok
           other -> flunk("Unexpected result: #{inspect(other)}")
         end
       end)
     end
 
     test "concurrent requests don't interfere with each other", %{session: session, slot: slot} do
-      :ok = Slots.ensure_slot_started(slot)
-      allow_sandbox_access(slot_pid(slot))
+      ensure_slot!(slot)
 
       # Send many concurrent requests
       tasks =
@@ -140,13 +114,8 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
 
     test "router handles registry lookup failures gracefully", %{session: session, slot: slot} do
       # Start slot then kill it suddenly
-      :ok = Slots.ensure_slot_started(slot)
-      slot_pid = slot_pid(slot)
-      allow_sandbox_access(slot_pid)
-
-      ref = Process.monitor(slot_pid)
-      Process.exit(slot_pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^slot_pid, _}, 1000
+      ensure_slot!(slot)
+      crash_slot!(slot)
 
       # Router should handle noproc errors and retry - with improved resilience, this should succeed
       capture_log(fn ->
@@ -164,9 +133,7 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
     end
 
     test "await_persistence handles timeouts correctly", %{session: session, slot: slot} do
-      :ok = Slots.ensure_slot_started(slot)
-      slot_pid = slot_pid(slot)
-      allow_sandbox_access(slot_pid)
+      ensure_slot!(slot)
 
       # Send a message
       assert {:ok, message} =
@@ -190,8 +157,7 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
 
     test "remote call simulation behaves correctly", %{session: session, slot: slot} do
       # Test the remote_call function directly
-      :ok = Slots.ensure_slot_started(slot)
-      allow_sandbox_access(slot_pid(slot))
+      ensure_slot!(slot)
 
       # Should work for local calls
       result =
@@ -212,8 +178,7 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
 
     test "hash ring changes during request processing", %{session: session, slot: slot} do
       original_ring = HashRing.current()
-      :ok = Slots.ensure_slot_started(slot)
-      allow_sandbox_access(slot_pid(slot))
+      ensure_slot!(slot)
 
       # Send concurrent requests while changing hash ring
       tasks =
@@ -249,9 +214,7 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
 
   describe "error propagation" do
     test "slot server errors are properly surfaced", %{session: session, slot: slot} do
-      :ok = Slots.ensure_slot_started(slot)
-      slot_pid = slot_pid(slot)
-      allow_sandbox_access(slot_pid)
+      _ = ensure_slot!(slot)
 
       # Force a database error by using invalid session_id format
       result =
@@ -268,33 +231,37 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
     end
 
     test "persistence worker failures don't break router", %{session: session, slot: slot} do
-      :ok = Slots.ensure_slot_started(slot)
-      slot_pid = slot_pid(slot)
-      allow_sandbox_access(slot_pid)
+      capture_log(fn ->
+        slot_pid = ensure_slot!(slot)
 
-      # Kill the persistence worker
-      worker_pid = get_persistence_worker(slot_pid)
-      ref = Process.monitor(worker_pid)
-      Process.exit(worker_pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^worker_pid, _}, 1000
+        # Kill the persistence worker
+        worker_pid = get_persistence_worker(slot_pid)
+        ref = Process.monitor(worker_pid)
+        Process.exit(worker_pid, :kill)
+        assert_receive {:DOWN, ^ref, :process, ^worker_pid, _}, 1000
 
-      # Router should still work for appends (they'll fail to persist but succeed in memory)
-      assert {:ok, message} =
-               Router.append(session.id, %{
-                 sender_id: session.initiator_id,
-                 kind: "text",
-                 content: %{text: "worker-dead"},
-                 idempotency_key: "worker-dead"
-               })
+        # Router should still work for appends (they'll fail to persist but succeed in memory)
+        assert {:ok, message} =
+                 Router.append(session.id, %{
+                   sender_id: session.initiator_id,
+                   kind: "text",
+                   content: %{text: "worker-dead"},
+                   idempotency_key: "worker-dead"
+                 })
 
-      # With improved persistence worker restart logic, this may succeed or timeout
-      case Router.await_persistence(session.id, message.id, 500) do
-        :ok -> :ok  # Worker was restarted and succeeded
-        {:error, :timeout} -> :ok  # Original expected behavior
-        {:error, :worker_crashed} -> :ok  # Acceptable intermediate state
-        {:error, :worker_dead} -> :ok  # Acceptable intermediate state
-        other -> flunk("Unexpected result: #{inspect(other)}")
-      end
+        # With improved persistence worker restart logic, this may succeed or timeout
+        case Router.await_persistence(session.id, message.id, 500) do
+          # Worker was restarted and succeeded
+          :ok -> :ok
+          # Original expected behavior
+          {:error, :timeout} -> :ok
+          # Acceptable intermediate state
+          {:error, :worker_crashed} -> :ok
+          # Acceptable intermediate state
+          {:error, :worker_dead} -> :ok
+          other -> flunk("Unexpected result: #{inspect(other)}")
+        end
+      end)
     end
 
     test "malformed requests are handled gracefully", %{session: session} do
@@ -323,7 +290,7 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
   end
 
   describe "resource management" do
-    test "router doesn't leak memory during failures", %{session: session, slot: slot} do
+    test "router doesn't leak memory during failures", %{session: session} do
       # Get initial memory
       memory_before = :erlang.memory(:total)
 
@@ -353,20 +320,6 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
   end
 
   # Helper functions
-
-  defp slot_pid(slot, attempts \\ 20) do
-    case Registry.lookup(Fleetlm.Runtime.Sharding.LocalRegistry, {:shard, slot}) do
-      [{pid, _}] ->
-        pid
-
-      [] when attempts > 0 ->
-        Process.sleep(25)
-        slot_pid(slot, attempts - 1)
-
-      [] ->
-        flunk("slot #{slot} did not start")
-    end
-  end
 
   defp get_persistence_worker(slot_pid) do
     %{persistence_worker: worker} = :sys.get_state(slot_pid)

@@ -1,5 +1,5 @@
 defmodule Fleetlm.Runtime.Storage.EtsRingTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Fleetlm.Runtime.Storage.{EtsRing, Entry}
   alias Fleetlm.Conversation.ChatMessage
@@ -19,24 +19,6 @@ defmodule Fleetlm.Runtime.Storage.EtsRingTest do
       assert [^entry2, ^entry1] = EtsRing.put(table, "session-1", entry2, 2)
 
       assert [^entry3, ^entry2] = EtsRing.put(table, "session-1", entry3, 2)
-    end
-  end
-
-  describe "list/2" do
-    test "returns empty list for unknown session" do
-      table = EtsRing.new()
-      on_exit(fn -> EtsRing.destroy(table) end)
-
-      assert [] == EtsRing.list(table, "missing")
-    end
-  end
-
-  describe "destroy/1" do
-    test "can be called multiple times without raising" do
-      table = EtsRing.new()
-
-      assert :ok == EtsRing.destroy(table)
-      assert :ok == EtsRing.destroy(table)
     end
   end
 

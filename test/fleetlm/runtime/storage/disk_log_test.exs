@@ -15,8 +15,19 @@ defmodule Fleetlm.Runtime.Storage.DiskLogTest do
       assert {:ok, duration_us} = DiskLog.append(handle, entry)
       assert is_integer(duration_us) and duration_us >= 0
 
+      # Verify the entry was actually persisted by reading it back
+      assert {:ok, [read_entry]} = DiskLog.read_all(handle)
+      assert read_entry.slot == entry.slot
+      assert read_entry.session_id == entry.session_id
+      assert read_entry.seq == entry.seq
+      assert read_entry.message_id == entry.message_id
+      assert read_entry.idempotency_key == entry.idempotency_key
+      assert read_entry.payload.id == entry.payload.id
+      assert read_entry.payload.content == entry.payload.content
+
       DiskLog.close(handle)
 
+      # Verify file exists and has content
       assert File.stat!(Path.join(dir, "slot_5.log")).size > 0
     end
   end

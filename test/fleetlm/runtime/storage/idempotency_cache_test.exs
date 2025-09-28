@@ -1,5 +1,5 @@
 defmodule Fleetlm.Runtime.Storage.IdempotencyCacheTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Fleetlm.Runtime.Storage.{IdempotencyCache, Entry}
   alias Fleetlm.Conversation.ChatMessage

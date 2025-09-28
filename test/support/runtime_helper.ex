@@ -6,17 +6,22 @@ defmodule Fleetlm.Runtime.TestHelper do
   alias Fleetlm.Runtime.InboxSupervisor
   alias Fleetlm.Runtime.Sharding.Supervisor, as: ShardSupervisor
 
+  require ExUnit.CaptureLog
+
   def reset do
-    terminate_horde_children(ShardSupervisor)
-    # Terminate children forcefully but safely
-    terminate_children_forcefully(Fleetlm.Runtime.SessionRegistry, SessionSupervisor)
-    terminate_children_forcefully(Fleetlm.Runtime.InboxRegistry, InboxSupervisor)
+    ExUnit.CaptureLog.capture_log(fn ->
+      terminate_horde_children(ShardSupervisor)
+      # Terminate children forcefully but safely
+      terminate_children_forcefully(Fleetlm.Runtime.SessionRegistry, SessionSupervisor)
+      terminate_children_forcefully(Fleetlm.Runtime.InboxRegistry, InboxSupervisor)
 
-    # Reset caches after all processes have terminated
-    _ = Cache.reset()
+      # Reset caches after all processes have terminated
+      _ = Cache.reset()
 
-    # Brief wait to ensure all database operations complete
-    Process.sleep(25)
+      # Brief wait to ensure all database operations complete
+      Process.sleep(25)
+    end)
+
     :ok
   end
 

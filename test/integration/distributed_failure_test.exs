@@ -4,11 +4,14 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
   across multiple components (Router, SlotServer, PersistenceWorker, HashRing).
   """
   use Fleetlm.DataCase
+  @moduletag :stress
 
   alias Fleetlm.Runtime.{Gateway, Router}
-  alias Fleetlm.Runtime.Sharding.{HashRing, Slots, SlotServer}
+  alias Fleetlm.Runtime.Sharding.HashRing
   alias Fleetlm.Conversation.Participants
   alias Fleetlm.Conversation
+
+  import Fleetlm.TestSupport.Sharding
 
   setup do
     Application.put_env(:fleetlm, :persistence_worker_mode, :live)
@@ -50,10 +53,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
   describe "cascade failures across components" do
     test "persistence worker failure cascades to slot server timeout", %{sessions: [session | _]} do
       slot = HashRing.slot_for_session(session.id)
-      :ok = Slots.ensure_slot_started(slot)
-
-      slot_pid = slot_pid(slot)
-      allow_sandbox_access(slot_pid)
+      slot_pid = ensure_slot!(slot)
 
       # Get the persistence worker and kill it
       worker_pid = get_persistence_worker(slot_pid)
@@ -93,9 +93,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
       slot_pids =
         for session <- sessions do
           slot = HashRing.slot_for_session(session.id)
-          :ok = Slots.ensure_slot_started(slot)
-          pid = slot_pid(slot)
-          allow_sandbox_access(pid)
+          pid = ensure_slot!(slot)
           {slot, pid, session}
         end
 
@@ -124,7 +122,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
       _results = Enum.map(tasks, &Task.await(&1, 5000))
 
       # The slot should restart and handle new requests
-      :ok = ensure_slot(target_slot)
+      _ = ensure_slot!(target_slot)
 
       assert {:ok, _} =
                Gateway.append_message(target_session.id, %{
@@ -146,7 +144,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
       sessions: [session | _]
     } do
       slot = HashRing.slot_for_session(session.id)
-      :ok = Slots.ensure_slot_started(slot)
+      _ = ensure_slot!(slot)
 
       # Monitor router retry behavior by capturing logs
       :logger.add_handler(:test_handler, :logger_std_h, %{
@@ -156,7 +154,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
       })
 
       # Kill and restart slot rapidly to trigger retries
-      slot_pid = slot_pid(slot)
+      slot_pid = slot_pid!(slot)
       ref = Process.monitor(slot_pid)
       Process.exit(slot_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^slot_pid, _}, 1000
@@ -174,7 +172,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
 
       # Restart slot after a delay
       Process.sleep(100)
-      :ok = ensure_slot(slot)
+      _ = ensure_slot!(slot)
 
       # Should eventually succeed
       assert {:ok, _message} = Task.await(task, 10_000)
@@ -188,8 +186,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
       # Ensure all slots are started
       for session <- sessions do
         slot = HashRing.slot_for_session(session.id)
-        :ok = Slots.ensure_slot_started(slot)
-        allow_sandbox_access(slot_pid(slot))
+        _ = ensure_slot!(slot)
       end
 
       # Send initial messages
@@ -250,7 +247,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
       # Restart all slots and verify data integrity
       for session <- sessions do
         slot = HashRing.slot_for_session(session.id)
-        :ok = ensure_slot(slot)
+        _ = ensure_slot!(slot)
       end
 
       # Verify all messages are present
@@ -273,10 +270,9 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
 
     test "disk log corruption triggers graceful slot restart", %{sessions: [session | _]} do
       slot = HashRing.slot_for_session(session.id)
-      :ok = Slots.ensure_slot_started(slot)
+      _ = ensure_slot!(slot)
 
-      slot_pid = slot_pid(slot)
-      allow_sandbox_access(slot_pid)
+      slot_pid = slot_pid!(slot)
 
       # Add some messages first
       for i <- 1..3 do
@@ -312,7 +308,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
       Process.exit(slot_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^slot_pid, _}, 1000
 
-      :ok = ensure_slot(slot)
+      _ = ensure_slot!(slot)
 
       # Should be able to append new messages
       assert {:ok, _} =
@@ -335,8 +331,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
       # Test with just one session to avoid supervisor overload
       session = List.first(sessions)
       slot = HashRing.slot_for_session(session.id)
-      :ok = Slots.ensure_slot_started(slot)
-      allow_sandbox_access(slot_pid(slot))
+      _ = ensure_slot!(slot)
 
       # Send initial messages with sequence tracking
       _initial_messages =
@@ -353,14 +348,14 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
         end
 
       # Restart the slot to test persistence of sequence tracking
-      slot_pid = slot_pid(slot)
+      slot_pid = slot_pid!(slot)
       ref = Process.monitor(slot_pid)
       Process.exit(slot_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^slot_pid, _}, 1000
 
       # Give supervisor time to recover
       Process.sleep(500)
-      :ok = ensure_slot(slot)
+      _ = ensure_slot!(slot)
 
       # Send more messages after restart
       {:ok, post_restart_msg} =
@@ -394,8 +389,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
 
         # Ensure different slot
         if slot2 != slot do
-          :ok = Slots.ensure_slot_started(slot2)
-          allow_sandbox_access(slot_pid(slot2))
+          _ = ensure_slot!(slot2)
 
           {:ok, msg2} =
             Gateway.append_message(session2.id, %{
@@ -413,8 +407,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
 
     test "idempotency works across slot crashes and restarts", %{sessions: [session | _]} do
       slot = HashRing.slot_for_session(session.id)
-      :ok = Slots.ensure_slot_started(slot)
-      allow_sandbox_access(slot_pid(slot))
+      _ = ensure_slot!(slot)
 
       # Send message with specific idempotency key
       assert {:ok, msg1} =
@@ -426,11 +419,11 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
                })
 
       # Crash and restart slot
-      slot_pid = slot_pid(slot)
+      slot_pid = slot_pid!(slot)
       ref = Process.monitor(slot_pid)
       Process.exit(slot_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^slot_pid, _}, 1000
-      :ok = ensure_slot(slot)
+      _ = ensure_slot!(slot)
 
       # Send same message again - should get same response
       assert {:ok, msg2} =
@@ -471,91 +464,5 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
   defp get_persistence_worker(slot_pid) do
     %{persistence_worker: worker} = :sys.get_state(slot_pid)
     worker
-  end
-
-  defp slot_pid(slot, attempts \\ 20) do
-    case Registry.lookup(Fleetlm.Runtime.Sharding.LocalRegistry, {:shard, slot}) do
-      [{pid, _}] ->
-        pid
-
-      [] when attempts > 0 ->
-        Process.sleep(25)
-        slot_pid(slot, attempts - 1)
-
-      [] ->
-        flunk("slot #{slot} did not start")
-    end
-  end
-
-  defp ensure_slot(slot) do
-    # Wait for any lingering slot process to fully terminate
-    case Registry.lookup(Fleetlm.Runtime.Sharding.LocalRegistry, {:shard, slot}) do
-      [{pid, _}] when is_pid(pid) ->
-        if Process.alive?(pid) do
-          ref = Process.monitor(pid)
-          Process.exit(pid, :kill)
-
-          receive do
-            {:DOWN, ^ref, :process, ^pid, _} -> :ok
-          after
-            1000 -> :ok
-          end
-        end
-
-      [] ->
-        :ok
-    end
-
-    # Give time for cleanup and potential supervisor recovery
-    Process.sleep(200)
-
-    # Try to start slot with multiple fallback strategies
-    ensure_slot_with_retry(slot, 3)
-  end
-
-  defp ensure_slot_with_retry(slot, 0), do: flunk("Failed to start slot #{slot} after all retries")
-
-  defp ensure_slot_with_retry(slot, retries) do
-    try do
-      case Slots.ensure_slot_started(slot) do
-        :ok ->
-          allow_sandbox_access(slot_pid(slot))
-          :ok
-
-        {:error, :supervisor_unavailable} ->
-          # Horde supervisor might be recovering, wait and retry
-          Process.sleep(500)
-          ensure_slot_with_retry(slot, retries - 1)
-
-        {:error, {:supervisor_exit, _}} ->
-          # Supervisor crashed, wait for recovery and retry
-          Process.sleep(500)
-          ensure_slot_with_retry(slot, retries - 1)
-
-        {:error, _} ->
-          # Fall back to direct start
-          {:ok, pid} = SlotServer.start_link(slot)
-          allow_sandbox_access(pid)
-          :ok
-      end
-    rescue
-      ArgumentError ->
-        {:ok, pid} = SlotServer.start_link(slot)
-        allow_sandbox_access(pid)
-        :ok
-    catch
-      :exit, reason when retries > 0 ->
-        # Horde supervisor might be shutting down, wait and retry
-        require Logger
-        Logger.warning("Supervisor exit during slot start (#{inspect(reason)}), retrying...")
-        Process.sleep(500)
-        ensure_slot_with_retry(slot, retries - 1)
-
-      :exit, _ ->
-        # Last resort: direct start
-        {:ok, pid} = SlotServer.start_link(slot)
-        allow_sandbox_access(pid)
-        :ok
-    end
   end
 end

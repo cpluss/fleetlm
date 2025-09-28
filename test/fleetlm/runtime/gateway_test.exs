@@ -59,9 +59,16 @@ defmodule Fleetlm.Runtime.GatewayTest do
                    },
                    1000
 
+    # Verify measurements are reasonable
     assert is_integer(measurements.duration)
-    assert metadata[:strategy]
+    assert measurements.duration >= 0
+    # Should be less than 1 second in microseconds
+    assert measurements.duration < 1_000_000
+
+    # Verify metadata contains expected values
+    assert metadata[:strategy] in [:optimized, :local, :remote]
     assert metadata[:kind] == "text"
+    assert metadata[:status] == :ok
   end
 
   test "append_message is idempotent for repeated idempotency key", %{session: session} do

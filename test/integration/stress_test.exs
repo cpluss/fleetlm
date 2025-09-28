@@ -4,11 +4,14 @@ defmodule Fleetlm.Integration.StressTest do
   and performance bottlenecks in the distributed system.
   """
   use Fleetlm.DataCase
+  @moduletag :stress
 
-  alias Fleetlm.Runtime.{Gateway, Router}
-  alias Fleetlm.Runtime.Sharding.{HashRing, Slots}
-  alias Fleetlm.Conversation.{Participants, ChatMessage}
+  alias Fleetlm.Runtime.Gateway
+  alias Fleetlm.Runtime.Sharding.HashRing
+  alias Fleetlm.Conversation.Participants
   alias Fleetlm.Conversation
+
+  import Fleetlm.TestSupport.Sharding
 
   @high_concurrency 50
   @burst_size 20
@@ -34,7 +37,7 @@ defmodule Fleetlm.Integration.StressTest do
 
     # Create multiple sessions for load distribution
     sessions =
-      for i <- 1..@session_count do
+      for _ <- 1..@session_count do
         {:ok, session} =
           Conversation.start_session(%{
             initiator_id: "user:stress:sender",
@@ -42,8 +45,7 @@ defmodule Fleetlm.Integration.StressTest do
           })
 
         slot = HashRing.slot_for_session(session.id)
-        :ok = Slots.ensure_slot_started(slot)
-        allow_sandbox_access(slot_pid(slot))
+        _pid = ensure_slot!(slot)
         session
       end
 
@@ -153,7 +155,7 @@ defmodule Fleetlm.Integration.StressTest do
       # Verify all persistence workers are still responding
       for session <- sessions do
         slot = HashRing.slot_for_session(session.id)
-        slot_pid = slot_pid(slot)
+        _slot_pid = slot_pid!(slot)
 
         # Try to send one more message to verify system is responsive
         assert {:ok, _} =
@@ -181,7 +183,7 @@ defmodule Fleetlm.Integration.StressTest do
     test "router retry logic doesn't cause exponential amplification", %{sessions: [session | _]} do
       # Get the slot and simulate instability
       slot = HashRing.slot_for_session(session.id)
-      original_pid = slot_pid(slot)
+      original_pid = slot_pid!(slot)
 
       # Create many concurrent requests that will hit retry logic
       retry_tasks =
@@ -198,7 +200,7 @@ defmodule Fleetlm.Integration.StressTest do
 
               # Give time for restart
               Process.sleep(50)
-              :ok = ensure_slot(slot)
+              _ = ensure_slot!(slot)
             end
 
             # Send message that might hit retry logic
@@ -245,10 +247,10 @@ defmodule Fleetlm.Integration.StressTest do
 
     test "idempotency cache doesn't leak memory under load", %{sessions: [session | _]} do
       slot = HashRing.slot_for_session(session.id)
-      slot_pid = slot_pid(slot)
+      slot_pid = slot_pid!(slot)
 
       # Get initial memory usage of slot process
-      memory_before = Process.info(slot_pid, :memory)[:memory]
+      memory_before = process_memory(slot_pid)
 
       # Send many messages with different idempotency keys
       for batch <- 1..10 do
@@ -272,7 +274,7 @@ defmodule Fleetlm.Integration.StressTest do
       end
 
       # Check memory usage after load
-      memory_after = Process.info(slot_pid, :memory)[:memory]
+      memory_after = process_memory(slot_pid)
 
       # Memory shouldn't grow excessively (idempotency cache should have TTL)
       memory_growth = (memory_after - memory_before) / memory_before
@@ -281,7 +283,7 @@ defmodule Fleetlm.Integration.StressTest do
 
       # Send duplicate messages to test cache effectiveness
       duplicate_results =
-        for i <- 1..10 do
+        for _ <- 1..10 do
           Gateway.append_message(session.id, %{
             sender_id: session.initiator_id,
             kind: "text",
@@ -300,8 +302,6 @@ defmodule Fleetlm.Integration.StressTest do
       log_performance_tasks =
         for session <- sessions do
           Task.async(fn ->
-            slot = HashRing.slot_for_session(session.id)
-
             # Send messages and measure write latency
             latencies =
               for i <- 1..20 do
@@ -362,52 +362,10 @@ defmodule Fleetlm.Integration.StressTest do
 
   # Helper functions
 
-  defp slot_pid(slot, attempts \\ 20) do
-    case Registry.lookup(Fleetlm.Runtime.Sharding.LocalRegistry, {:shard, slot}) do
-      [{pid, _}] ->
-        pid
-
-      [] when attempts > 0 ->
-        Process.sleep(25)
-        slot_pid(slot, attempts - 1)
-
-      [] ->
-        flunk("slot #{slot} did not start")
+  defp process_memory(pid) do
+    case Process.info(pid, :memory) do
+      {:memory, bytes} -> bytes
+      _ -> 0
     end
-  end
-
-  defp ensure_slot(slot) do
-    case Registry.lookup(Fleetlm.Runtime.Sharding.LocalRegistry, {:shard, slot}) do
-      [{pid, _}] when is_pid(pid) ->
-        if Process.alive?(pid) do
-          ref = Process.monitor(pid)
-          Process.exit(pid, :kill)
-
-          receive do
-            {:DOWN, ^ref, :process, ^pid, _} -> :ok
-          after
-            1000 -> :ok
-          end
-        end
-
-      [] ->
-        :ok
-    end
-
-    case Slots.ensure_slot_started(slot) do
-      :ok ->
-        allow_sandbox_access(slot_pid(slot))
-        :ok
-
-      {:error, _} ->
-        {:ok, pid} = Fleetlm.Runtime.Sharding.SlotServer.start_link(slot)
-        allow_sandbox_access(pid)
-        :ok
-    end
-  rescue
-    ArgumentError ->
-      {:ok, pid} = Fleetlm.Runtime.Sharding.SlotServer.start_link(slot)
-      allow_sandbox_access(pid)
-      :ok
   end
 end

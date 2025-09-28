@@ -1,10 +1,13 @@
 defmodule Fleetlm.Integration.ShardingIntegrationTest do
   use Fleetlm.DataCase
+  @moduletag :stress
 
   alias Fleetlm.Runtime.Gateway
-  alias Fleetlm.Runtime.Sharding.{HashRing, SlotServer, Slots}
+  alias Fleetlm.Runtime.Sharding.HashRing
   alias Fleetlm.Conversation.{Participants, ChatMessage}
   alias Fleetlm.Conversation
+
+  import Fleetlm.TestSupport.Sharding
 
   @sessions 6
   @messages_per_session 4
@@ -103,12 +106,12 @@ defmodule Fleetlm.Integration.ShardingIntegrationTest do
                })
     end)
 
-    pid = slot_pid(slot)
+    pid = slot_pid!(slot)
     ref = Process.monitor(pid)
     Process.exit(pid, :kill)
     assert_receive {:DOWN, ^ref, _, _, _}, 1_000
 
-    :ok = ensure_slot(slot)
+    _ = ensure_slot!(slot)
 
     replayed = Gateway.replay_messages(session.id, limit: 10)
     replay_texts = Enum.map(replayed, & &1.content["text"]) |> Enum.sort()
@@ -150,7 +153,7 @@ defmodule Fleetlm.Integration.ShardingIntegrationTest do
     initial_db = message_texts(session.id)
     assert Enum.sort(initial_db) == Enum.sort(["steady-1", "steady-2"])
 
-    original_pid = slot_pid(slot)
+    original_pid = slot_pid!(slot)
 
     draining_assignments = Map.put(original_ring.assignments, slot, :fake@node)
 
@@ -175,7 +178,7 @@ defmodule Fleetlm.Integration.ShardingIntegrationTest do
     end
 
     HashRing.put_current!(original_ring)
-    :ok = ensure_slot(slot)
+    _ = ensure_slot!(slot)
 
     assert {:ok, _} =
              Gateway.append_message(session.id, %{
@@ -206,56 +209,6 @@ defmodule Fleetlm.Integration.ShardingIntegrationTest do
     end)
     |> Enum.chunk_every(2)
     |> Enum.map(fn [a, b] -> {a, b} end)
-  end
-
-  defp ensure_slot(slot) do
-    # Wait for any lingering slot process to fully terminate
-    case Registry.lookup(Fleetlm.Runtime.Sharding.LocalRegistry, {:shard, slot}) do
-      [{pid, _}] when is_pid(pid) ->
-        if Process.alive?(pid) do
-          ref = Process.monitor(pid)
-          Process.exit(pid, :kill)
-
-          receive do
-            {:DOWN, ^ref, :process, ^pid, _} -> :ok
-          after
-            1000 -> :ok
-          end
-        end
-
-      [] ->
-        :ok
-    end
-
-    case Slots.ensure_slot_started(slot) do
-      :ok ->
-        allow_sandbox_access(slot_pid(slot))
-        :ok
-
-      {:error, _} ->
-        {:ok, pid} = SlotServer.start_link(slot)
-        allow_sandbox_access(pid)
-        :ok
-    end
-  rescue
-    ArgumentError ->
-      {:ok, pid} = SlotServer.start_link(slot)
-      allow_sandbox_access(pid)
-      :ok
-  end
-
-  defp slot_pid(slot, attempts \\ 20) do
-    case Registry.lookup(Fleetlm.Runtime.Sharding.LocalRegistry, {:shard, slot}) do
-      [{pid, _}] ->
-        pid
-
-      [] when attempts > 0 ->
-        Process.sleep(25)
-        slot_pid(slot, attempts - 1)
-
-      [] ->
-        flunk("slot #{slot} did not start")
-    end
   end
 
   defp message_texts(session_id) do

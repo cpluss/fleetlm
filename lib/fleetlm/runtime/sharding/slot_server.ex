@@ -80,6 +80,40 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
     end
   end
 
+  @doc false
+  @spec stop(non_neg_integer(), term()) :: :ok
+  def stop(slot, reason \\ :normal) when is_integer(slot) do
+    owner = HashRing.owner_node(slot)
+
+    if owner == Node.self() do
+      stop_local(slot, reason)
+    else
+      try do
+        :erpc.call(owner, __MODULE__, :stop_local, [slot, reason])
+      catch
+        :exit, _ -> :ok
+      end
+    end
+  end
+
+  @doc false
+  @spec stop_local(non_neg_integer(), term()) :: :ok
+  def stop_local(slot, reason \\ :normal) when is_integer(slot) do
+    case Registry.lookup(@local_registry, {:shard, slot}) do
+      [{pid, _}] when is_pid(pid) ->
+        try do
+          GenServer.stop(pid, reason)
+        catch
+          :exit, {:noproc, _} -> :ok
+        end
+
+      [] ->
+        :ok
+    end
+  rescue
+    ArgumentError -> :ok
+  end
+
   @impl true
   def init(slot) do
     Process.flag(:trap_exit, true)
@@ -99,7 +133,8 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
         idem_table = IdempotencyCache.new()
 
         # Replay entries from disk log to restore idempotency cache and sequence tracker
-        {restored_seq_tracker, restored_count} = replay_from_disk_log(disk_log, ring_table, idem_table)
+        {restored_seq_tracker, restored_count} =
+          replay_from_disk_log(disk_log, ring_table, idem_table)
 
         # Monitor the persistence worker
         Process.monitor(worker)
@@ -319,7 +354,10 @@ defmodule Fleetlm.Runtime.Sharding.SlotServer do
         %{state | persistence_worker: new_worker}
 
       {:error, reason} ->
-        Logger.error("Failed to restart persistence worker for slot #{state.slot}: #{inspect(reason)}")
+        Logger.error(
+          "Failed to restart persistence worker for slot #{state.slot}: #{inspect(reason)}"
+        )
+
         state
     end
   end

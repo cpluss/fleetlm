@@ -85,7 +85,11 @@ defmodule Fleetlm.Runtime.Sharding.Slots do
 
       :exit, reason when retries > 0 ->
         require Logger
-        Logger.warning("Supervisor exit during slot #{slot} start (#{inspect(reason)}), retrying...")
+
+        Logger.warning(
+          "Supervisor exit during slot #{slot} start (#{inspect(reason)}), retrying..."
+        )
+
         Process.sleep(200 + :rand.uniform(300))
         start_slot_with_retry(slot, retries - 1)
 
@@ -93,7 +97,6 @@ defmodule Fleetlm.Runtime.Sharding.Slots do
         {:error, {:supervisor_exit, reason}}
     end
   end
-
 
   @spec rebalance_all() :: :ok
   def rebalance_all do
@@ -124,5 +127,10 @@ defmodule Fleetlm.Runtime.Sharding.Slots do
       [{pid, _}] -> {:ok, pid}
       _ -> :not_found
     end
+  end
+
+  @spec stop_slot(non_neg_integer(), term()) :: :ok
+  def stop_slot(slot, reason \\ :normal) do
+    SlotServer.stop(slot, reason)
   end
 end
