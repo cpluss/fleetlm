@@ -93,8 +93,10 @@ defmodule Fleetlm.Integration.ClusterCoordinationTest do
                     content: %{text: "during-ring-change-#{j}"},
                     idempotency_key: "ring-change-#{session.id}-#{j}"
                   })
+                rescue
+                  error in ErlangError -> {:error, error.original}
                 catch
-                  kind, reason -> {kind, reason}
+                  :exit, reason -> {:exit, reason}
                 end
               end
 
@@ -130,16 +132,28 @@ defmodule Fleetlm.Integration.ClusterCoordinationTest do
         {session_id, _results} when is_binary(session_id) -> true
         _ -> false
       end)
-      |> Enum.each(fn {session_id, _results} ->
-        messages = Gateway.replay_messages(session_id, limit: 10)
+      |> Enum.each(fn {session_id, results} ->
+        expected_texts =
+          for {:ok, msg} <- results do
+            msg.content["text"]
+          end
+
+        messages = Gateway.replay_messages(session_id, limit: 20)
 
         # All stored messages should have unique IDs
         message_ids = Enum.map(messages, & &1.id)
         assert length(message_ids) == length(Enum.uniq(message_ids))
 
-        # Should have at least some messages (system is eventually consistent)
-        # Some may have been lost due to ring changes
-        assert length(messages) >= 0
+        # We should not lose acknowledged messages even during instability
+        observed_texts = MapSet.new(messages, & &1.content["text"])
+
+        Enum.each(expected_texts, fn text ->
+          assert MapSet.member?(observed_texts, text),
+                 "expected message #{inspect(text)} to be persisted for session #{session_id}"
+        end)
+
+        # Ensure we stored at least the number of successful appends
+        assert length(messages) >= length(expected_texts)
       end)
     end
 

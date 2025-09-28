@@ -49,6 +49,8 @@ defmodule Fleetlm.Runtime.EventsTest do
 
     Process.sleep(100)
 
+    drain_inbox_events()
+
     # Flush inbox servers to ensure fresh snapshots with updated unread counts
     Fleetlm.Runtime.InboxServer.flush(alice.id)
     Fleetlm.Runtime.InboxServer.flush(session.peer_id)
@@ -75,5 +77,13 @@ defmodule Fleetlm.Runtime.EventsTest do
       kind: kind,
       display_name: id
     })
+  end
+
+  defp drain_inbox_events do
+    receive do
+      {:inbox_snapshot, _snapshot} -> drain_inbox_events()
+    after
+      0 -> :ok
+    end
   end
 end

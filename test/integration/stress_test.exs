@@ -84,26 +84,33 @@ defmodule Fleetlm.Integration.StressTest do
       all_results = Enum.map(burst_tasks, &Task.await(&1, 15_000))
 
       # Verify data integrity across all sessions
-      for {session_id, results} <- all_results do
-        successful_count = Enum.count(results, &match?({:ok, _}, &1))
-        messages = Gateway.replay_messages(session_id, limit: @burst_size + 5)
+      for {session_id, _results} <- all_results do
+        expected_texts = for i <- 1..@burst_size, do: "burst-#{session_id}-#{i}"
+        expected_sequences = Enum.to_list(1..@burst_size)
 
-        # Should have all messages (or most with some tolerance for failures)
-        assert length(messages) >= successful_count * 0.9
+        messages = await_messages(session_id, @burst_size, limit: @burst_size + 5)
 
         # All message IDs should be unique
         message_ids = Enum.map(messages, & &1.id)
         assert length(message_ids) == length(Enum.uniq(message_ids))
 
-        # Verify sequence integrity within each session
-        sequences =
-          for msg <- messages do
-            get_in(msg.content, ["sequence"])
-          end
+        observed_texts = MapSet.new(messages, & &1.content["text"])
 
-        valid_sequences = Enum.reject(sequences, &is_nil/1)
-        assert length(valid_sequences) > 0
-        assert Enum.sort(valid_sequences) == Enum.to_list(1..length(valid_sequences))
+        Enum.each(expected_texts, fn text ->
+          assert MapSet.member?(observed_texts, text),
+                 "expected message #{text} to be persisted for session #{session_id}"
+        end)
+
+        observed_sequences =
+          messages
+          |> Enum.map(&get_sequence(&1))
+          |> Enum.reject(&is_nil/1)
+          |> MapSet.new()
+
+        Enum.each(expected_sequences, fn seq ->
+          assert MapSet.member?(observed_sequences, seq),
+                 "expected sequence #{seq} to be present for session #{session_id}"
+        end)
       end
     end
 
@@ -167,16 +174,19 @@ defmodule Fleetlm.Integration.StressTest do
                  })
       end
 
-      # Verify eventual consistency - all messages should eventually be persisted
-      # Give time for persistence workers to catch up
-      Process.sleep(5_000)
+      required_success = required_count(@high_concurrency)
 
-      for {session_id, results} <- flood_results do
-        successful_count = Enum.count(results, &match?({:ok, _}, &1))
-        messages = Gateway.replay_messages(session_id, limit: @high_concurrency + 10)
+      for {session_id, _results} <- flood_results do
+        expected_texts = for i <- 1..@high_concurrency, do: "flood-#{i}"
+        messages = await_messages(session_id, required_success, limit: @high_concurrency + 10)
 
-        # Should have most messages persisted (allowing for some failures under load)
-        assert length(messages) >= successful_count * 0.8
+        observed_texts = MapSet.new(messages, & &1.content["text"])
+
+        observed_success =
+          Enum.count(expected_texts, &MapSet.member?(observed_texts, &1))
+
+        assert observed_success >= required_success,
+               "expected at least #{required_success} persisted flood messages, got #{observed_success}"
       end
     end
 
@@ -241,8 +251,7 @@ defmodule Fleetlm.Integration.StressTest do
           match?({:ok, _}, result)
         end)
 
-      # At least 70% success rate
-      assert successful_count >= length(results) * 0.7
+      assert successful_count >= required_count(length(results))
     end
 
     test "idempotency cache doesn't leak memory under load", %{sessions: [session | _]} do
@@ -366,6 +375,59 @@ defmodule Fleetlm.Integration.StressTest do
     case Process.info(pid, :memory) do
       {:memory, bytes} -> bytes
       _ -> 0
+    end
+  end
+
+  defp get_sequence(message) do
+    Map.get(message.content, "sequence") || Map.get(message.content, :sequence)
+  end
+
+  defp required_count(total) when total > 0 do
+    total
+    |> Kernel.*(0.95)
+    |> Float.ceil()
+    |> trunc()
+  end
+
+  defp await_messages(session_id, expected_count, opts) do
+    limit = Keyword.get(opts, :limit, expected_count)
+
+    wait_until(fn ->
+      messages = Gateway.replay_messages(session_id, limit: limit)
+
+      if length(messages) >= expected_count do
+        {:ok, messages}
+      else
+        :retry
+      end
+    end)
+  end
+
+  defp wait_until(fun, attempts \\ 50, interval \\ 100)
+
+  defp wait_until(fun, attempts, _interval) when attempts <= 1 do
+    case fun.() do
+      {:ok, result} -> result
+      true -> true
+      {:error, reason} -> flunk("operation failed: #{inspect(reason)}")
+      _ -> flunk("operation timed out")
+    end
+  end
+
+  defp wait_until(fun, attempts, interval) do
+    case fun.() do
+      {:ok, result} ->
+        result
+
+      true ->
+        true
+
+      {:error, reason} ->
+        flunk("operation failed: #{inspect(reason)}")
+
+      _ ->
+        Process.sleep(interval)
+        wait_until(fun, attempts - 1, interval)
     end
   end
 end

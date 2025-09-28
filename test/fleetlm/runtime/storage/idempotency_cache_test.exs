@@ -23,9 +23,13 @@ defmodule Fleetlm.Runtime.Storage.IdempotencyCacheTest do
     test "expires entries past ttl", %{table: table} do
       entry = build_entry("session", 1)
 
-      :ok = IdempotencyCache.put(table, entry.session_id, "key", entry)
+      stale_ts = System.monotonic_time(:millisecond) - 10
 
-      Process.sleep(5)
+      true =
+        :ets.insert(table, {
+          {entry.session_id, "key"},
+          %{entry: entry, inserted_at: stale_ts}
+        })
 
       assert :miss = IdempotencyCache.fetch(table, entry.session_id, "key", ttl_ms: 1)
     end

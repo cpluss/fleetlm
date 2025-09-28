@@ -113,10 +113,10 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
         end
 
       # Kill one slot in the middle of processing
-      {target_slot, target_pid, target_session} = List.first(slot_pids)
+      {target_slot, _target_pid, target_session} = List.first(slot_pids)
       # Let some requests start
       Process.sleep(50)
-      Process.exit(target_pid, :kill)
+      crash_slot!(target_slot)
 
       # Wait for all tasks to complete
       _results = Enum.map(tasks, &Task.await(&1, 5000))
@@ -154,10 +154,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
       })
 
       # Kill and restart slot rapidly to trigger retries
-      slot_pid = slot_pid!(slot)
-      ref = Process.monitor(slot_pid)
-      Process.exit(slot_pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^slot_pid, _}, 1000
+      _ = crash_slot!(slot)
 
       # Try to append while slot is down - should trigger retries
       task =
@@ -304,10 +301,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
                })
 
       # Restart the slot - should recover
-      ref = Process.monitor(slot_pid)
-      Process.exit(slot_pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^slot_pid, _}, 1000
-
+      crash_slot!(slot)
       _ = ensure_slot!(slot)
 
       # Should be able to append new messages
@@ -348,13 +342,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
         end
 
       # Restart the slot to test persistence of sequence tracking
-      slot_pid = slot_pid!(slot)
-      ref = Process.monitor(slot_pid)
-      Process.exit(slot_pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^slot_pid, _}, 1000
-
-      # Give supervisor time to recover
-      Process.sleep(500)
+      crash_slot!(slot)
       _ = ensure_slot!(slot)
 
       # Send more messages after restart
@@ -419,10 +407,7 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
                })
 
       # Crash and restart slot
-      slot_pid = slot_pid!(slot)
-      ref = Process.monitor(slot_pid)
-      Process.exit(slot_pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^slot_pid, _}, 1000
+      crash_slot!(slot)
       _ = ensure_slot!(slot)
 
       # Send same message again - should get same response
