@@ -93,4 +93,12 @@ Collect additional runs as we expand to multiple sessions or higher rates (e.g.,
 - Tests currently surface Ecto sandbox errors under load because background workers touch the DB; addressable in a follow-up pass.
 - Existing `bench/` suites remain DB-centric; WebSocket publish/replay still lacks automated coverage beyond the new k6 harness.
 
+### Phase 2 – Post-refactor benchmark (2025-09-28)
+
+- **Setup:** Phoenix dev server (`mix phx.server`) + Dockerized k6 (`grafana/k6:latest`), `WS_URL=ws://host.docker.internal:4000/socket/websocket`, `SESSION_ID=01K684NV74N0R06420DWSVAVGK`, `PARTICIPANT_ID=bench-user`, `VUS=100`, `SEND_INTERVAL=1000`, `DURATION=2m`, `RUNTIME_MS=120000`.
+- **k6 metrics:** `append_latency_ms` stayed at 0 ms (no successful ACKs), `append_failures=2 012` (≈16.5/s), `join_latency_ms` p50 ≈59 ms / p95 ≈115 ms, `iteration_duration` p50 ≈1.35 s / p95 ≈2.40 s, `ws_connecting` p50 ≈1.22 s / p95 ≈2.27 s, throughput ≈77.8 iterations per second (≈7.8 k msg/min).
+- **Regression vs phase 1:** throughput dropped ~78 % (350 → 77.8 iter/s), join latency p95 up ~74 % (66 → 115 ms), websocket connect p95 up ~8× (0.28 → 2.27 s). The previous append latency p95 ≈48.6 ms is now absent because no message confirmations were observed.
+- **Server behaviour:** logs show persistent shard retries and crashes, e.g. repeated `Retrying shard call ... reason=:timeout` and a `CaseClauseError` at `lib/fleetlm/runtime/sharding/slot_server.ex:293` when handling `{:append, ...}`. Those failures explain the stalled append latency series and sustained `append_failures` counter during the run.
+- **Follow-up:** debug sharding append flow so websocket send ACKs are emitted again, then rerun the scenario. Without resolving the SlotServer error the hot-path benchmark no longer reflects real-world latency.
+
 Update this file as baseline numbers are collected so Phase 7 has concrete targets to compare against.
