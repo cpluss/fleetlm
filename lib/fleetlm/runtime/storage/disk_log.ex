@@ -119,7 +119,7 @@ defmodule Fleetlm.Runtime.Storage.DiskLog do
         :eof ->
           {:ok, []}
 
-        {continuation, terms} ->
+        {continuation, terms} when is_list(terms) ->
           collect_all_chunks(handle, continuation, terms)
 
         {:error, _} = error ->
@@ -149,7 +149,7 @@ defmodule Fleetlm.Runtime.Storage.DiskLog do
       :eof ->
         {:ok, acc}
 
-      {new_continuation, terms} ->
+      {new_continuation, terms} when is_list(terms) ->
         collect_all_chunks(handle, new_continuation, acc ++ terms)
 
       {:error, _} = error ->

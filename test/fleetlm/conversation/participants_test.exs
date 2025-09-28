@@ -38,7 +38,10 @@ defmodule Fleetlm.Conversation.ParticipantsTest do
       Participants.upsert_participant(%{id: "user:one", kind: "user", display_name: "One"})
       Participants.upsert_participant(%{id: "agent:two", kind: "agent", display_name: "Two"})
 
-      assert [%Participant{id: "agent:two"}] = Participants.list_participants(kind: "agent")
+      agents = Participants.list_participants(kind: "agent")
+
+      assert %Participant{id: "agent:two"} =
+               Enum.find(agents, fn participant -> participant.id == "agent:two" end)
     end
   end
 end

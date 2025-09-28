@@ -24,6 +24,5 @@ defmodule Fleetlm.Repo.Migrations.AddPerformanceIndexes do
     create index(:chat_sessions, [:agent_id, :status, :inserted_at],
              name: :chat_sessions_agent_status_inserted_at_idx
            )
-
   end
 end

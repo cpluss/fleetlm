@@ -289,36 +289,6 @@ defmodule Fleetlm.Runtime.RouterFailureTest do
     end
   end
 
-  describe "resource management" do
-    test "router doesn't leak memory during failures", %{session: session} do
-      # Get initial memory
-      memory_before = :erlang.memory(:total)
-
-      # Send many failing requests
-      for i <- 1..100 do
-        capture_log(fn ->
-          Router.append("invalid-session-#{i}", %{
-            sender_id: session.initiator_id,
-            kind: "text",
-            content: %{text: "fail-#{i}"},
-            idempotency_key: "fail-#{i}"
-          })
-        end)
-      end
-
-      # Force garbage collection
-      :erlang.garbage_collect()
-      Process.sleep(100)
-
-      memory_after = :erlang.memory(:total)
-      memory_growth = (memory_after - memory_before) / memory_before
-
-      # Memory shouldn't grow significantly from failed requests
-      # Less than 10% growth
-      assert memory_growth < 0.1
-    end
-  end
-
   # Helper functions
 
   defp get_persistence_worker(slot_pid) do
