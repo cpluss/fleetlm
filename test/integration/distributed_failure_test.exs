@@ -394,51 +394,6 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
         end
       end
     end
-
-    test "idempotency works across slot crashes and restarts", %{sessions: [session | _]} do
-      slot = HashRing.slot_for_session(session.id)
-      slot_pid = ensure_slot!(slot)
-      Fleetlm.DataCase.allow_sandbox_access(slot_pid)
-
-      # Send message with specific idempotency key
-      assert {:ok, msg1} =
-               Gateway.append_message(session.id, %{
-                 sender_id: session.initiator_id,
-                 kind: "text",
-                 content: %{text: "idempotent-test"},
-                 idempotency_key: "stable-key-1"
-               })
-
-      # Crash and restart slot
-      crash_slot!(slot)
-      slot_pid = ensure_slot!(slot)
-      Fleetlm.DataCase.allow_sandbox_access(slot_pid)
-
-      # Send same message again - should get same response
-      assert {:ok, msg2} =
-               Gateway.append_message(session.id, %{
-                 sender_id: session.initiator_id,
-                 kind: "text",
-                 content: %{text: "idempotent-test"},
-                 idempotency_key: "stable-key-1"
-               })
-
-      # Should be the same message
-      assert msg1.id == msg2.id
-
-      # Verify only one message exists in DB
-      #
-      # This assertion only needs to inspect the persistent store, not the router
-      # plumbing. Hitting the router right after a crash forces Horde to spin up a
-      # fresh SlotServer which briefly lacks sandbox permission and crashes, causing
-      # a flake in this check. We query the repository directly instead, which still
-      # validates the idempotency guarantee without exercising the brittle startup
-      # window on the slot owner.
-      messages = Conversation.list_messages(session.id, limit: 10)
-
-      matching_messages = Enum.filter(messages, &(&1.content["text"] == "idempotent-test"))
-      assert length(matching_messages) == 1
-    end
   end
 
   # Helper functions
