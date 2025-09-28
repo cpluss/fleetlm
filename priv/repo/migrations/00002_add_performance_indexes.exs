@@ -25,13 +25,5 @@ defmodule Fleetlm.Repo.Migrations.AddPerformanceIndexes do
              name: :chat_sessions_agent_status_inserted_at_idx
            )
 
-    # Optimize read tracking queries that compare timestamps
-    create index(:chat_sessions, [:initiator_id, :initiator_last_read_at, :last_message_at],
-             name: :chat_sessions_initiator_read_tracking_idx
-           )
-
-    create index(:chat_sessions, [:peer_id, :peer_last_read_at, :last_message_at],
-             name: :chat_sessions_peer_read_tracking_idx
-           )
   end
 end

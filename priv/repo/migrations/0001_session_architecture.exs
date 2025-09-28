@@ -35,6 +35,13 @@ defmodule Fleetlm.Repo.Migrations.SessionArchitecture do
       add :metadata, :map, null: false, default: fragment("'{}'::jsonb")
       add :last_message_id, :string
       add :last_message_at, :utc_datetime_usec
+
+      # Read tracking columns (added here to avoid dependency issues)
+      add :initiator_last_read_id, :string
+      add :initiator_last_read_at, :utc_datetime_usec
+      add :peer_last_read_id, :string
+      add :peer_last_read_at, :utc_datetime_usec
+
       timestamps()
     end
 
@@ -43,6 +50,19 @@ defmodule Fleetlm.Repo.Migrations.SessionArchitecture do
     create index(:chat_sessions, [:agent_id])
     create index(:chat_sessions, [:status])
     create index(:chat_sessions, [:last_message_at])
+
+    # Read tracking indexes
+    create index(:chat_sessions, [:initiator_last_read_at])
+    create index(:chat_sessions, [:peer_last_read_at])
+
+    # Complex read tracking indexes
+    create index(:chat_sessions, [:initiator_id, :initiator_last_read_at, :last_message_at],
+             name: :chat_sessions_initiator_read_tracking_idx
+           )
+
+    create index(:chat_sessions, [:peer_id, :peer_last_read_at, :last_message_at],
+             name: :chat_sessions_peer_read_tracking_idx
+           )
 
     create table(:chat_messages, primary_key: false) do
       add :id, :string, primary_key: true
