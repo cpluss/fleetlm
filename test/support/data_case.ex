@@ -27,10 +27,17 @@ defmodule Fleetlm.DataCase do
     end
   end
 
+  alias Fleetlm.TestSupport.SlotLogs
+
   setup tags do
+    slot_log_ctx = SlotLogs.prepare(tags)
     Fleetlm.DataCase.setup_sandbox(tags)
     # Only reset on exit - let tests run with whatever processes they create
-    on_exit(fn -> Fleetlm.Runtime.TestHelper.reset() end)
+    on_exit(fn ->
+      Fleetlm.Runtime.TestHelper.reset()
+      SlotLogs.cleanup(slot_log_ctx)
+    end)
+
     :ok
   end
 
