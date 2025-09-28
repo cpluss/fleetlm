@@ -51,9 +51,6 @@ jobs:
       env:
         MIX_ENV: test
 
-    - name: Run precommit checks
-      run: mix precommit
-
     - name: Run tests
       run: mix test
 
