@@ -1,5 +1,11 @@
 # FleetLM - Open Source Engine for Stateless Agents
 
+[![Tests](https://github.com/cpluss/fleetlm/actions/workflows/test.yml/badge.svg)](https://github.com/cpluss/fleetlm/actions/workflows/test.yml)
+[![Docker Build](https://github.com/cpluss/fleetlm/actions/workflows/docker-build.yml/badge.svg)](https://github.com/cpluss/fleetlm/actions/workflows/docker-build.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Elixir](https://img.shields.io/badge/Elixir-1.15.7-purple.svg)](https://elixir-lang.org/)
+[![Phoenix](https://img.shields.io/badge/Phoenix-1.8.1-red.svg)](https://phoenixframework.org/)
+
 Write stateless agents. We handle the WebSockets.
 
 FleetLM is the open-source Phoenix/Elixir runtime that powers the FleetLM enterprise platform. It gives you the production-ready backend for multi-user, multi-agent conversations while letting your agents stay simple HTTP services. Self-host it for free, or grow into the managed cloud when you want turn-key scaling, fully managed webhooks, and enterprise uptime.
