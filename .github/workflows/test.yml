@@ -2,9 +2,7 @@ name: Test Suite
 
 on:
   push:
-    branches: [ main, master, develop ]
   pull_request:
-    branches: [ main, master ]
 
 jobs:
   test:
@@ -24,20 +22,8 @@ jobs:
         ports:
           - 5432:5432
 
-      redis:
-        image: redis:7-alpine
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
-
     env:
       MIX_ENV: test
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/fleetlm_test
-      REDIS_URL: redis://localhost:6379
 
     steps:
     - name: Checkout repository
@@ -59,6 +45,11 @@ jobs:
 
     - name: Install dependencies
       run: mix deps.get
+
+    - name: Setup test database
+      run: mix ecto.setup
+      env:
+        MIX_ENV: test
 
     - name: Run precommit checks
       run: mix precommit
