@@ -16,19 +16,21 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
   setup do
     Application.put_env(:fleetlm, :persistence_worker_mode, :live)
 
+    # Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()})
+
     # Setup test participants
     {:ok, _} =
       Participants.upsert_participant(%{
         id: "user:failure:alice",
         kind: "user",
-        display_name: "Alice"
+        display_name: "Failure Alice"
       })
 
     {:ok, _} =
       Participants.upsert_participant(%{
         id: "user:failure:bob",
         kind: "user",
-        display_name: "Bob"
+        display_name: "Failure Bob"
       })
 
     # Create multiple sessions across different slots
@@ -395,7 +397,8 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
 
     test "idempotency works across slot crashes and restarts", %{sessions: [session | _]} do
       slot = HashRing.slot_for_session(session.id)
-      _ = ensure_slot!(slot)
+      slot_pid = ensure_slot!(slot)
+      Fleetlm.DataCase.allow_sandbox_access(slot_pid)
 
       # Send message with specific idempotency key
       assert {:ok, msg1} =
@@ -408,7 +411,8 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
 
       # Crash and restart slot
       crash_slot!(slot)
-      _ = ensure_slot!(slot)
+      slot_pid = ensure_slot!(slot)
+      Fleetlm.DataCase.allow_sandbox_access(slot_pid)
 
       # Send same message again - should get same response
       assert {:ok, msg2} =
@@ -423,7 +427,15 @@ defmodule Fleetlm.Integration.DistributedFailureTest do
       assert msg1.id == msg2.id
 
       # Verify only one message exists in DB
-      messages = Gateway.replay_messages(session.id, limit: 10)
+      #
+      # This assertion only needs to inspect the persistent store, not the router
+      # plumbing. Hitting the router right after a crash forces Horde to spin up a
+      # fresh SlotServer which briefly lacks sandbox permission and crashes, causing
+      # a flake in this check. We query the repository directly instead, which still
+      # validates the idempotency guarantee without exercising the brittle startup
+      # window on the slot owner.
+      messages = Conversation.list_messages(session.id, limit: 10)
+
       matching_messages = Enum.filter(messages, &(&1.content["text"] == "idempotent-test"))
       assert length(matching_messages) == 1
     end
