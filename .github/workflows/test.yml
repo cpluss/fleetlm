@@ -54,15 +54,15 @@ jobs:
     - name: Run tests
       run: mix test
 
-    - name: Run tests with coverage
-      run: mix test --cover
-      if: success() || failure()
+#    - name: Run tests with coverage
+#      run: mix test --cover
+#      if: success() || failure()
 
-    - name: Upload coverage reports
-      uses: codecov/codecov-action@v3
-      if: success() || failure()
-      with:
-        file: ./cover/excoveralls.json
-        flags: unittests
-        name: codecov-umbrella
-        fail_ci_if_error: false
+#    - name: Upload coverage reports
+#      uses: codecov/codecov-action@v3
+#      if: success() || failure()
+#      with:
+#        file: ./cover/excoveralls.json
+#        flags: unittests
+#        name: codecov-umbrella
+#        fail_ci_if_error: false
