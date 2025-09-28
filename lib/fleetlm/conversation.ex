@@ -19,6 +19,7 @@ defmodule Fleetlm.Conversation do
   alias Fleetlm.Conversation.ChatSession
   alias Fleetlm.Conversation.ChatMessage
   alias Fleetlm.Runtime.SessionServer
+  alias Fleetlm.Runtime.SessionRegistry
   alias Fleetlm.Runtime.InboxServer
   alias Fleetlm.Agent.Dispatcher
   alias Fleetlm.Observability
@@ -475,6 +476,40 @@ defmodule Fleetlm.Conversation do
       updated_at: db_result["updated_at"],
       session_agent_id: db_result["session_agent_id"]
     }
+  end
+
+  @doc """
+  Delete a session and stop its runtime process if active.
+  """
+  @spec delete_session(String.t()) :: :ok | {:error, term()}
+  def delete_session(session_id) when is_binary(session_id) do
+    Repo.transaction(fn ->
+      case Repo.get(ChatSession, session_id) do
+        nil -> Repo.rollback(:not_found)
+        session -> delete_session_with_runtime(session)
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> :ok
+      {:error, :not_found} -> {:error, :not_found}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp delete_session_with_runtime(%ChatSession{} = session) do
+    stop_session_runtime(session.id)
+
+    case Repo.delete(session) do
+      {:ok, _} -> :ok
+      {:error, changeset} -> Repo.rollback(changeset)
+    end
+  end
+
+  defp stop_session_runtime(session_id) do
+    case Registry.lookup(SessionRegistry, session_id) do
+      [{pid, _} | _] -> GenServer.stop(pid, :shutdown)
+      [] -> :ok
+    end
   end
 
   defp post_message_processing(message, session) do

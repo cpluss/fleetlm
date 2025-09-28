@@ -52,6 +52,12 @@ defmodule FleetlmWeb.SessionController do
     end
   end
 
+  def delete(conn, %{"session_id" => session_id}) do
+    with :ok <- Conversation.delete_session(session_id) do
+      send_resp(conn, :no_content, "")
+    end
+  end
+
   defp render_session(session) do
     %{
       id: session.id,

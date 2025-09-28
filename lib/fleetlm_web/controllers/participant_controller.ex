@@ -40,6 +40,13 @@ defmodule FleetlmWeb.ParticipantController do
     end
   end
 
+  def delete(conn, %{"id" => id}) do
+    case Participants.delete_participant(id) do
+      {:ok, _participant} -> send_resp(conn, :no_content, "")
+      {:error, :not_found} -> send_resp(conn, :not_found, "")
+    end
+  end
+
   defp serialize(participant) do
     %{
       id: participant.id,

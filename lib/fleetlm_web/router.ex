@@ -26,11 +26,13 @@ defmodule FleetlmWeb.Router do
     get "/participants", ParticipantController, :index
     get "/participants/:id", ParticipantController, :show
     post "/participants", ParticipantController, :create
+    delete "/participants/:id", ParticipantController, :delete
 
     post "/sessions", SessionController, :create
     get "/sessions/:session_id/messages", SessionController, :messages
     post "/sessions/:session_id/messages", SessionController, :append_message
     post "/sessions/:session_id/read", SessionController, :mark_read
+    delete "/sessions/:session_id", SessionController, :delete
   end
 
   # Enable LiveDashboard and Swoosh mailbox preview in development
