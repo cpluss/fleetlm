@@ -1,0 +1,80 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: fleetlm_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    env:
+      MIX_ENV: test
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/fleetlm_test
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Elixir
+      uses: erlef/setup-beam@v1
+      with:
+        elixir-version: '1.15.7'
+        otp-version: '26.0'
+
+    - name: Restore dependencies cache
+      uses: actions/cache@v3
+      with:
+        path: deps
+        key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-mix-
+
+    - name: Install dependencies
+      run: mix deps.get
+
+    - name: Run precommit checks
+      run: mix precommit
+
+    - name: Run tests
+      run: mix test
+
+    - name: Run tests with coverage
+      run: mix test --cover
+      if: success() || failure()
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      if: success() || failure()
+      with:
+        file: ./cover/excoveralls.json
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
