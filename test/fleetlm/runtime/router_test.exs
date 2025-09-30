@@ -82,10 +82,46 @@ defmodule Fleetlm.Runtime.RouterTest do
     end
   end
 
-  describe "drain/1 (local routing)" do
-    test "skipped - drain requires async flush which is complex in tests", %{session: _session} do
-      # Drain functionality is tested in integration tests
-      :ok
+  describe "drain rejection" do
+    test "returns error when session is draining", %{session: session} do
+      alias Fleetlm.Runtime.{SessionServer, SessionTracker}
+
+      # Start session server
+      {:ok, _pid} = SessionServer.start_link(session.id)
+
+      # Verify it's running
+      {:ok, result} = Router.append_message(session.id, "alice", "text", %{"text" => "works"})
+      assert result.seq == 1
+
+      # Mark as draining
+      SessionTracker.mark_draining(session.id)
+
+      # Verify tracker shows draining
+      node = Node.self()
+      assert {:ok, ^node, :draining} = SessionTracker.find_session(session.id)
+
+      # Attempts to append should now fail with :draining
+      assert {:error, :draining} =
+               Router.append_message(session.id, "alice", "text", %{"text" => "rejected"})
+
+      # Join should also fail
+      assert {:error, :draining} = Router.join(session.id, "alice", last_seq: 0)
+    end
+
+    test "allows operations on non-draining sessions", %{session: session} do
+      alias Fleetlm.Runtime.SessionServer
+
+      # Start session server
+      {:ok, _pid} = SessionServer.start_link(session.id)
+
+      # Should work fine
+      {:ok, msg1} = Router.append_message(session.id, "alice", "text", %{"text" => "msg1"})
+      {:ok, msg2} = Router.append_message(session.id, "alice", "text", %{"text" => "msg2"})
+      {:ok, result} = Router.join(session.id, "alice", last_seq: 0)
+
+      assert msg1.seq == 1
+      assert msg2.seq == 2
+      assert length(result.messages) == 2
     end
   end
 end

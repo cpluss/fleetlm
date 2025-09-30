@@ -1,7 +1,6 @@
 defmodule Fleetlm.Runtime.TestHelper do
   @moduledoc false
 
-  alias Fleetlm.Runtime.Cache
   alias Fleetlm.Runtime.SessionSupervisor
   alias Fleetlm.Runtime.InboxSupervisor
 
@@ -12,9 +11,6 @@ defmodule Fleetlm.Runtime.TestHelper do
       # Terminate children forcefully but safely
       terminate_children_forcefully(Fleetlm.Runtime.SessionRegistry, SessionSupervisor)
       terminate_children_forcefully(Fleetlm.Runtime.InboxRegistry, InboxSupervisor)
-
-      # Reset caches after all processes have terminated
-      _ = Cache.reset()
 
       # Brief wait to ensure all database operations complete
       Process.sleep(25)

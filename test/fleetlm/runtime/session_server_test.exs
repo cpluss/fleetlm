@@ -17,9 +17,10 @@ defmodule Fleetlm.Runtime.SessionServerTest do
       reloaded = Repo.get(FleetLM.Storage.Model.Session, session.id)
       assert reloaded.status == "active"
 
-      # Clean stop
-      Process.exit(pid, :kill)
-      Process.sleep(10)
+      # Stop gracefully and wait for cleanup
+      ref = Process.monitor(pid)
+      GenServer.stop(pid, :normal)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1000
     end
 
     test "loads current sequence number from storage", %{session: session} do
@@ -43,8 +44,10 @@ defmodule Fleetlm.Runtime.SessionServerTest do
 
       assert message.seq == 3
 
-      Process.exit(pid, :kill)
-      Process.sleep(10)
+      # Stop gracefully and wait for cleanup
+      ref = Process.monitor(pid)
+      GenServer.stop(pid, :normal)
+      assert_receive {:DOWN, ^ref, :process, ^pid, :normal}, 1000
     end
   end
 
@@ -182,11 +185,13 @@ defmodule Fleetlm.Runtime.SessionServerTest do
     end
 
     test "authorizes participants", %{session: session} do
-      # alice and bob are authorized
+      # Only alice (user) is authorized to join via channel
       assert {:ok, _} = SessionServer.join(session.id, "alice", last_seq: 0)
-      assert {:ok, _} = SessionServer.join(session.id, "bob", last_seq: 0)
 
-      # charlie is not
+      # bob is the agent - agents don't join, they get webhooks
+      assert {:error, :unauthorized} = SessionServer.join(session.id, "bob", last_seq: 0)
+
+      # charlie is not a participant
       assert {:error, :unauthorized} = SessionServer.join(session.id, "charlie", last_seq: 0)
     end
 

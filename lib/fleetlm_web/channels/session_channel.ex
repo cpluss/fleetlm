@@ -44,8 +44,21 @@ defmodule FleetlmWeb.SessionChannel do
     metadata = Map.get(content, "metadata", %{})
 
     case Router.append_message(session.id, sender_id, kind, message_content, metadata) do
-      {:ok, _message} -> {:noreply, socket}
-      {:error, reason} -> {:reply, {:error, %{error: inspect(reason)}}, socket}
+      {:ok, _message} ->
+        {:noreply, socket}
+
+      {:error, :draining} ->
+        # Session is draining - apply backpressure
+        # Tell client to retry after brief delay
+        push(socket, "backpressure", %{
+          reason: "session_draining",
+          retry_after_ms: 1000
+        })
+
+        {:noreply, socket}
+
+      {:error, reason} ->
+        {:reply, {:error, %{error: inspect(reason)}}, socket}
     end
   end
 

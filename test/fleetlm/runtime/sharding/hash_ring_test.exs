@@ -1,7 +1,7 @@
-defmodule Fleetlm.Runtime.Sharding.HashRingTest do
+defmodule Fleetlm.Runtime.HashRingTest do
   use ExUnit.Case, async: false
 
-  alias Fleetlm.Runtime.Sharding.HashRing
+  alias Fleetlm.Runtime.HashRing
 
   setup do
     HashRing.reset!()

@@ -14,14 +14,15 @@ defmodule Fleetlm.Application do
         # Observability stack (PromEx + telemetry helpers)
         Fleetlm.Observability,
         Fleetlm.Repo,
+        # PubSub (must start before Runtime.Supervisor for SessionTracker)
+        pubsub_spec(),
+        dns_cluster_spec(),
         Fleetlm.Runtime.Supervisor,
         {Task.Supervisor, name: Fleetlm.Agent.DispatcherSupervisor},
         # Agent endpoint status cache for hot path optimization
         Fleetlm.Agent.EndpointCache,
         # Pooled webhook delivery system
-        webhook_manager_spec(),
-        dns_cluster_spec(),
-        pubsub_spec()
+        webhook_manager_spec()
       ]
       |> Enum.concat(cluster_children(topologies))
       |> Enum.reject(&is_nil/1)

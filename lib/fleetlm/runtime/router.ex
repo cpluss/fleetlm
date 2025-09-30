@@ -16,6 +16,7 @@ defmodule Fleetlm.Runtime.Router do
   alias Fleetlm.Runtime.HashRing
   alias Fleetlm.Runtime.SessionServer
   alias Fleetlm.Runtime.SessionSupervisor
+  alias Fleetlm.Runtime.SessionTracker
 
   @doc """
   Append a message to a session.
@@ -75,17 +76,38 @@ defmodule Fleetlm.Runtime.Router do
   # Private helpers
 
   defp route_to_owner(session_id, function, args) do
-    slot = HashRing.slot_for_session(session_id)
-    owner_node = HashRing.owner_node(slot)
+    # First check: Is this session already running somewhere?
+    # This provides "sticky routing" - active sessions stay where they are
+    case SessionTracker.find_session(session_id) do
+      {:ok, node, :running} ->
+        # Session is running on `node` and accepting requests
+        # Route there (overrides HashRing for sticky routing)
+        if node == Node.self() do
+          call_local(session_id, function, args)
+        else
+          call_remote(node, session_id, function, args)
+        end
 
-    cond do
-      # Owner is local node - call directly
-      owner_node == Node.self() ->
-        call_local(session_id, function, args)
+      {:ok, _node, :draining} ->
+        # Session is draining - reject with backpressure signal
+        # Client should retry after brief delay
+        Logger.debug("Session #{session_id} is draining, rejecting request")
+        {:error, :draining}
 
-      # Owner is remote node - use :erpc
-      true ->
-        call_remote(owner_node, session_id, function, args)
+      :not_found ->
+        # Session not tracked anywhere - use HashRing to determine owner
+        slot = HashRing.slot_for_session(session_id)
+        owner_node = HashRing.owner_node(slot)
+
+        cond do
+          # Owner is local node - call directly
+          owner_node == Node.self() ->
+            call_local(session_id, function, args)
+
+          # Owner is remote node - use :erpc
+          true ->
+            call_remote(owner_node, session_id, function, args)
+        end
     end
   end
 

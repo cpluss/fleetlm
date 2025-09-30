@@ -23,6 +23,7 @@ defmodule Fleetlm.Runtime.SessionServer do
 
   alias FleetLM.Storage.API, as: StorageAPI
   alias Fleetlm.Runtime.HashRing
+  alias Fleetlm.Runtime.SessionTracker
 
   # How many messages to keep in the tail cache in memory
   # to avoid fetching all messages from storage on each session join
@@ -123,6 +124,12 @@ defmodule Fleetlm.Runtime.SessionServer do
           Logger.info(
             "SessionServer started: #{session_id} on node #{Node.self()} (slot: #{slot}, seq: #{seq})"
           )
+
+          # Track this session as :running in the distributed tracker
+          SessionTracker.track(self(), session_id, %{
+            node: Node.self(),
+            status: :running
+          })
 
           {:ok,
            %__MODULE__{
@@ -244,8 +251,16 @@ defmodule Fleetlm.Runtime.SessionServer do
   def handle_call(:drain, _from, state) do
     Logger.info("Draining session #{state.session_id}")
 
-    # Flush slot log synchronously
-    :ok = flush_slot_sync(state.slot)
+    # Flush slot log synchronously (best effort - proceed even on timeout)
+    case flush_slot_sync(state.slot) do
+      :ok ->
+        Logger.debug("Session #{state.session_id} slot #{state.slot} flushed successfully")
+
+      :error ->
+        Logger.warning(
+          "Session #{state.session_id} slot #{state.slot} flush timed out, proceeding with drain anyway"
+        )
+    end
 
     # Mark session inactive
     mark_session_inactive(state.session_id)
@@ -257,7 +272,8 @@ defmodule Fleetlm.Runtime.SessionServer do
       {:session_drain, state.session_id}
     )
 
-    {:reply, :ok, state}
+    # Stop the process (tracker will auto-remove on termination)
+    {:stop, :normal, :ok, state}
   end
 
   @impl true

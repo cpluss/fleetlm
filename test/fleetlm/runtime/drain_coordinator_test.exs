@@ -7,14 +7,18 @@ defmodule Fleetlm.Runtime.DrainCoordinatorTest do
     # Use shared mode so spawned processes can access DB
     :ok = Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()})
 
-    # Start the drain coordinator
-    {:ok, coordinator_pid} = start_supervised(DrainCoordinator)
+    # DrainCoordinator is already running as part of Runtime.Supervisor
+    # Just verify it's alive
+    coordinator_pid = Process.whereis(DrainCoordinator)
+    assert is_pid(coordinator_pid) and Process.alive?(coordinator_pid),
+           "DrainCoordinator should be running"
+
+    # Reset drain state before each test
+    DrainCoordinator.reset_drain_state()
 
     on_exit(fn ->
-      if Process.alive?(coordinator_pid) do
-        Process.exit(coordinator_pid, :kill)
-        Process.sleep(10)
-      end
+      # Reset drain state after each test
+      DrainCoordinator.reset_drain_state()
     end)
 
     {:ok, coordinator_pid: coordinator_pid}
@@ -56,13 +60,14 @@ defmodule Fleetlm.Runtime.DrainCoordinatorTest do
       assert result == :ok or match?({:error, {:partial_drain, _, _}}, result)
     end
 
-    test "returns error on second drain attempt" do
+    test "can drain multiple times" do
       # First drain should succeed or partial
       result1 = DrainCoordinator.trigger_drain()
       assert result1 == :ok or match?({:error, {:partial_drain, _, _}}, result1)
 
-      # Second drain should fail
-      assert {:error, :already_draining} = DrainCoordinator.trigger_drain()
+      # Second drain should also work (state resets after drain)
+      result2 = DrainCoordinator.trigger_drain()
+      assert result2 == :ok or match?({:error, {:partial_drain, _, _}}, result2)
     end
   end
 

@@ -99,8 +99,8 @@ defmodule Fleetlm.Integration.IntegrationTest do
         if Process.alive?(inbox_pid), do: catch_exit(GenServer.stop(inbox_pid, :normal))
       end)
 
-      # Subscribe to inbox updates
-      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:alice")
+      # Subscribe to inbox snapshot broadcasts
+      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:user:alice")
 
       # Send message to session1
       {:ok, _} =
@@ -150,7 +150,7 @@ defmodule Fleetlm.Integration.IntegrationTest do
           Task.async(fn ->
             Router.append_message(
               session.id,
-              session.sender_id,
+              session.user_id,
               "text",
               %{"text" => "parallel message"},
               %{}
@@ -173,7 +173,7 @@ defmodule Fleetlm.Integration.IntegrationTest do
       # (don't force immediate flush for parallel test)
       for session <- sessions do
         # Messages should at least be readable via Router (from ETS cache or storage)
-        {:ok, replay} = Router.join(session.id, session.sender_id, last_seq: 0, limit: 10)
+        {:ok, replay} = Router.join(session.id, session.user_id, last_seq: 0, limit: 10)
         assert length(replay.messages) >= 1
       end
     end
@@ -229,8 +229,8 @@ defmodule Fleetlm.Integration.IntegrationTest do
           )
       end
 
-      # Join session
-      {:ok, result} = Router.join(session.id, "bob", last_seq: 0, limit: 10)
+      # Join session (as alice - the user)
+      {:ok, result} = Router.join(session.id, "alice", last_seq: 0, limit: 10)
 
       # Should get all 5 messages
       assert length(result.messages) == 5
@@ -253,8 +253,8 @@ defmodule Fleetlm.Integration.IntegrationTest do
           )
       end
 
-      # Join with last_seq = 3
-      {:ok, result} = Router.join(session.id, "bob", last_seq: 3, limit: 10)
+      # Join with last_seq = 3 (as alice - the user)
+      {:ok, result} = Router.join(session.id, "alice", last_seq: 3, limit: 10)
 
       # Should only get messages 4 and 5
       assert length(result.messages) == 2

@@ -1,6 +1,8 @@
 defmodule FleetLM.Storage.SlotLogServerTest do
   use Fleetlm.StorageCase, async: false
 
+  import Ecto.Query
+
   setup do
     # Use a high slot number to avoid conflicts with production SlotLogServers
     # and start our own test-specific SlotLogServer
@@ -64,8 +66,12 @@ defmodule FleetLM.Storage.SlotLogServerTest do
         1000 -> raise "Timeout waiting for flush"
       end
 
-      # Verify entries were persisted to database
-      messages = Repo.all(Message)
+      # Verify entries were persisted to database (for these specific sessions)
+      messages =
+        Message
+        |> where([m], m.session_id in [^session1.id, ^session2.id])
+        |> Repo.all()
+
       assert length(messages) == 3
 
       # Compare structs ignoring __meta__ (which differs between :built and :loaded)

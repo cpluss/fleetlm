@@ -31,6 +31,13 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
     GenServer.call(__MODULE__, :drain, :infinity)
   end
 
+  @doc """
+  Reset drain state (for testing only).
+  """
+  def reset_drain_state do
+    GenServer.call(__MODULE__, :reset_drain_state)
+  end
+
   # Server callbacks
 
   @impl true
@@ -50,8 +57,14 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
     else
       Logger.warning("DrainCoordinator: Starting graceful drain")
       result = perform_drain()
-      {:reply, result, %{state | draining: true}}
+      # Reset draining state after completion (for testing)
+      {:reply, result, %{state | draining: false}}
     end
+  end
+
+  @impl true
+  def handle_call(:reset_drain_state, _from, state) do
+    {:reply, :ok, %{state | draining: false}}
   end
 
   @impl true

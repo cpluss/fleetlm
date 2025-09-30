@@ -26,9 +26,15 @@ defmodule Fleetlm.Runtime.Supervisor do
       {Registry, keys: :unique, name: Fleetlm.Runtime.SessionRegistry},
       {Registry, keys: :unique, name: Fleetlm.Runtime.InboxRegistry},
 
+      # Distributed session tracker (Phoenix.Tracker with CRDTs)
+      {Fleetlm.Runtime.SessionTracker, [pubsub_server: Fleetlm.PubSub]},
+
       # Dynamic supervisors for session and inbox servers
       {SessionSupervisor, []},
       {InboxSupervisor, []},
+
+      # Rebalance manager (listens for topology changes from tracker)
+      Fleetlm.Runtime.RebalanceManager,
 
       # Graceful drain coordinator for SIGTERM handling
       Fleetlm.Runtime.DrainCoordinator

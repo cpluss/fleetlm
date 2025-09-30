@@ -5,8 +5,8 @@ defmodule FleetLM.Storage.IntegrationTest do
     test "append -> flush -> retrieve" do
       # Create session using helper
       session = create_test_session("alice", "bob")
-      assert session.sender_id == "alice"
-      assert session.recipient_id == "bob"
+      assert session.user_id == "alice"
+      assert session.agent_id == "bob"
       assert session.status == "active"
 
       # Append message (goes to disk_log)
@@ -110,7 +110,7 @@ defmodule FleetLM.Storage.IntegrationTest do
       session2 = create_test_session("alice", "charlie")
       _session3 = create_test_session("bob", "alice")
 
-      {:ok, sessions} = API.get_sessions_for_sender("alice")
+      {:ok, sessions} = API.get_sessions_for_user("alice")
       session_ids = Enum.map(sessions, & &1.id) |> Enum.sort()
 
       assert length(sessions) == 2
@@ -139,7 +139,7 @@ defmodule FleetLM.Storage.IntegrationTest do
       assert archived.status == "archived"
 
       # Archived sessions should not appear in sender's active sessions
-      {:ok, sessions} = API.get_sessions_for_sender("alice")
+      {:ok, sessions} = API.get_sessions_for_user("alice")
       assert Enum.all?(sessions, &(&1.status != "archived"))
     end
   end
