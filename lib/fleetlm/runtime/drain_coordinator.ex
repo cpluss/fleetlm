@@ -107,7 +107,8 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
         case result do
           {:ok, :ok} -> {succ + 1, fail}
           {:ok, {:error, _}} -> {succ, fail + 1}
-          nil -> {succ, fail + 1}  # Timeout
+          # Timeout
+          nil -> {succ, fail + 1}
           _ -> {succ, fail + 1}
         end
       end)

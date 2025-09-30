@@ -149,13 +149,16 @@ defmodule FleetLM.Storage.SlotLogServer do
 
   defp flush_to_database(%{slot: slot, log: log, notify_next_flush: notify_next_flush}) do
     DiskLog.sync(log)
+
     case DiskLog.read_all(log) do
       {:error, reason} ->
         Logger.error("Failed to read from disk_log for slot #{slot}: #{inspect(reason)}")
+
       {:ok, []} ->
         Enum.each(notify_next_flush, fn from ->
           send(from, :flushed)
         end)
+
       {:ok, entries} ->
         messages =
           Enum.map(entries, fn entry ->
@@ -176,9 +179,11 @@ defmodule FleetLM.Storage.SlotLogServer do
         case Repo.insert_all(Message, messages, on_conflict: :nothing) do
           {count, _} when is_integer(count) ->
             DiskLog.truncate(log)
+
             Enum.each(notify_next_flush, fn from ->
               send(from, :flushed)
             end)
+
           error ->
             Logger.error("Failed to flush slot #{slot} to database: #{inspect(error)}")
         end

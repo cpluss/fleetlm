@@ -33,12 +33,13 @@ defmodule Fleetlm.Runtime.SessionServerTest do
       {:ok, pid} = SessionServer.start_link(session.id)
 
       # Append should get seq = 3
-      {:ok, message} = SessionServer.append_message(
-        session.id,
-        "alice",
-        "text",
-        %{"text" => "msg3"}
-      )
+      {:ok, message} =
+        SessionServer.append_message(
+          session.id,
+          "alice",
+          "text",
+          %{"text" => "msg3"}
+        )
 
       assert message.seq == 3
 
@@ -50,22 +51,25 @@ defmodule Fleetlm.Runtime.SessionServerTest do
   describe "append_message/2" do
     setup %{session: session} do
       {:ok, pid} = SessionServer.start_link(session.id)
+
       on_exit(fn ->
         if Process.alive?(pid) do
           Process.exit(pid, :kill)
           Process.sleep(10)
         end
       end)
+
       %{pid: pid}
     end
 
     test "appends message with incremented sequence number", %{session: session} do
-      {:ok, message} = SessionServer.append_message(
-        session.id,
-        "alice",
-        "text",
-        %{"text" => "hello"}
-      )
+      {:ok, message} =
+        SessionServer.append_message(
+          session.id,
+          "alice",
+          "text",
+          %{"text" => "hello"}
+        )
 
       assert message.seq == 1
       assert message.sender_id == "alice"
@@ -76,12 +80,13 @@ defmodule Fleetlm.Runtime.SessionServerTest do
     test "broadcasts message via PubSub", %{session: session} do
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "session:#{session.id}")
 
-      {:ok, message} = SessionServer.append_message(
-        session.id,
-        "alice",
-        "text",
-        %{"text" => "hello"}
-      )
+      {:ok, message} =
+        SessionServer.append_message(
+          session.id,
+          "alice",
+          "text",
+          %{"text" => "hello"}
+        )
 
       assert_receive {:session_message, broadcasted_message}
       assert broadcasted_message["seq"] == message.seq
@@ -99,12 +104,13 @@ defmodule Fleetlm.Runtime.SessionServerTest do
     end
 
     test "determines recipient_id based on sender", %{session: session} do
-      {:ok, msg1} = SessionServer.append_message(
-        session.id,
-        "alice",
-        "text",
-        %{"text" => "from alice"}
-      )
+      {:ok, msg1} =
+        SessionServer.append_message(
+          session.id,
+          "alice",
+          "text",
+          %{"text" => "from alice"}
+        )
 
       # Storage doesn't expose recipient_id in the returned message,
       # but we can verify it was persisted correctly
@@ -117,12 +123,13 @@ defmodule Fleetlm.Runtime.SessionServerTest do
     end
 
     test "persists message via Storage.API", %{session: session} do
-      {:ok, message} = SessionServer.append_message(
-        session.id,
-        "alice",
-        "text",
-        %{"text" => "hello"}
-      )
+      {:ok, message} =
+        SessionServer.append_message(
+          session.id,
+          "alice",
+          "text",
+          %{"text" => "hello"}
+        )
 
       # Flush and verify persistence
       slot = :erlang.phash2(session.id, 64)
@@ -137,12 +144,14 @@ defmodule Fleetlm.Runtime.SessionServerTest do
   describe "join/3" do
     setup %{session: session} do
       {:ok, pid} = SessionServer.start_link(session.id)
+
       on_exit(fn ->
         if Process.alive?(pid) do
           Process.exit(pid, :kill)
           Process.sleep(10)
         end
       end)
+
       %{pid: pid}
     end
 

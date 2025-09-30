@@ -8,7 +8,11 @@ defmodule FleetlmWeb.InboxChannel do
   alias Fleetlm.Runtime.{InboxSupervisor, InboxServer}
 
   @impl true
-  def join("inbox:" <> participant_id, _params, %{assigns: %{participant_id: participant_id}} = socket) do
+  def join(
+        "inbox:" <> participant_id,
+        _params,
+        %{assigns: %{participant_id: participant_id}} = socket
+      ) do
     with {:ok, _pid} <- InboxSupervisor.ensure_started(participant_id) do
       {:ok, snapshot} = InboxServer.get_snapshot(participant_id)
 

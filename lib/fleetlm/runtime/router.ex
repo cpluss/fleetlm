@@ -24,8 +24,16 @@ defmodule Fleetlm.Runtime.Router do
   @spec append_message(String.t(), String.t(), String.t(), map(), map()) ::
           {:ok, map()} | {:error, term()}
   def append_message(session_id, sender_id, kind, content, metadata \\ %{}) do
-    case route_to_owner(session_id, :append_message, [session_id, sender_id, kind, content, metadata]) do
-      {:ok, result} -> {:ok, result}
+    case route_to_owner(session_id, :append_message, [
+           session_id,
+           sender_id,
+           kind,
+           content,
+           metadata
+         ]) do
+      {:ok, result} ->
+        {:ok, result}
+
       {:error, reason} = error ->
         Logger.error("Failed to append message to session #{session_id}: #{inspect(reason)}")
         error
@@ -39,7 +47,9 @@ defmodule Fleetlm.Runtime.Router do
   @spec join(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def join(session_id, participant_id, opts \\ []) do
     case route_to_owner(session_id, :join, [session_id, participant_id, opts]) do
-      {:ok, result} -> {:ok, result}
+      {:ok, result} ->
+        {:ok, result}
+
       {:error, reason} = error ->
         Logger.error("Failed to join session #{session_id}: #{inspect(reason)}")
         error
@@ -53,7 +63,9 @@ defmodule Fleetlm.Runtime.Router do
   @spec drain(String.t()) :: :ok | {:error, term()}
   def drain(session_id) do
     case route_to_owner(session_id, :drain, [session_id]) do
-      :ok -> :ok
+      :ok ->
+        :ok
+
       {:error, reason} = error ->
         Logger.error("Failed to drain session #{session_id}: #{inspect(reason)}")
         error
@@ -101,7 +113,10 @@ defmodule Fleetlm.Runtime.Router do
       end
     catch
       :error, {:erpc, reason} ->
-        Logger.error("ERPC failed for session #{session_id} on node #{owner_node}: #{inspect(reason)}")
+        Logger.error(
+          "ERPC failed for session #{session_id} on node #{owner_node}: #{inspect(reason)}"
+        )
+
         {:error, {:erpc_failed, reason}}
     end
   end

@@ -84,5 +84,4 @@ defmodule FleetLM.Storage.APITest do
     assert Enum.map(messages, & &1.seq) == [1, 2]
     assert Enum.map(messages, & &1.content["text"]) == ["persisted", "live"]
   end
-
 end

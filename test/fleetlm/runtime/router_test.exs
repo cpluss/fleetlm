@@ -10,12 +10,13 @@ defmodule Fleetlm.Runtime.RouterTest do
 
   describe "append_message/5 (local routing)" do
     test "appends message via local SessionServer", %{session: session} do
-      {:ok, message} = Router.append_message(
-        session.id,
-        "alice",
-        "text",
-        %{"text" => "hello via router"}
-      )
+      {:ok, message} =
+        Router.append_message(
+          session.id,
+          "alice",
+          "text",
+          %{"text" => "hello via router"}
+        )
 
       assert message.seq == 1
       assert message.sender_id == "alice"
@@ -34,12 +35,13 @@ defmodule Fleetlm.Runtime.RouterTest do
       end
 
       # Router should start it automatically
-      {:ok, message} = Router.append_message(
-        session.id,
-        "alice",
-        "text",
-        %{"text" => "auto-start"}
-      )
+      {:ok, message} =
+        Router.append_message(
+          session.id,
+          "alice",
+          "text",
+          %{"text" => "auto-start"}
+        )
 
       assert message.seq == 1
 

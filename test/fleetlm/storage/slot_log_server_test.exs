@@ -159,5 +159,4 @@ defmodule FleetLM.Storage.SlotLogServerTest do
       assert expected == actual
     end
   end
-
 end

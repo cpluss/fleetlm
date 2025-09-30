@@ -75,7 +75,11 @@ defmodule Fleetlm.Runtime.SessionServer do
   @spec append_message(String.t(), String.t(), String.t(), map(), map()) ::
           {:ok, map()} | {:error, term()}
   def append_message(session_id, sender_id, kind, content, metadata \\ %{}) do
-    GenServer.call(via(session_id), {:append, sender_id, kind, content, metadata}, :timer.seconds(10))
+    GenServer.call(
+      via(session_id),
+      {:append, sender_id, kind, content, metadata},
+      :timer.seconds(10)
+    )
   end
 
   @spec join(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
@@ -97,8 +101,12 @@ defmodule Fleetlm.Runtime.SessionServer do
     # Verify we're on the correct owner node
     slot = HashRing.slot_for_session(session_id)
     expected_owner = HashRing.owner_node(slot)
+
     if expected_owner != Node.self() do
-      Logger.error("SessionServer #{session_id} started on wrong node. Expected: #{expected_owner}")
+      Logger.error(
+        "SessionServer #{session_id} started on wrong node. Expected: #{expected_owner}"
+      )
+
       {:stop, {:wrong_owner, expected_owner}}
     else
       # Load session from database
@@ -116,7 +124,9 @@ defmodule Fleetlm.Runtime.SessionServer do
           # Schedule inactivity check
           timer = schedule_inactivity_check()
 
-          Logger.info("SessionServer started: #{session_id} on node #{Node.self()} (slot: #{slot}, seq: #{seq})")
+          Logger.info(
+            "SessionServer started: #{session_id} on node #{Node.self()} (slot: #{slot}, seq: #{seq})"
+          )
 
           {:ok,
            %__MODULE__{
@@ -128,7 +138,8 @@ defmodule Fleetlm.Runtime.SessionServer do
              tail_table: tail_table,
              inactivity_timer: timer,
              last_activity: System.monotonic_time(:millisecond),
-             agent_id: nil  # We don't track agent_id in new storage model
+             # We don't track agent_id in new storage model
+             agent_id: nil
            }}
 
         {:error, reason} ->
@@ -189,7 +200,10 @@ defmodule Fleetlm.Runtime.SessionServer do
         {:reply, {:ok, message}, %{new_state | seq: next_seq}}
 
       {:error, reason} = error ->
-        Logger.error("Failed to append message to session #{state.session_id}: #{inspect(reason)}")
+        Logger.error(
+          "Failed to append message to session #{state.session_id}: #{inspect(reason)}"
+        )
+
         {:reply, error, state}
     end
   end
@@ -288,7 +302,9 @@ defmodule Fleetlm.Runtime.SessionServer do
     try do
       Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session_id)
       |> case do
-        nil -> :ok
+        nil ->
+          :ok
+
         session ->
           session
           |> Ecto.Changeset.change(%{status: "active"})
@@ -298,6 +314,7 @@ defmodule Fleetlm.Runtime.SessionServer do
       DBConnection.OwnershipError ->
         Logger.warning("Could not mark session #{session_id} as active - no DB access")
         :ok
+
       e ->
         Logger.error("Error marking session #{session_id} as active: #{inspect(e)}")
         :ok
@@ -308,7 +325,9 @@ defmodule Fleetlm.Runtime.SessionServer do
     try do
       Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session_id)
       |> case do
-        nil -> :ok
+        nil ->
+          :ok
+
         session ->
           session
           |> Ecto.Changeset.change(%{status: "inactive"})
@@ -318,6 +337,7 @@ defmodule Fleetlm.Runtime.SessionServer do
       DBConnection.OwnershipError ->
         Logger.warning("Could not mark session #{session_id} as inactive - no DB access")
         :ok
+
       e ->
         Logger.error("Error marking session #{session_id} as inactive: #{inspect(e)}")
         :ok
@@ -354,6 +374,7 @@ defmodule Fleetlm.Runtime.SessionServer do
       size when size > @tail_size ->
         # Delete oldest entries
         to_delete = size - @tail_size
+
         :ets.first(table)
         |> delete_n_entries(table, to_delete)
 
@@ -388,9 +409,10 @@ defmodule Fleetlm.Runtime.SessionServer do
       Process.cancel_timer(state.inactivity_timer)
     end
 
-    %{state |
-      inactivity_timer: schedule_inactivity_check(),
-      last_activity: System.monotonic_time(:millisecond)
+    %{
+      state
+      | inactivity_timer: schedule_inactivity_check(),
+        last_activity: System.monotonic_time(:millisecond)
     }
   end
 
