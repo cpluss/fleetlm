@@ -1,10 +1,16 @@
+---
+title: Architecture
+slug: /architecture
+sidebar_position: 2
+---
+
 # FleetLM Architecture
 
 FleetLM is designed to run as a single container without too many moving components by leaning heavily on a clustered architecture. 
 
 This incurs extra network traffic cost but gives us horizontal scalability and a reduced database engagement on the hot-path. It's ultimately faster to distribute session traffic across nodes and maintain a lightweight append-only log that is flushed every 200–300ms than it is to hit a central point of failure (the database) on each message.
 
-![](./high-level-clustered.png)
+![](./img/high-level-clustered.png)
 
 We split traffic into two components that runs on each cluster node:
 
@@ -13,7 +19,7 @@ We split traffic into two components that runs on each cluster node:
 
 > **Note that this also means that it's not necessarily always the same node that is responsible for a single request.**
 
-![](./architecture.png)
+![](./img/architecture.png)
 
 ## Inbox & Session Management
 
