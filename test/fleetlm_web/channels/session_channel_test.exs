@@ -1,32 +1,15 @@
 defmodule FleetlmWeb.SessionChannelTest do
   use FleetlmWeb.ChannelCase
 
-  alias Fleetlm.Conversation.Participants
-  alias Fleetlm.Runtime.{Gateway, SessionSupervisor}
-  alias Fleetlm.Conversation
+  alias Fleetlm.Runtime.{Router, SessionSupervisor}
+  alias FleetLM.Storage.API
   alias FleetlmWeb.SessionChannel
 
   setup do
-    {:ok, _} =
-      Participants.upsert_participant(%{
-        id: "user:alice",
-        kind: "user",
-        display_name: "Alice"
-      })
+    # Create session using new storage model
+    {:ok, session} = API.create_session("user:alice", "agent:bot", %{})
 
-    {:ok, _} =
-      Participants.upsert_participant(%{
-        id: "agent:bot",
-        kind: "agent",
-        display_name: "Bot"
-      })
-
-    {:ok, session} =
-      Conversation.start_session(%{
-        initiator_id: "user:alice",
-        peer_id: "agent:bot"
-      })
-
+    # Ensure SessionServer is started and has DB access
     {:ok, pid} = SessionSupervisor.ensure_started(session.id)
     Fleetlm.DataCase.allow_sandbox_access(pid)
 
@@ -35,11 +18,13 @@ defmodule FleetlmWeb.SessionChannelTest do
 
   test "join returns message history", %{session: session} do
     {:ok, _} =
-      Gateway.append_message(session.id, %{
-        sender_id: "user:alice",
-        kind: "text",
-        content: %{text: "hello"}
-      })
+      Router.append_message(
+        session.id,
+        "user:alice",
+        "text",
+        %{"text" => "hello"},
+        %{}
+      )
 
     {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"participant_id" => "user:alice"})
 

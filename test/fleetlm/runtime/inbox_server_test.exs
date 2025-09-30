@@ -1,131 +1,132 @@
 defmodule Fleetlm.Runtime.InboxServerTest do
-  use Fleetlm.DataCase, async: false
+  use Fleetlm.StorageCase, async: false
 
-  alias Fleetlm.Conversation.Participants
-  alias Fleetlm.Conversation
-  alias Fleetlm.Runtime.{Cache, InboxServer, InboxSupervisor, SessionSupervisor}
+  alias Fleetlm.Runtime.{InboxServer, Router}
 
   setup do
-    :ok = Cache.reset()
-    on_exit(fn -> Cache.reset() end)
-    :ok
+    # Create two sessions for alice with different participants
+    session1 = create_test_session("alice", "bob")
+    session2 = create_test_session("alice", "charlie")
+
+    {:ok, session1: session1, session2: session2}
   end
 
-  describe "InboxServer state hydration" do
-    test "initializes with nil snapshot (lazy loading)" do
-      participant = "user:cached"
-      snapshot = [%{"session_id" => "existing"}]
+  describe "start_link/1" do
+    test "starts inbox server and loads sessions", %{session1: session1, session2: session2} do
+      {:ok, pid} = InboxServer.start_link("alice")
 
-      :ok = Cache.put_inbox_snapshot(participant, snapshot)
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          catch_exit(GenServer.stop(pid, :normal))
+        end
+      end)
 
-      {:ok, pid} = InboxSupervisor.ensure_started(participant)
-      allow_sandbox_access(pid)
-      state = :sys.get_state(pid)
+      assert Process.alive?(pid)
 
-      # Snapshot should be nil initially (lazy loading)
-      assert state.snapshot == nil
-      assert state.participant_id == participant
+      # Get snapshot
+      {:ok, snapshot} = InboxServer.get_snapshot("alice")
+
+      # Should have 2 sessions
+      assert length(snapshot) == 2
+      session_ids = Enum.map(snapshot, & &1["session_id"]) |> MapSet.new()
+      assert MapSet.member?(session_ids, session1.id)
+      assert MapSet.member?(session_ids, session2.id)
+    end
+
+    test "initializes with no messages", %{session1: _session1} do
+      {:ok, pid} = InboxServer.start_link("alice")
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          catch_exit(GenServer.stop(pid, :normal))
+        end
+      end)
+
+      {:ok, snapshot} = InboxServer.get_snapshot("alice")
+
+      # Find alice's session
+      alice_session = Enum.find(snapshot, &(&1["session_id"] != nil))
+
+      # Should have no last message
+      assert alice_session["last_message"] == nil
     end
   end
 
-  describe "inbox broadcasts" do
-    setup do
-      {:ok, sender} = ensure_participant("user:sender")
-      {:ok, recipient} = ensure_participant("user:recipient")
+  describe "event-driven updates" do
+    setup %{session1: session1, session2: session2} do
+      {:ok, inbox_pid} = InboxServer.start_link("alice")
 
-      {:ok, session} =
-        Conversation.start_session(%{
-          initiator_id: sender.id,
-          peer_id: recipient.id
-        })
+      on_exit(fn ->
+        if Process.alive?(inbox_pid) do
+          catch_exit(GenServer.stop(inbox_pid, :normal))
+        end
+      end)
 
-      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:" <> recipient.id)
-      {:ok, inbox_pid} = InboxSupervisor.ensure_started(recipient.id)
-      allow_sandbox_access(inbox_pid)
-
-      {:ok, session_pid} = SessionSupervisor.ensure_started(session.id)
-      allow_sandbox_access(session_pid)
-
-      %{session: session, sender: sender, recipient: recipient}
+      %{inbox_pid: inbox_pid, session: session1, session2: session2}
     end
 
-    test "enqueue_update via append caches snapshot", %{
-      session: session,
-      sender: sender,
-      recipient: recipient
-    } do
-      {:ok, _message} =
-        Conversation.append_message(session.id, %{
-          sender_id: sender.id,
-          kind: "text",
-          content: %{text: "hello"}
-        })
+    test "updates inbox when message arrives via PubSub", %{session: session} do
+      # Subscribe to inbox updates
+      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:alice")
 
-      assert Conversation.unread_count(Conversation.get_session!(session.id), recipient.id) == 1
-      sessions = Conversation.list_sessions_for_participant(recipient.id)
-      assert Enum.any?(sessions, fn s -> Conversation.unread_count(s, recipient.id) == 1 end)
-
-      assert_receive {:inbox_snapshot, snapshot}, 500
-
-      entry = Enum.find(snapshot, &(&1["session_id"] == session.id))
-      refute is_nil(entry)
-      assert entry["session_id"] == session.id
-      assert Enum.any?(snapshot, &(&1["unread_count"] == 1))
-
-      assert {:ok, cached} = Cache.fetch_inbox_snapshot(recipient.id)
-      assert cached == snapshot
-    end
-
-    test "flush triggers a fresh broadcast", %{
-      session: session,
-      sender: sender,
-      recipient: recipient
-    } do
-      {:ok, _message} =
-        Conversation.append_message(session.id, %{
-          sender_id: sender.id,
-          kind: "text",
-          content: %{text: "hello"}
-        })
-
-      assert_receive {:inbox_snapshot, _snapshot}, 500
-
-      :ok = InboxServer.flush(recipient.id)
-
-      assert_receive {:inbox_snapshot, snapshot}, 500
-      assert Enum.any?(snapshot, &(&1["session_id"] == session.id))
-    end
-
-    test "mark_read flush updates unread counts", %{
-      session: session,
-      sender: sender,
-      recipient: recipient
-    } do
+      # Send a message via Router (which broadcasts to session PubSub)
       {:ok, message} =
-        Conversation.append_message(session.id, %{
-          sender_id: sender.id,
-          kind: "text",
-          content: %{text: "hello"}
-        })
+        Router.append_message(
+          session.id,
+          "bob",
+          "text",
+          %{"text" => "hello alice"},
+          %{}
+        )
 
-      assert_receive {:inbox_snapshot, snapshot}, 500
-      entry = Enum.find(snapshot, &(&1["session_id"] == session.id))
-      assert entry
-      assert Enum.any?(snapshot, &(&1["unread_count"] == 1))
+      # Should receive inbox snapshot update
+      assert_receive {:inbox_snapshot, snapshot}, 1000
 
-      {:ok, _} = Conversation.mark_read(session.id, recipient.id, message_id: message.id)
+      # Find the session in snapshot
+      updated_session = Enum.find(snapshot, &(&1["session_id"] == session.id))
 
-      assert_receive {:inbox_snapshot, snapshot2}, 500
-      entry2 = Enum.find(snapshot2, &(&1["session_id"] == session.id))
-      assert entry2["unread_count"] == 0
+      # Should have updated last message
+      assert updated_session["last_message"]["seq"] == message.seq
+      assert updated_session["last_message"]["sender_id"] == "bob"
     end
-  end
 
-  defp ensure_participant(id, kind \\ "user") do
-    Participants.upsert_participant(%{
-      id: id,
-      kind: kind,
-      display_name: id
-    })
+    test "updates for messages from self too", %{session: session} do
+      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:alice")
+
+      # Alice sends a message
+      {:ok, message} =
+        Router.append_message(
+          session.id,
+          "alice",
+          "text",
+          %{"text" => "hello bob"},
+          %{}
+        )
+
+      # Should receive inbox snapshot update
+      assert_receive {:inbox_snapshot, snapshot}, 1000
+
+      updated_session = Enum.find(snapshot, &(&1["session_id"] == session.id))
+
+      # Should update last message regardless of sender
+      assert updated_session["last_message"]["seq"] == message.seq
+      assert updated_session["last_message"]["sender_id"] == "alice"
+    end
+
+    test "sorts sessions by last message time", %{session1: session1, session2: session2, inbox_pid: _inbox_pid} do
+      # Inbox already started by setup
+      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:alice")
+
+      # Send message to session2 first
+      {:ok, _} = Router.append_message(session2.id, "charlie", "text", %{"text" => "1"}, %{})
+      assert_receive {:inbox_snapshot, _}, 1000
+
+      # Then send message to session1
+      {:ok, _} = Router.append_message(session1.id, "bob", "text", %{"text" => "2"}, %{})
+      assert_receive {:inbox_snapshot, snapshot}, 1000
+
+      # session1 should be first (most recent)
+      assert hd(snapshot)["session_id"] == session1.id
+    end
   end
 end

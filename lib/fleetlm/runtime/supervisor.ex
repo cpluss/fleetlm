@@ -2,15 +2,13 @@ defmodule Fleetlm.Runtime.Supervisor do
   @moduledoc """
   Root supervisor for the session runtime tree.
 
-  Starts Cachex caches, registries, and the dynamic supervisors that manage
-  session/inbox servers. It also hosts the sharding control plane, which keeps
-  the consistent hash ring and slot owners in sync so the gateway sees a
-  cluster-wide load balancer instead of node-local state.
+  Starts storage layer, registries, sharding control plane, and dynamic supervisors
+  that manage SessionServer/InboxServer processes. Also includes DrainCoordinator
+  for graceful SIGTERM handling during deployments.
   """
 
   use Supervisor
 
-  alias Fleetlm.Runtime.CacheSupervisor
   alias Fleetlm.Runtime.SessionSupervisor
   alias Fleetlm.Runtime.InboxSupervisor
 
@@ -23,14 +21,22 @@ defmodule Fleetlm.Runtime.Supervisor do
     children = [
       # Storage layer (SlotLogServers with disk logs)
       FleetLM.Storage.Supervisor,
-      CacheSupervisor,
+
+      # Registries for process lookup
       {Registry, keys: :unique, name: Fleetlm.Runtime.Sharding.LocalRegistry},
-      Fleetlm.Runtime.Sharding.Supervisor,
-      Fleetlm.Runtime.Sharding.Manager,
       {Registry, keys: :unique, name: Fleetlm.Runtime.SessionRegistry},
       {Registry, keys: :unique, name: Fleetlm.Runtime.InboxRegistry},
+
+      # Sharding control plane (HashRing, slot management)
+      Fleetlm.Runtime.Sharding.Supervisor,
+      Fleetlm.Runtime.Sharding.Manager,
+
+      # Dynamic supervisors for session and inbox servers
       {SessionSupervisor, []},
-      {InboxSupervisor, []}
+      {InboxSupervisor, []},
+
+      # Graceful drain coordinator for SIGTERM handling
+      Fleetlm.Runtime.DrainCoordinator
     ]
 
     Supervisor.init(children, strategy: :one_for_all)

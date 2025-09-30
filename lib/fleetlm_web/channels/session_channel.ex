@@ -5,9 +5,8 @@ defmodule FleetlmWeb.SessionChannel do
 
   use FleetlmWeb, :channel
 
-  alias Fleetlm.Runtime.Gateway
-  alias Fleetlm.Runtime.SessionServer
-  alias Fleetlm.Conversation
+  alias Fleetlm.Runtime.Router
+  alias FleetLM.Storage.Model.Session
 
   @impl true
   def join(
@@ -16,11 +15,10 @@ defmodule FleetlmWeb.SessionChannel do
         %{assigns: %{participant_id: participant_id}} = socket
       ) do
     with {:ok, session} <- authorize(session_id, participant_id),
-         {:ok, tail} <- SessionServer.load_tail(session_id) do
+         {:ok, result} <- Router.join(session_id, participant_id, last_seq: 0, limit: 100) do
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "session:" <> session_id)
 
-      messages = Enum.map(tail, &payload_with_iso/1)
-      response = %{session_id: session_id, messages: messages}
+      response = %{session_id: session_id, messages: result.messages}
 
       {:ok, response, assign(socket, :session, session)}
     else
@@ -40,26 +38,30 @@ defmodule FleetlmWeb.SessionChannel do
         %{"content" => content},
         %{assigns: %{session: session, participant_id: participant_id}} = socket
       ) do
-    attrs = %{
-      sender_id: participant_id,
-      kind: Map.get(content, "kind", "text"),
-      content: Map.get(content, "content", %{}),
-      metadata: Map.get(content, "metadata", %{})
-    }
+    sender_id = participant_id
+    kind = Map.get(content, "kind", "text")
+    message_content = Map.get(content, "content", %{})
+    metadata = Map.get(content, "metadata", %{})
 
-    case Gateway.append_message(session.id, attrs) do
+    case Router.append_message(session.id, sender_id, kind, message_content, metadata) do
       {:ok, _message} -> {:noreply, socket}
       {:error, reason} -> {:reply, {:error, %{error: inspect(reason)}}, socket}
     end
   end
 
   defp authorize(session_id, participant_id) do
-    session = Conversation.get_session!(session_id)
+    session = Fleetlm.Repo.get(Session, session_id)
 
-    if participant_id in [session.initiator_id, session.peer_id] do
-      {:ok, session}
-    else
-      {:error, :unauthorized}
+    case session do
+      nil ->
+        {:error, :not_found}
+
+      %Session{} = session ->
+        if participant_id in [session.sender_id, session.recipient_id] do
+          {:ok, session}
+        else
+          {:error, :unauthorized}
+        end
     end
   rescue
     _ -> {:error, :not_found}
@@ -68,31 +70,4 @@ defmodule FleetlmWeb.SessionChannel do
   defp error_reason(:unauthorized), do: "unauthorized"
   defp error_reason(:not_found), do: "not found"
   defp error_reason(other), do: inspect(other)
-
-  defp payload_with_iso(message) do
-    content = stringify_map(Map.get(message, :content))
-    metadata = stringify_map(Map.get(message, :metadata))
-
-    %{
-      "id" => Map.get(message, :id),
-      "session_id" => Map.get(message, :session_id),
-      "kind" => Map.get(message, :kind),
-      "content" => content,
-      "metadata" => metadata,
-      "sender_id" => Map.get(message, :sender_id),
-      "inserted_at" => encode_datetime(Map.get(message, :inserted_at))
-    }
-  end
-
-  defp stringify_map(map) when is_map(map) do
-    map
-    |> Enum.map(fn {k, v} -> {to_string(k), v} end)
-    |> Enum.into(%{})
-  end
-
-  defp stringify_map(_), do: %{}
-
-  defp encode_datetime(nil), do: nil
-  defp encode_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
-  defp encode_datetime(%NaiveDateTime{} = naive), do: NaiveDateTime.to_iso8601(naive)
 end

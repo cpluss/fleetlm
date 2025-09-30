@@ -1,94 +1,141 @@
 defmodule FleetlmWeb.SessionController do
   use FleetlmWeb, :controller
 
-  alias Fleetlm.Runtime.Gateway
-  alias Fleetlm.Conversation
-  alias Fleetlm.Conversation.ChatMessage
+  alias Fleetlm.Runtime.Router
+  alias FleetLM.Storage.API, as: StorageAPI
 
   action_fallback FleetlmWeb.FallbackController
 
   def create(conn, params) do
-    attrs = %{
-      initiator_id: Map.get(params, "initiator_id"),
-      peer_id: Map.get(params, "peer_id"),
-      metadata: Map.get(params, "metadata", %{})
-    }
+    sender_id = Map.get(params, "initiator_id") || Map.get(params, "sender_id")
+    recipient_id = Map.get(params, "peer_id") || Map.get(params, "recipient_id")
+    metadata = Map.get(params, "metadata", %{})
 
-    with {:ok, session} <- Conversation.start_session(attrs) do
-      conn
-      |> put_status(:created)
-      |> json(%{session: render_session(session)})
+    case StorageAPI.create_session(sender_id, recipient_id, metadata) do
+      {:ok, session} ->
+        conn
+        |> put_status(:created)
+        |> json(%{session: render_session(session)})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: inspect(reason)})
     end
   end
 
   def messages(conn, %{"session_id" => session_id} = params) do
-    after_id = Map.get(params, "after_id")
+    last_seq = parse_int(params["after_seq"], 0)
     limit = parse_int(params["limit"], 50)
 
-    messages = Gateway.replay_messages(session_id, limit: limit, after_id: after_id)
-    json(conn, %{messages: Enum.map(messages, &render_message/1)})
+    # Get first participant from session to use for join (required for authorization)
+    case Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session_id) do
+      nil ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Session not found"})
+
+      session ->
+        case Router.join(session_id, session.sender_id, last_seq: last_seq, limit: limit) do
+          {:ok, result} ->
+            json(conn, %{messages: result.messages})
+
+          {:error, reason} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: inspect(reason)})
+        end
+    end
   end
 
   def append_message(conn, %{"session_id" => session_id} = params) do
-    attrs = %{
-      sender_id: Map.get(params, "sender_id"),
-      kind: Map.get(params, "kind", "text"),
-      content: Map.get(params, "content", %{}),
-      metadata: Map.get(params, "metadata", %{})
-    }
+    sender_id = Map.get(params, "sender_id")
+    kind = Map.get(params, "kind", "text")
+    content = Map.get(params, "content", %{})
+    metadata = Map.get(params, "metadata", %{})
 
-    with {:ok, %ChatMessage{} = message} <- Gateway.append_message(session_id, attrs) do
-      json(conn, %{message: render_message(message)})
+    case Router.append_message(session_id, sender_id, kind, content, metadata) do
+      {:ok, message} ->
+        json(conn, %{message: render_message(message)})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: inspect(reason)})
     end
   end
 
   def mark_read(conn, %{"session_id" => session_id} = params) do
     with {:ok, participant_id} <- require_param(params, "participant_id"),
-         {:ok, session} <-
-           Gateway.mark_read(session_id, participant_id,
-             message_id: Map.get(params, "message_id")
-           ) do
-      json(conn, %{session: render_session(session)})
+         last_seq <- parse_int(params["last_seq"], 0),
+         {:ok, _cursor} <- StorageAPI.update_cursor(session_id, participant_id, last_seq) do
+      session = Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session_id)
+
+      if session do
+        json(conn, %{session: render_session(session)})
+      else
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Session not found"})
+      end
+    else
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: inspect(reason)})
     end
   end
 
   def delete(conn, %{"session_id" => session_id}) do
-    with :ok <- Conversation.delete_session(session_id) do
-      send_resp(conn, :no_content, "")
+    case StorageAPI.archive_session(session_id) do
+      {:ok, _session} ->
+        send_resp(conn, :no_content, "")
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Session not found"})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: inspect(reason)})
     end
   end
 
   defp render_session(session) do
     %{
       id: session.id,
-      initiator_id: session.initiator_id,
-      peer_id: session.peer_id,
-      agent_id: session.agent_id,
-      kind: session.kind,
+      # Map new field names to old API for backward compatibility
+      initiator_id: session.sender_id,
+      peer_id: session.recipient_id,
+      sender_id: session.sender_id,
+      recipient_id: session.recipient_id,
       status: session.status,
-      metadata: session.metadata,
-      last_message_id: session.last_message_id,
-      last_message_at: encode_datetime(session.last_message_at),
-      initiator_last_read_id: session.initiator_last_read_id,
-      initiator_last_read_at: encode_datetime(session.initiator_last_read_at),
-      peer_last_read_id: session.peer_last_read_id,
-      peer_last_read_at: encode_datetime(session.peer_last_read_at)
+      metadata: session.metadata || %{},
+      inserted_at: encode_datetime(session.inserted_at),
+      updated_at: encode_datetime(session.updated_at)
     }
   end
 
-  defp render_message(message) do
-    content = stringify_map(message.content)
-    metadata = stringify_map(message.metadata)
+  defp render_message(%{} = message) when is_map(message) do
+    # Handle both struct and map formats
+    content = stringify_map(get_field(message, :content))
+    metadata = stringify_map(get_field(message, :metadata))
 
     %{
-      id: message.id,
-      session_id: message.session_id,
-      sender_id: message.sender_id,
-      kind: message.kind,
+      id: get_field(message, :id),
+      session_id: get_field(message, :session_id),
+      sender_id: get_field(message, :sender_id),
+      kind: get_field(message, :kind),
       content: content,
       metadata: metadata,
-      inserted_at: encode_datetime(message.inserted_at)
+      inserted_at: encode_datetime(get_field(message, :inserted_at))
     }
+  end
+
+  defp get_field(%{} = map, key) do
+    Map.get(map, key) || Map.get(map, to_string(key))
   end
 
   defp stringify_map(map) when is_map(map) do

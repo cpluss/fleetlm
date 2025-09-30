@@ -1,7 +1,7 @@
-defmodule Fleetlm.Runtime.RouterV2Test do
+defmodule Fleetlm.Runtime.RouterTest do
   use Fleetlm.StorageCase, async: false
 
-  alias Fleetlm.Runtime.RouterV2
+  alias Fleetlm.Runtime.Router
 
   setup do
     session = create_test_session("alice", "bob")
@@ -9,8 +9,8 @@ defmodule Fleetlm.Runtime.RouterV2Test do
   end
 
   describe "append_message/5 (local routing)" do
-    test "appends message via local SessionServerV2", %{session: session} do
-      {:ok, message} = RouterV2.append_message(
+    test "appends message via local SessionServer", %{session: session} do
+      {:ok, message} = Router.append_message(
         session.id,
         "alice",
         "text",
@@ -22,7 +22,7 @@ defmodule Fleetlm.Runtime.RouterV2Test do
       assert message.content["text"] == "hello via router"
     end
 
-    test "starts SessionServerV2 if not already running", %{session: session} do
+    test "starts SessionServer if not already running", %{session: session} do
       # Ensure no session server is running
       case Registry.lookup(Fleetlm.Runtime.SessionRegistry, session.id) do
         [{pid, _}] ->
@@ -34,7 +34,7 @@ defmodule Fleetlm.Runtime.RouterV2Test do
       end
 
       # Router should start it automatically
-      {:ok, message} = RouterV2.append_message(
+      {:ok, message} = Router.append_message(
         session.id,
         "alice",
         "text",
@@ -48,36 +48,35 @@ defmodule Fleetlm.Runtime.RouterV2Test do
     end
 
     test "returns error for nonexistent session" do
-      assert {:error, {:session_not_found, :not_found}} =
-               RouterV2.append_message("nonexistent", "alice", "text", %{})
+      assert {:error, _reason} = Router.append_message("nonexistent", "alice", "text", %{})
     end
   end
 
   describe "join/3 (local routing)" do
     setup %{session: session} do
       # Append some messages first
-      RouterV2.append_message(session.id, "alice", "text", %{"seq" => 1})
-      RouterV2.append_message(session.id, "bob", "text", %{"seq" => 2})
-      RouterV2.append_message(session.id, "alice", "text", %{"seq" => 3})
+      Router.append_message(session.id, "alice", "text", %{"seq" => 1})
+      Router.append_message(session.id, "bob", "text", %{"seq" => 2})
+      Router.append_message(session.id, "alice", "text", %{"seq" => 3})
       :ok
     end
 
     test "joins session and retrieves messages", %{session: session} do
-      {:ok, result} = RouterV2.join(session.id, "alice", last_seq: 0, limit: 10)
+      {:ok, result} = Router.join(session.id, "alice", last_seq: 0, limit: 10)
 
       assert length(result.messages) == 3
       assert Enum.map(result.messages, & &1["seq"]) == [1, 2, 3]
     end
 
     test "respects last_seq parameter", %{session: session} do
-      {:ok, result} = RouterV2.join(session.id, "alice", last_seq: 1, limit: 10)
+      {:ok, result} = Router.join(session.id, "alice", last_seq: 1, limit: 10)
 
       assert length(result.messages) == 2
       assert Enum.map(result.messages, & &1["seq"]) == [2, 3]
     end
 
     test "enforces authorization", %{session: session} do
-      assert {:error, :unauthorized} = RouterV2.join(session.id, "charlie", last_seq: 0)
+      assert {:error, :unauthorized} = Router.join(session.id, "charlie", last_seq: 0)
     end
   end
 

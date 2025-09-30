@@ -1,7 +1,7 @@
-defmodule Fleetlm.Runtime.SessionServerV2Test do
+defmodule Fleetlm.Runtime.SessionServerTest do
   use Fleetlm.StorageCase, async: false
 
-  alias Fleetlm.Runtime.SessionServerV2
+  alias Fleetlm.Runtime.SessionServer
 
   setup do
     session = create_test_session("alice", "bob")
@@ -10,7 +10,7 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
 
   describe "start_link/1" do
     test "starts a session server and marks session active", %{session: session} do
-      {:ok, pid} = SessionServerV2.start_link(session.id)
+      {:ok, pid} = SessionServer.start_link(session.id)
       assert Process.alive?(pid)
 
       # Verify session is marked active
@@ -30,10 +30,10 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
       wait_for_flush(slot)
 
       # Start server - should load seq = 2
-      {:ok, pid} = SessionServerV2.start_link(session.id)
+      {:ok, pid} = SessionServer.start_link(session.id)
 
       # Append should get seq = 3
-      {:ok, message} = SessionServerV2.append_message(
+      {:ok, message} = SessionServer.append_message(
         session.id,
         "alice",
         "text",
@@ -49,7 +49,7 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
 
   describe "append_message/2" do
     setup %{session: session} do
-      {:ok, pid} = SessionServerV2.start_link(session.id)
+      {:ok, pid} = SessionServer.start_link(session.id)
       on_exit(fn ->
         if Process.alive?(pid) do
           Process.exit(pid, :kill)
@@ -60,7 +60,7 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
     end
 
     test "appends message with incremented sequence number", %{session: session} do
-      {:ok, message} = SessionServerV2.append_message(
+      {:ok, message} = SessionServer.append_message(
         session.id,
         "alice",
         "text",
@@ -76,7 +76,7 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
     test "broadcasts message via PubSub", %{session: session} do
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "session:#{session.id}")
 
-      {:ok, message} = SessionServerV2.append_message(
+      {:ok, message} = SessionServer.append_message(
         session.id,
         "alice",
         "text",
@@ -89,9 +89,9 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
     end
 
     test "increments sequence across multiple appends", %{session: session} do
-      {:ok, msg1} = SessionServerV2.append_message(session.id, "alice", "text", %{})
-      {:ok, msg2} = SessionServerV2.append_message(session.id, "bob", "text", %{})
-      {:ok, msg3} = SessionServerV2.append_message(session.id, "alice", "text", %{})
+      {:ok, msg1} = SessionServer.append_message(session.id, "alice", "text", %{})
+      {:ok, msg2} = SessionServer.append_message(session.id, "bob", "text", %{})
+      {:ok, msg3} = SessionServer.append_message(session.id, "alice", "text", %{})
 
       assert msg1.seq == 1
       assert msg2.seq == 2
@@ -99,7 +99,7 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
     end
 
     test "determines recipient_id based on sender", %{session: session} do
-      {:ok, msg1} = SessionServerV2.append_message(
+      {:ok, msg1} = SessionServer.append_message(
         session.id,
         "alice",
         "text",
@@ -117,7 +117,7 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
     end
 
     test "persists message via Storage.API", %{session: session} do
-      {:ok, message} = SessionServerV2.append_message(
+      {:ok, message} = SessionServer.append_message(
         session.id,
         "alice",
         "text",
@@ -136,7 +136,7 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
 
   describe "join/3" do
     setup %{session: session} do
-      {:ok, pid} = SessionServerV2.start_link(session.id)
+      {:ok, pid} = SessionServer.start_link(session.id)
       on_exit(fn ->
         if Process.alive?(pid) do
           Process.exit(pid, :kill)
@@ -149,11 +149,11 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
     test "returns messages after last_seq", %{session: session} do
       # Append 5 messages
       for seq <- 1..5 do
-        SessionServerV2.append_message(session.id, "alice", "text", %{"seq" => seq})
+        SessionServer.append_message(session.id, "alice", "text", %{"seq" => seq})
       end
 
       # Join with last_seq = 2
-      {:ok, result} = SessionServerV2.join(session.id, "alice", last_seq: 2, limit: 10)
+      {:ok, result} = SessionServer.join(session.id, "alice", last_seq: 2, limit: 10)
 
       messages = result.messages
       assert length(messages) == 3
@@ -163,10 +163,10 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
     test "respects limit parameter", %{session: session} do
       # Append 10 messages
       for _seq <- 1..10 do
-        SessionServerV2.append_message(session.id, "alice", "text", %{})
+        SessionServer.append_message(session.id, "alice", "text", %{})
       end
 
-      {:ok, result} = SessionServerV2.join(session.id, "alice", last_seq: 0, limit: 5)
+      {:ok, result} = SessionServer.join(session.id, "alice", last_seq: 0, limit: 5)
 
       assert length(result.messages) == 5
       assert Enum.map(result.messages, & &1["seq"]) == [1, 2, 3, 4, 5]
@@ -174,15 +174,15 @@ defmodule Fleetlm.Runtime.SessionServerV2Test do
 
     test "authorizes participants", %{session: session} do
       # alice and bob are authorized
-      assert {:ok, _} = SessionServerV2.join(session.id, "alice", last_seq: 0)
-      assert {:ok, _} = SessionServerV2.join(session.id, "bob", last_seq: 0)
+      assert {:ok, _} = SessionServer.join(session.id, "alice", last_seq: 0)
+      assert {:ok, _} = SessionServer.join(session.id, "bob", last_seq: 0)
 
       # charlie is not
-      assert {:error, :unauthorized} = SessionServerV2.join(session.id, "charlie", last_seq: 0)
+      assert {:error, :unauthorized} = SessionServer.join(session.id, "charlie", last_seq: 0)
     end
 
     test "returns empty messages for new session", %{session: session} do
-      {:ok, result} = SessionServerV2.join(session.id, "alice", last_seq: 0)
+      {:ok, result} = SessionServer.join(session.id, "alice", last_seq: 0)
       assert result.messages == []
     end
   end

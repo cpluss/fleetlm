@@ -2,9 +2,9 @@ defmodule Fleetlm.Runtime.InboxSupervisor do
   @moduledoc """
   DynamicSupervisor for `InboxServer` processes.
 
-  Each participant that has an inbox subscription gets a lightweight GenServer
-  that tracks their session snapshots. This supervisor mirrors the previous
-  chat inbox implementation but is scoped to the new session runtime.
+  Each participant that has an inbox subscription gets an event-driven GenServer
+  that tracks their session snapshots via PubSub. This supervisor manages the
+  lifecycle of inbox processes for the new session runtime.
   """
 
   use DynamicSupervisor
