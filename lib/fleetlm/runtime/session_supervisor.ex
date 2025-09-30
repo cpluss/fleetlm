@@ -1,6 +1,6 @@
 defmodule Fleetlm.Runtime.SessionSupervisor do
   @moduledoc """
-  DynamicSupervisor responsible for starting `SessionServer` processes.
+  DynamicSupervisor responsible for starting `SessionServerV2` processes.
 
   The supervisor exposes `ensure_started/1`, mirroring the previous chat
   implementation, so higher-level code can guarantee a runtime process exists
@@ -27,7 +27,7 @@ defmodule Fleetlm.Runtime.SessionSupervisor do
         {:ok, pid}
 
       [] ->
-        child = {Fleetlm.Runtime.SessionServer, session_id}
+        child = {Fleetlm.Runtime.SessionServerV2, session_id}
         DynamicSupervisor.start_child(__MODULE__, child)
     end
   end

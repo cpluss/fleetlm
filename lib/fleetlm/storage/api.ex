@@ -16,7 +16,7 @@ defmodule FleetLM.Storage.API do
   alias FleetLM.Storage.{SlotLogServer, Entry}
   alias Fleetlm.Repo
 
-  @num_slots Application.compile_env(:fleetlm, :num_storage_slots, 64)
+  @num_storage_slots Application.compile_env(:fleetlm, :num_storage_slots, 64)
 
   ## Session Operations (Database)
 
@@ -26,7 +26,7 @@ defmodule FleetLM.Storage.API do
   @spec create_session(String.t(), String.t(), map()) :: {:ok, Session.t()} | {:error, any()}
   def create_session(sender_id, recipient_id, metadata) do
     session_id = Ulid.generate()
-    shard_key = slot_for_session(session_id)
+    shard_key = storage_slot_for_session(session_id)
 
     %Session{id: session_id}
     |> Session.changeset(%{
@@ -106,7 +106,7 @@ defmodule FleetLM.Storage.API do
   def append_message(session_id, seq, sender_id, recipient_id, kind, content, metadata \\ %{}) do
     # NOTE: this method is on the extreme hot-path and should be optimized as much as possible.
     # It's called for every message across all sessions in a slot, so it's critical to keep it fast.
-    slot = slot_for_session(session_id)
+    slot = storage_slot_for_session(session_id)
 
     message = %Message{
       id: Ulid.generate(),
@@ -133,7 +133,7 @@ defmodule FleetLM.Storage.API do
   @spec get_messages(String.t(), non_neg_integer(), pos_integer()) ::
           {:ok, [Message.t()]}
   def get_messages(session_id, after_seq, limit) do
-    slot = slot_for_session(session_id)
+    slot = storage_slot_for_session(session_id)
     # Get the tail of the messages from the slot log, assuming
     # they may be there.
     tail =
@@ -190,7 +190,7 @@ defmodule FleetLM.Storage.API do
   @spec update_cursor(String.t(), String.t(), non_neg_integer()) ::
           {:ok, Cursor.t()} | {:error, Ecto.Changeset.t()} | no_return
   def update_cursor(session_id, participant_id, last_seq) do
-    shard_key = slot_for_session(session_id)
+    shard_key = storage_slot_for_session(session_id)
 
     attrs = %{
       session_id: session_id,
@@ -207,7 +207,11 @@ defmodule FleetLM.Storage.API do
     )
   end
 
-  defp slot_for_session(session_id) when is_binary(session_id) do
-    :erlang.phash2(session_id, @num_slots)
+  # Private helpers
+
+  # Calculate the storage slot for a session (local per-node sharding for disk log I/O).
+  # This is separate from HashRing slots which are for cluster-wide routing.
+  defp storage_slot_for_session(session_id) when is_binary(session_id) do
+    :erlang.phash2(session_id, @num_storage_slots)
   end
 end
