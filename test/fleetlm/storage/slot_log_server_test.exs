@@ -1,5 +1,4 @@
 defmodule FleetLM.Storage.SlotLogServerTest do
-  # use Fleetlm.DataCase, async: false
   use ExUnit.Case, async: false
 
   alias FleetLM.Storage.{SlotLogServer, Entry, DiskLog}
@@ -10,17 +9,28 @@ defmodule FleetLM.Storage.SlotLogServerTest do
     :ok = Ecto.Adapters.SQL.Sandbox.checkout(Fleetlm.Repo)
     Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()})
 
+    temp_dir =
+      System.tmp_dir!()
+      |> Path.join("fleetlm_slot_logs_test_#{System.unique_integer([:positive])}")
+
+    File.rm_rf(temp_dir)
+    File.mkdir_p!(temp_dir)
+
+    previous_dir = Application.fetch_env(:fleetlm, :slot_log_dir)
+    Application.put_env(:fleetlm, :slot_log_dir, temp_dir)
+
+    on_exit(fn ->
+      case previous_dir do
+        {:ok, dir} -> Application.put_env(:fleetlm, :slot_log_dir, dir)
+        :error -> Application.delete_env(:fleetlm, :slot_log_dir)
+      end
+
+      File.rm_rf(temp_dir)
+    end)
+
     # Start a SlotLogServer for slot 0
     slot = 0
     {:ok, pid} = start_supervised({SlotLogServer, slot})
-
-    # Cleanup: delete disk log file after test to ensure isolation
-    on_exit(fn ->
-      # After stop_supervised, the disk log is closed, so we can delete the file
-      base_dir = Application.get_env(:fleetlm, :slot_log_dir, Application.app_dir(:fleetlm, "priv/storage/slot_logs"))
-      disk_log_path = Path.join(base_dir, "slot_#{slot}.log")
-      File.rm(disk_log_path)
-    end)
 
     %{slot: slot, server_pid: pid}
   end
@@ -81,10 +91,13 @@ defmodule FleetLM.Storage.SlotLogServerTest do
       assert length(messages) == 3
 
       # Compare structs ignoring __meta__ (which differs between :built and :loaded)
-      expected = [Entry.to_message(entry1), Entry.to_message(entry2), Entry.to_message(entry3)]
-      |> Enum.map(&Map.drop(&1, [:__meta__, :__struct__]))
-      actual = messages
-      |> Enum.map(&Map.drop(&1, [:__meta__, :__struct__]))
+      expected =
+        [Entry.to_message(entry1), Entry.to_message(entry2), Entry.to_message(entry3)]
+        |> Enum.map(&Map.drop(&1, [:__meta__, :__struct__]))
+
+      actual =
+        messages
+        |> Enum.map(&Map.drop(&1, [:__meta__, :__struct__]))
 
       assert expected == actual
     end
@@ -163,9 +176,13 @@ defmodule FleetLM.Storage.SlotLogServerTest do
 
       # Verify message was still persisted during shutdown
       messages = Repo.all(Message)
-      expected = [Entry.to_message(entry)]
+
+      expected =
+        [Entry.to_message(entry)]
         |> Enum.map(&Map.drop(&1, [:__meta__, :__struct__]))
-      actual = messages
+
+      actual =
+        messages
         |> Enum.map(&Map.drop(&1, [:__meta__, :__struct__]))
 
       assert expected == actual

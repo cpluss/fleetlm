@@ -45,7 +45,24 @@ defmodule FleetLM.Storage.API do
   def get_sessions_for_sender(sender_id) do
     sessions =
       Session
-      |> where([s], s.sender_id == ^sender_id)
+      |> where([s], s.sender_id == ^sender_id and s.status != "archived")
+      |> Repo.all()
+
+    {:ok, sessions}
+  end
+
+  @doc """
+  Get all sessinos this participant is involved in.
+  """
+  @spec get_sessions_for_participant(String.t()) :: {:ok, [Session.t()]}
+  def get_sessions_for_participant(participant_id) do
+    sessions =
+      Session
+      |> where(
+        [s],
+        s.sender_id == ^participant_id or
+          (s.recipient_id == ^participant_id and s.status != "archived")
+      )
       |> Repo.all()
 
     {:ok, sessions}
@@ -54,7 +71,8 @@ defmodule FleetLM.Storage.API do
   @doc """
   Archive a session. Sets status to 'archived'.
   """
-  @spec archive_session(String.t()) :: {:ok, Session.t()} | {:error, :not_found | Ecto.Changeset.t()} | no_return
+  @spec archive_session(String.t()) ::
+          {:ok, Session.t()} | {:error, :not_found | Ecto.Changeset.t()} | no_return
   def archive_session(session_id) do
     case Repo.get(Session, session_id) do
       nil ->
@@ -75,12 +93,21 @@ defmodule FleetLM.Storage.API do
 
   Caller must provide seq number (managed upstream by session).
   """
-  @spec append_message(String.t(), non_neg_integer(), String.t(), String.t(), String.t(), map(), map()) ::
+  @spec append_message(
+          String.t(),
+          non_neg_integer(),
+          String.t(),
+          String.t(),
+          String.t(),
+          map(),
+          map()
+        ) ::
           :ok | {:error, term()}
   def append_message(session_id, seq, sender_id, recipient_id, kind, content, metadata \\ %{}) do
     # NOTE: this method is on the extreme hot-path and should be optimized as much as possible.
     # It's called for every message across all sessions in a slot, so it's critical to keep it fast.
     slot = slot_for_session(session_id)
+
     message = %Message{
       id: Ulid.generate(),
       session_id: session_id,
@@ -106,16 +133,53 @@ defmodule FleetLM.Storage.API do
   @spec get_messages(String.t(), non_neg_integer(), pos_integer()) ::
           {:ok, [Message.t()]}
   def get_messages(session_id, after_seq, limit) do
-    # For now, just query DB
-    # TODO: Check disk_log first, then fall back to DB
-    messages =
-      Message
-      |> where([m], m.session_id == ^session_id and m.seq > ^after_seq)
-      |> order_by([m], asc: m.seq)
-      |> limit(^limit)
-      |> Repo.all()
+    slot = slot_for_session(session_id)
+    # Get the tail of the messages from the slot log, assuming
+    # they may be there.
+    tail =
+      try do
+        case SlotLogServer.read(slot, session_id, after_seq) do
+          {:ok, entries} ->
+            entries
+            |> Enum.filter(&(&1.seq > after_seq))
+            |> Enum.sort_by(& &1.seq)
+            |> Enum.map(&Entry.to_message/1)
 
-    {:ok, messages}
+          {:error, _} ->
+            []
+        end
+      catch
+        :exit, {:noproc, _} ->
+          []
+      end
+
+    # If the slot server has enough messages to satisfy the limit,
+    # return them directly without hitting the database.
+    case length(tail) >= limit do
+      true ->
+        {:ok, Enum.take(tail, limit)}
+
+      false ->
+        entry_seqs = tail |> Enum.map(& &1.seq) |> MapSet.new()
+        remaining = max(limit - length(tail), 0)
+        # Over-fetch a bit to safely account for any overlap with slot entries
+        db_limit = remaining + MapSet.size(entry_seqs)
+
+        db_messages =
+          Message
+          |> where([m], m.session_id == ^session_id and m.seq > ^after_seq)
+          |> order_by([m], asc: m.seq)
+          |> limit(^db_limit)
+          |> Repo.all()
+          |> Enum.reject(fn message -> MapSet.member?(entry_seqs, message.seq) end)
+
+        messages =
+          (db_messages ++ tail)
+          |> Enum.sort_by(& &1.seq)
+          |> Enum.take(limit)
+
+        {:ok, messages}
+    end
   end
 
   @doc """

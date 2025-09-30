@@ -12,21 +12,21 @@ defmodule FleetLM.Storage.Entry do
   alias FleetLM.Storage.Model.Message
 
   @type t :: %__MODULE__{
-    # The effective disk slot / shard that owns this entry.
-    slot: non_neg_integer(),
-    # The session id that this entry belongs to.
-    session_id: String.t(),
-    # The monotonically increasing sequence number for this entry.
-    seq: non_neg_integer(),
-    # The message ULID.
-    message_id: String.t(),
-    # The idempotency key for this entry.
-    idempotency_key: String.t(),
-    # The inserted at timestamp for this entry.
-    inserted_at: NaiveDateTime.t(),
-    # The full message payload returned by the persistence layer.
-    payload: Message.t()
-  }
+          # The effective disk slot / shard that owns this entry.
+          slot: non_neg_integer(),
+          # The session id that this entry belongs to.
+          session_id: String.t(),
+          # The monotonically increasing sequence number for this entry.
+          seq: non_neg_integer(),
+          # The message ULID.
+          message_id: String.t(),
+          # The idempotency key for this entry.
+          idempotency_key: String.t(),
+          # The inserted at timestamp for this entry.
+          inserted_at: NaiveDateTime.t(),
+          # The full message payload returned by the persistence layer.
+          payload: Message.t()
+        }
 
   defstruct [
     :slot,

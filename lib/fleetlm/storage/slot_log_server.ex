@@ -24,11 +24,11 @@ defmodule FleetLM.Storage.SlotLogServer do
   @flush_interval_ms Application.compile_env(:fleetlm, :storage_flush_interval_ms, 300)
 
   @type state :: %{
-    slot: non_neg_integer(),
-    log: DiskLog.handle(),
-    dirty: boolean(),
-    notify_next_flush: [GenServer.from()]
-  }
+          slot: non_neg_integer(),
+          log: DiskLog.handle(),
+          dirty: boolean(),
+          notify_next_flush: [GenServer.from()]
+        }
 
   def start_link(slot) when is_integer(slot) do
     GenServer.start_link(__MODULE__, slot, name: via(slot))
@@ -45,7 +45,8 @@ defmodule FleetLM.Storage.SlotLogServer do
   @doc """
   Read entries from the slot's disk_log.
   """
-  @spec read(non_neg_integer(), String.t(), non_neg_integer()) :: {:ok, [Entry.t()]} | {:error, term()}
+  @spec read(non_neg_integer(), String.t(), non_neg_integer()) ::
+          {:ok, [Entry.t()]} | {:error, term()}
   def read(slot, session_id, after_seq) do
     GenServer.call(via(slot), {:read, session_id, after_seq})
   end
@@ -71,20 +72,37 @@ defmodule FleetLM.Storage.SlotLogServer do
   def init(slot) do
     {:ok, log} = DiskLog.open(slot)
     schedule_flush()
-    {:ok, %{
-      slot: slot,
-      log: log,
-      dirty: false,
-      notify_next_flush: []
-    }}
+
+    {:ok,
+     %{
+       slot: slot,
+       log: log,
+       dirty: false,
+       notify_next_flush: []
+     }}
   end
 
   def handle_call({:append, entry}, _from, state) do
     case DiskLog.append(state.log, entry) do
       :ok ->
-        # Record a new append to ensure we trigger a flush
-        Logger.debug("SlotLogServer[#{state.slot}]: Appended entry, setting dirty to true")
-        {:reply, :ok, %{ state | dirty: true }}
+        {:reply, :ok, %{state | dirty: true}}
+
+      {:error, _} = error ->
+        {:reply, error, state}
+    end
+  end
+
+  def handle_call({:read, session_id, after_seq}, _from, state) do
+    case DiskLog.read_all(state.log) do
+      {:ok, entries} ->
+        filtered =
+          entries
+          |> Enum.filter(fn entry ->
+            entry.session_id == session_id and entry.seq > after_seq
+          end)
+          |> Enum.sort_by(& &1.seq)
+
+        {:reply, {:ok, filtered}, state}
 
       {:error, _} = error ->
         {:reply, error, state}
@@ -100,7 +118,6 @@ defmodule FleetLM.Storage.SlotLogServer do
   end
 
   def handle_info(:flush, %{dirty: true} = state) do
-    Logger.debug("SlotLogServer[#{state.slot}]: Flushing dirty data, #{length(state.notify_next_flush)} waiters")
     # Spawn async task to flush - doesn't block appends!
     Task.start(fn -> flush_to_database(state) end)
 
@@ -109,23 +126,17 @@ defmodule FleetLM.Storage.SlotLogServer do
   end
 
   def handle_info(:flush, state) do
-    Logger.debug("SlotLogServer[#{state.slot}]: Flush skipped (not dirty), #{length(state.notify_next_flush)} waiters queued")
     # Nothing dirty, just reschedule
     schedule_flush()
     {:noreply, state}
   end
 
-  def terminate(reason, state) do
-    Logger.debug("SlotLogServer[#{state.slot}]: Terminating (reason: #{inspect(reason)}), dirty: #{state.dirty}")
-    # Ensure we flush the remaining data before we shut down
+  def terminate(_reason, state) do
     case state.dirty do
-      true ->
-        Logger.debug("SlotLogServer[#{state.slot}]: Flushing dirty data during termination")
-        flush_to_database(state)
-      false ->
-        Logger.debug("SlotLogServer[#{state.slot}]: No dirty data to flush during termination")
-        :ok
+      true -> flush_to_database(state)
+      false -> :ok
     end
+
     DiskLog.close(state.log)
     :ok
   end
@@ -137,19 +148,15 @@ defmodule FleetLM.Storage.SlotLogServer do
   end
 
   defp flush_to_database(%{slot: slot, log: log, notify_next_flush: notify_next_flush}) do
-    Logger.debug("SlotLogServer[#{slot}]: flush_to_database started")
     DiskLog.sync(log)
     case DiskLog.read_all(log) do
       {:error, reason} ->
         Logger.error("Failed to read from disk_log for slot #{slot}: #{inspect(reason)}")
       {:ok, []} ->
-        Logger.debug("SlotLogServer[#{slot}]: No entries to flush, notifying #{length(notify_next_flush)} waiters")
-        # No entries to flush, but still notify waiters
         Enum.each(notify_next_flush, fn from ->
           send(from, :flushed)
         end)
       {:ok, entries} ->
-        Logger.debug("SlotLogServer[#{slot}]: Flushing #{length(entries)} entries to database")
         messages =
           Enum.map(entries, fn entry ->
             %{
@@ -168,7 +175,6 @@ defmodule FleetLM.Storage.SlotLogServer do
 
         case Repo.insert_all(Message, messages, on_conflict: :nothing) do
           {count, _} when is_integer(count) ->
-            Logger.debug("SlotLogServer[#{slot}]: Inserted #{count} messages, notifying #{length(notify_next_flush)} waiters")
             DiskLog.truncate(log)
             Enum.each(notify_next_flush, fn from ->
               send(from, :flushed)
