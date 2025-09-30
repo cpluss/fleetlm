@@ -7,6 +7,8 @@ defmodule FleetLM.Storage.Model.Session do
 
   @primary_key {:id, :string, autogenerate: false}
 
+  @type t :: %__MODULE__{}
+
   alias Ulid
 
   # Sessions are currently created and hardcoded to be between two participants, where
@@ -25,7 +27,7 @@ defmodule FleetLM.Storage.Model.Session do
     timestamps()
   end
 
-  @required_fields ~w(sender_id recipient_id status)a
+  @required_fields ~w(sender_id recipient_id status shard_key)a
   @optional_fields ~w(status metadata)a
 
   def changeset(session, attrs) do

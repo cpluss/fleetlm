@@ -9,6 +9,8 @@ defmodule FleetLM.Storage.Model.Cursor do
 
   @primary_key {:id, :string, autogenerate: false}
 
+  @type t :: %__MODULE__{}
+
   schema "cursors" do
     belongs_to :session, FleetLM.Storage.Model.Session, type: :string
     field :participant_id, :string

@@ -8,6 +8,8 @@ defmodule FleetLM.Storage.Model.Message do
   @primary_key {:id, :string, autogenerate: false}
   @foreign_key_type :string
 
+  @type t :: %__MODULE__{}
+
   schema "messages" do
     belongs_to :session, FleetLM.Storage.Model.Session, type: :string
 
