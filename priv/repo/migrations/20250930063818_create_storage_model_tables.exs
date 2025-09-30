@@ -52,13 +52,11 @@ defmodule Fleetlm.Repo.Migrations.CreateStorageModelTables do
       timestamps(updated_at: false)
     end
 
-    # Critical index for message retrieval: session_id + seq (supports ordering)
-    # This is the hot-path read index - ordered by seq for efficient range queries
-    create index(:messages, [:session_id, :seq])
-
     # Unique constraint to ensure seq is unique within a session, prevents races
     # and enforce total order across the cluster. Will scream loudly in case
     # we violate it.
+    #
+    # This unique index also serves as our hot-path read index for ordered retrieval
     create unique_index(:messages, [:session_id, :seq])
 
     # Shard key index for future distribution
