@@ -117,8 +117,8 @@ defmodule Fleetlm.Observability.Telemetry do
   Record that an inbox process started and update the active count gauge.
   """
   @spec inbox_started(String.t()) :: :ok
-  def inbox_started(participant_id) when is_binary(participant_id) do
-    :telemetry.execute(@inbox_started_event, %{count: 1}, %{participant_id: participant_id})
+  def inbox_started(user_id) when is_binary(user_id) do
+    :telemetry.execute(@inbox_started_event, %{count: 1}, %{user_id: user_id})
     publish_inbox_active_count()
   end
 
@@ -126,8 +126,8 @@ defmodule Fleetlm.Observability.Telemetry do
   Record that an inbox process stopped and update the active count gauge.
   """
   @spec inbox_stopped(String.t(), term()) :: :ok
-  def inbox_stopped(participant_id, reason) when is_binary(participant_id) do
-    metadata = %{participant_id: participant_id, reason: format_reason(reason)}
+  def inbox_stopped(user_id, reason) when is_binary(user_id) do
+    metadata = %{user_id: user_id, reason: format_reason(reason)}
 
     :telemetry.execute(@inbox_stopped_event, %{count: 1}, metadata)
     publish_inbox_active_count()

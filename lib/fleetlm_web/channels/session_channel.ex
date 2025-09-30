@@ -57,7 +57,7 @@ defmodule FleetlmWeb.SessionChannel do
         {:error, :not_found}
 
       %Session{} = session ->
-        if participant_id in [session.sender_id, session.recipient_id] do
+        if participant_id in [session.user_id, session.agent_id] do
           {:ok, session}
         else
           {:error, :unauthorized}

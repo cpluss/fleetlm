@@ -1,11 +1,13 @@
 defmodule Fleetlm.Runtime.InboxServer do
   @moduledoc """
-  Event-driven per-participant inbox server.
+  Event-driven inbox server for a user.
+
+  Note: Agents do NOT have inboxes - they communicate via webhooks only.
 
   Responsibilities:
-  - Subscribe to PubSub for all sessions participant is in
+  - Subscribe to PubSub notifications for all user's sessions
   - Maintain inbox state (last message, unread count per session)
-  - Broadcast inbox updates via PubSub when messages arrive
+  - Broadcast inbox deltas via PubSub when messages arrive
   - NO database queries during message updates (only on init)
   - Inactivity timeout (15 min → shutdown)
 
@@ -24,10 +26,11 @@ defmodule Fleetlm.Runtime.InboxServer do
   @batch_interval 1_000
   # Broadcast immediately if 50+ dirty sessions
   @batch_threshold 50
+
   @pubsub Fleetlm.PubSub
 
   defstruct [
-    :participant_id,
+    :user_id,
     :sessions,
     :dirty_sessions,
     :batch_timer,
@@ -37,14 +40,14 @@ defmodule Fleetlm.Runtime.InboxServer do
 
   @type session_entry :: %{
           session_id: String.t(),
-          other_participant_id: String.t(),
+          agent_id: String.t(),
           unread_count: non_neg_integer(),
           last_activity_at: NaiveDateTime.t() | nil,
           last_sender_id: String.t() | nil
         }
 
   @type state :: %__MODULE__{
-          participant_id: String.t(),
+          user_id: String.t(),
           sessions: %{String.t() => session_entry()},
           dirty_sessions: MapSet.t(),
           batch_timer: reference() | nil,
@@ -55,36 +58,34 @@ defmodule Fleetlm.Runtime.InboxServer do
   # Client API
 
   @spec start_link(String.t()) :: GenServer.on_start()
-  def start_link(participant_id) when is_binary(participant_id) do
-    GenServer.start_link(__MODULE__, participant_id, name: via(participant_id))
+  def start_link(user_id) when is_binary(user_id) do
+    GenServer.start_link(__MODULE__, user_id, name: via(user_id))
   end
 
   @spec get_snapshot(String.t()) :: {:ok, [map()]} | {:error, term()}
-  def get_snapshot(participant_id) do
-    GenServer.call(via(participant_id), :get_snapshot, :timer.seconds(5))
+  def get_snapshot(user_id) do
+    GenServer.call(via(user_id), :get_snapshot, :timer.seconds(5))
   end
 
   # Server callbacks
 
   @impl true
-  def init(participant_id) do
+  def init(user_id) do
     Process.flag(:trap_exit, true)
 
-    # Load all sessions for this participant (DB query on init only)
-    {:ok, sessions_list} = StorageAPI.get_sessions_for_participant(participant_id)
+    # Load all user sessions (DB query on init only)
+    {:ok, sessions_list} = StorageAPI.get_sessions_for_user(user_id)
+
+    # Subscribe to user's inbox notification topic
+    Phoenix.PubSub.subscribe(@pubsub, "user:#{user_id}:inbox")
 
     # Build session state
     sessions =
       sessions_list
       |> Enum.map(fn session ->
-        other_participant_id = get_other_participant(session, participant_id)
-
-        # Subscribe to session PubSub
-        Phoenix.PubSub.subscribe(@pubsub, "session:#{session.id}")
-
         entry = %{
           session_id: session.id,
-          other_participant_id: other_participant_id,
+          agent_id: session.agent_id,
           unread_count: 0,
           last_activity_at: nil,
           last_sender_id: nil
@@ -97,11 +98,11 @@ defmodule Fleetlm.Runtime.InboxServer do
     inactivity_timer = schedule_inactivity_check()
     batch_timer = schedule_batch_broadcast()
 
-    Logger.info("InboxServer started for #{participant_id} with #{map_size(sessions)} sessions")
+    Logger.info("InboxServer started for user #{user_id} with #{map_size(sessions)} sessions")
 
     {:ok,
      %__MODULE__{
-       participant_id: participant_id,
+       user_id: user_id,
        sessions: sessions,
        dirty_sessions: MapSet.new(),
        batch_timer: batch_timer,
@@ -118,22 +119,42 @@ defmodule Fleetlm.Runtime.InboxServer do
   end
 
   @impl true
-  def handle_info({:session_message, payload}, state) do
-    session_id = payload["session_id"]
+  def handle_info({:message_notification, notification}, state) do
+    session_id = notification["session_id"]
 
+    # Check if this is an existing session or new
     case Map.get(state.sessions, session_id) do
       nil ->
-        # Session not in our inbox (shouldn't happen if subscriptions are correct)
-        Logger.warning("Received message for unknown session #{session_id}")
-        {:noreply, state}
+        # New session - add it to our state
+        Logger.debug("InboxServer user #{state.user_id}: new session #{session_id}")
+
+        entry = %{
+          session_id: session_id,
+          agent_id: notification["agent_id"],
+          unread_count: 1,
+          last_activity_at: parse_datetime(notification["timestamp"]),
+          last_sender_id: notification["message_sender"]
+        }
+
+        new_sessions = Map.put(state.sessions, session_id, entry)
+        new_dirty = MapSet.put(state.dirty_sessions, session_id)
+
+        new_state =
+          if MapSet.size(new_dirty) >= @batch_threshold do
+            flush_batch(%{state | sessions: new_sessions, dirty_sessions: new_dirty})
+          else
+            %{state | sessions: new_sessions, dirty_sessions: new_dirty}
+          end
+
+        {:noreply, reset_inactivity_timer(new_state)}
 
       entry ->
-        # Increment counters - no storage of message content
+        # Existing session - increment counters
         updated_entry = %{
           entry
           | unread_count: entry.unread_count + 1,
-            last_activity_at: parse_datetime(payload["inserted_at"]),
-            last_sender_id: payload["sender_id"]
+            last_activity_at: parse_datetime(notification["timestamp"]),
+            last_sender_id: notification["message_sender"]
         }
 
         new_sessions = Map.put(state.sessions, session_id, updated_entry)
@@ -162,7 +183,7 @@ defmodule Fleetlm.Runtime.InboxServer do
     elapsed = System.monotonic_time(:millisecond) - state.last_activity
 
     if elapsed >= @inactivity_timeout do
-      Logger.info("InboxServer #{state.participant_id} inactive for #{elapsed}ms, shutting down")
+      Logger.info("InboxServer #{state.user_id} inactive for #{elapsed}ms, shutting down")
       {:stop, :normal, state}
     else
       timer = schedule_inactivity_check()
@@ -172,7 +193,7 @@ defmodule Fleetlm.Runtime.InboxServer do
 
   @impl true
   def terminate(_reason, state) do
-    Logger.info("InboxServer terminating for #{state.participant_id}")
+    Logger.info("InboxServer terminating for user #{state.user_id}")
 
     # Cancel timers
     if state.batch_timer, do: Process.cancel_timer(state.batch_timer)
@@ -183,22 +204,14 @@ defmodule Fleetlm.Runtime.InboxServer do
 
   # Private helpers
 
-  defp via(participant_id) do
-    {:via, Registry, {Fleetlm.Runtime.InboxRegistry, participant_id}}
-  end
-
-  defp get_other_participant(session, participant_id) do
-    cond do
-      session.sender_id == participant_id -> session.recipient_id
-      session.recipient_id == participant_id -> session.sender_id
-      true -> session.recipient_id
-    end
+  defp via(user_id) do
+    {:via, Registry, {Fleetlm.Runtime.InboxRegistry, user_id}}
   end
 
   defp flush_batch(state) do
     if MapSet.size(state.dirty_sessions) > 0 do
       snapshot = build_snapshot(state.sessions)
-      broadcast_snapshot(state.participant_id, snapshot)
+      broadcast_snapshot(state.user_id, snapshot)
 
       # Cancel old timer and schedule next batch
       if state.batch_timer do
@@ -233,7 +246,7 @@ defmodule Fleetlm.Runtime.InboxServer do
     |> Enum.map(fn entry ->
       %{
         "session_id" => entry.session_id,
-        "other_participant_id" => entry.other_participant_id,
+        "agent_id" => entry.agent_id,
         "unread_count" => entry.unread_count,
         "last_activity_at" => encode_datetime(entry.last_activity_at),
         "last_sender_id" => entry.last_sender_id
@@ -241,8 +254,8 @@ defmodule Fleetlm.Runtime.InboxServer do
     end)
   end
 
-  defp broadcast_snapshot(participant_id, snapshot) do
-    Phoenix.PubSub.broadcast(@pubsub, "inbox:#{participant_id}", {:inbox_snapshot, snapshot})
+  defp broadcast_snapshot(user_id, snapshot) do
+    Phoenix.PubSub.broadcast(@pubsub, "inbox:user:#{user_id}", {:inbox_snapshot, snapshot})
   end
 
   defp schedule_inactivity_check do

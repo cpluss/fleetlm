@@ -11,11 +11,10 @@ defmodule FleetLM.Storage.Model.Session do
 
   alias Ulid
 
-  # Sessions are currently created and hardcoded to be between two participants, where
-  # one is assumed to be a human and the other to be an agent.
+  # Sessions are 1:1 conversations between a user (human) and an agent (AI).
   schema "sessions" do
-    field :sender_id, :string
-    field :recipient_id, :string
+    field :user_id, :string
+    field :agent_id, :string
 
     field :status, :string, default: "active"
     field :metadata, :map, default: %{}
@@ -27,7 +26,7 @@ defmodule FleetLM.Storage.Model.Session do
     timestamps()
   end
 
-  @required_fields ~w(sender_id recipient_id status shard_key)a
+  @required_fields ~w(user_id agent_id status shard_key)a
   @optional_fields ~w(status metadata)a
 
   def changeset(session, attrs) do

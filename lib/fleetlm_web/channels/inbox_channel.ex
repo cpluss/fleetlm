@@ -1,6 +1,6 @@
 defmodule FleetlmWeb.InboxChannel do
   @moduledoc """
-  Channel streaming inbox deltas / notifications for a participant.
+  Channel streaming inbox deltas / notifications for a user.
   """
 
   use FleetlmWeb, :channel
@@ -8,15 +8,13 @@ defmodule FleetlmWeb.InboxChannel do
   alias Fleetlm.Runtime.{InboxSupervisor, InboxServer}
 
   @impl true
-  def join(
-        "inbox:" <> participant_id,
-        _params,
-        %{assigns: %{participant_id: participant_id}} = socket
-      ) do
-    with {:ok, _pid} <- InboxSupervisor.ensure_started(participant_id) do
-      {:ok, snapshot} = InboxServer.get_snapshot(participant_id)
+  def join("inbox:" <> user_id, _params, socket) do
+    with {:ok, _pid} <- InboxSupervisor.ensure_started(user_id) do
+      {:ok, snapshot} = InboxServer.get_snapshot(user_id)
 
-      {:ok, %{inbox: snapshot}, assign(socket, :participant_id, participant_id)}
+      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:user:#{user_id}")
+
+      {:ok, %{inbox: snapshot}, assign(socket, :user_id, user_id)}
     else
       {:error, reason} -> {:error, %{reason: inspect(reason)}}
     end

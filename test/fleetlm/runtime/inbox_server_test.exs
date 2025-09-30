@@ -69,7 +69,7 @@ defmodule Fleetlm.Runtime.InboxServerTest do
 
     test "updates inbox when message arrives via PubSub", %{session: session} do
       # Subscribe to inbox updates
-      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:alice")
+      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:user:alice")
 
       # Send a message via Router (which broadcasts to session PubSub)
       {:ok, _message} =
@@ -94,7 +94,7 @@ defmodule Fleetlm.Runtime.InboxServerTest do
     end
 
     test "updates for messages from self too", %{session: session} do
-      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:alice")
+      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:user:alice")
 
       # Alice sends a message
       {:ok, _message} =
@@ -123,7 +123,7 @@ defmodule Fleetlm.Runtime.InboxServerTest do
       inbox_pid: _inbox_pid
     } do
       # Inbox already started by setup
-      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:alice")
+      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:user:alice")
 
       # Send message to session2 first
       {:ok, _} = Router.append_message(session2.id, "charlie", "text", %{"text" => "1"}, %{})

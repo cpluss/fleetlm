@@ -2,9 +2,10 @@ defmodule Fleetlm.Runtime.InboxSupervisor do
   @moduledoc """
   DynamicSupervisor for `InboxServer` processes.
 
-  Each participant that has an inbox subscription gets an event-driven GenServer
-  that tracks their session snapshots via PubSub. This supervisor manages the
-  lifecycle of inbox processes for the new session runtime.
+  Each user gets an event-driven GenServer that tracks their session snapshots
+  via PubSub. This supervisor manages the lifecycle of inbox processes.
+
+  Note: Agents do NOT have inboxes - they communicate via webhooks only.
   """
 
   use DynamicSupervisor
@@ -19,20 +20,20 @@ defmodule Fleetlm.Runtime.InboxSupervisor do
   end
 
   @spec ensure_started(String.t()) :: {:ok, pid()} | {:error, term()}
-  def ensure_started(participant_id) when is_binary(participant_id) do
-    case Registry.lookup(Fleetlm.Runtime.InboxRegistry, participant_id) do
+  def ensure_started(user_id) when is_binary(user_id) do
+    case Registry.lookup(Fleetlm.Runtime.InboxRegistry, user_id) do
       [{pid, _}] ->
         {:ok, pid}
 
       [] ->
-        child = {Fleetlm.Runtime.InboxServer, participant_id}
+        child = {Fleetlm.Runtime.InboxServer, user_id}
         DynamicSupervisor.start_child(__MODULE__, child)
     end
   end
 
   @spec has_started?(String.t()) :: {:ok, pid()} | {:error, :not_started}
-  def has_started?(participant_id) when is_binary(participant_id) do
-    case Registry.lookup(Fleetlm.Runtime.InboxRegistry, participant_id) do
+  def has_started?(user_id) when is_binary(user_id) do
+    case Registry.lookup(Fleetlm.Runtime.InboxRegistry, user_id) do
       [{pid, _}] ->
         {:ok, pid}
 

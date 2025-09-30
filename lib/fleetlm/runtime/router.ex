@@ -45,8 +45,8 @@ defmodule Fleetlm.Runtime.Router do
   Routes to the owner node for the session.
   """
   @spec join(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def join(session_id, participant_id, opts \\ []) do
-    case route_to_owner(session_id, :join, [session_id, participant_id, opts]) do
+  def join(session_id, user_id, opts \\ []) do
+    case route_to_owner(session_id, :join, [session_id, user_id, opts]) do
       {:ok, result} ->
         {:ok, result}
 

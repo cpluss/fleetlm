@@ -24,14 +24,14 @@ defmodule FleetLM.Storage.API do
   Create a session. Hits database immediately - not for hot-path.
   """
   @spec create_session(String.t(), String.t(), map()) :: {:ok, Session.t()} | {:error, any()}
-  def create_session(sender_id, recipient_id, metadata) do
+  def create_session(user_id, agent_id, metadata) do
     session_id = Ulid.generate()
     shard_key = storage_slot_for_session(session_id)
 
     %Session{id: session_id}
     |> Session.changeset(%{
-      sender_id: sender_id,
-      recipient_id: recipient_id,
+      user_id: user_id,
+      agent_id: agent_id,
       metadata: metadata,
       shard_key: shard_key
     })
@@ -39,20 +39,20 @@ defmodule FleetLM.Storage.API do
   end
 
   @doc """
-  Get sessions for a sender.
+  Get sessions for a user.
   """
-  @spec get_sessions_for_sender(String.t()) :: {:ok, [Session.t()]}
-  def get_sessions_for_sender(sender_id) do
+  @spec get_sessions_for_user(String.t()) :: {:ok, [Session.t()]}
+  def get_sessions_for_user(user_id) do
     sessions =
       Session
-      |> where([s], s.sender_id == ^sender_id and s.status != "archived")
+      |> where([s], s.user_id == ^user_id and s.status != "archived")
       |> Repo.all()
 
     {:ok, sessions}
   end
 
   @doc """
-  Get all sessinos this participant is involved in.
+  Get all sessions this participant is involved in (either as user or agent).
   """
   @spec get_sessions_for_participant(String.t()) :: {:ok, [Session.t()]}
   def get_sessions_for_participant(participant_id) do
@@ -60,8 +60,8 @@ defmodule FleetLM.Storage.API do
       Session
       |> where(
         [s],
-        s.sender_id == ^participant_id or
-          (s.recipient_id == ^participant_id and s.status != "archived")
+        (s.user_id == ^participant_id or s.agent_id == ^participant_id) and
+          s.status != "archived"
       )
       |> Repo.all()
 

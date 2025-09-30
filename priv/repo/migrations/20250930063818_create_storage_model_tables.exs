@@ -16,8 +16,8 @@ defmodule Fleetlm.Repo.Migrations.CreateStorageModelTables do
     # Sessions table - lightweight session metadata
     create table(:sessions, primary_key: false) do
       add :id, :string, primary_key: true
-      add :sender_id, :string, null: false
-      add :recipient_id, :string, null: false
+      add :user_id, :string, null: false
+      add :agent_id, :string, null: false
       add :status, :string, null: false, default: "active"
       add :metadata, :map, null: false, default: fragment("'{}'::jsonb")
       add :shard_key, :integer
@@ -26,12 +26,10 @@ defmodule Fleetlm.Repo.Migrations.CreateStorageModelTables do
     end
 
     # Indexes for session lookups
-    # Composite index for finding sessions by participants (covers both sender->recipient and reverse lookups)
-    create index(:sessions, [:sender_id, :recipient_id])
-    # Note that we do not create indexes for recipient as we expect
-    # it to be a very rare lookup given the nature of the architecture, as
-    # every recipient will be an agent and is expected to have a ton of sessions.
-    # create index(:sessions, [:recipient_id, :sender_id])
+    # Composite index for finding sessions by user (most common query)
+    create index(:sessions, [:user_id, :agent_id])
+    # Note: no index on agent_id alone - agents will have many sessions
+    # and those lookups are rare in our architecture
     create index(:sessions, [:status])
     # Shard key index for future distribution
     create index(:sessions, [:shard_key])

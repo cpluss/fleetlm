@@ -33,20 +33,19 @@ defmodule Fleetlm.Runtime.SessionServer do
 
   defstruct [
     :session_id,
-    :sender_id,
-    :recipient_id,
+    :user_id,
+    :agent_id,
     :slot,
     :seq,
     :tail_table,
     :inactivity_timer,
-    :last_activity,
-    :agent_id
+    :last_activity
   ]
 
   @type state :: %__MODULE__{
           session_id: String.t(),
-          sender_id: String.t(),
-          recipient_id: String.t(),
+          user_id: String.t(),
+          agent_id: String.t(),
           # Shard slot number for the session, note that this is
           # not the slot of the underlying storage slot.
           slot: non_neg_integer(),
@@ -59,10 +58,7 @@ defmodule Fleetlm.Runtime.SessionServer do
           # Used to detect inactivity and shutdown the session after a few minutes
           # to avoid holding onto resources (e.g. its message tail).
           inactivity_timer: reference() | nil,
-          last_activity: integer(),
-          # Agent id if the session is associated with an agent, ie. we detect
-          # an agent that needs to be triggered on each inbound append.
-          agent_id: String.t() | nil
+          last_activity: integer()
         }
 
   # Client API
@@ -83,8 +79,8 @@ defmodule Fleetlm.Runtime.SessionServer do
   end
 
   @spec join(String.t(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
-  def join(session_id, participant_id, opts \\ []) do
-    GenServer.call(via(session_id), {:join, participant_id, opts}, :timer.seconds(10))
+  def join(session_id, user_id, opts \\ []) do
+    GenServer.call(via(session_id), {:join, user_id, opts}, :timer.seconds(10))
   end
 
   @spec drain(String.t()) :: :ok
@@ -131,15 +127,13 @@ defmodule Fleetlm.Runtime.SessionServer do
           {:ok,
            %__MODULE__{
              session_id: session_id,
-             sender_id: session.sender_id,
-             recipient_id: session.recipient_id,
+             user_id: session.user_id,
+             agent_id: session.agent_id,
              slot: slot,
              seq: seq,
              tail_table: tail_table,
              inactivity_timer: timer,
-             last_activity: System.monotonic_time(:millisecond),
-             # We don't track agent_id in new storage model
-             agent_id: nil
+             last_activity: System.monotonic_time(:millisecond)
            }}
 
         {:error, reason} ->
@@ -154,8 +148,9 @@ defmodule Fleetlm.Runtime.SessionServer do
     # Increment sequence
     next_seq = state.seq + 1
 
-    # Determine recipient_id based on sender
-    recipient_id = get_recipient_id(state, sender_id)
+    # Determine recipient_id based on sender (flip between user and agent)
+    recipient_id =
+      if sender_id == state.user_id, do: state.agent_id, else: state.user_id
 
     # Append via Storage.API (writes to disk log)
     case StorageAPI.append_message(
@@ -184,11 +179,26 @@ defmodule Fleetlm.Runtime.SessionServer do
         :ets.insert(state.tail_table, {next_seq, message})
         trim_tail(state.tail_table)
 
-        # Broadcast via PubSub
+        # Broadcast to session channel (for active session participants)
         Phoenix.PubSub.broadcast(
           Fleetlm.PubSub,
           "session:#{state.session_id}",
           {:session_message, format_message(message)}
+        )
+
+        # Broadcast notification to user's inbox (agents don't have inboxes - they use webhooks)
+        notification = %{
+          "session_id" => state.session_id,
+          "user_id" => state.user_id,
+          "agent_id" => state.agent_id,
+          "message_sender" => sender_id,
+          "timestamp" => message.inserted_at
+        }
+
+        Phoenix.PubSub.broadcast(
+          Fleetlm.PubSub,
+          "user:#{state.user_id}:inbox",
+          {:message_notification, notification}
         )
 
         # Trigger agent dispatcher if applicable
@@ -209,9 +219,9 @@ defmodule Fleetlm.Runtime.SessionServer do
   end
 
   @impl true
-  def handle_call({:join, participant_id, opts}, _from, state) do
-    # Authorize participant
-    unless authorized?(state, participant_id) do
+  def handle_call({:join, user_id, opts}, _from, state) do
+    # Authorize - only the user can join (agents receive via webhooks)
+    unless user_id == state.user_id do
       {:reply, {:error, :unauthorized}, state}
     else
       last_seq = Keyword.get(opts, :last_seq, 0)
@@ -355,18 +365,6 @@ defmodule Fleetlm.Runtime.SessionServer do
       |> Fleetlm.Repo.one()
 
     result || 0
-  end
-
-  defp get_recipient_id(state, sender_id) do
-    cond do
-      state.sender_id == sender_id -> state.recipient_id
-      state.recipient_id == sender_id -> state.sender_id
-      true -> state.recipient_id
-    end
-  end
-
-  defp authorized?(state, participant_id) do
-    participant_id in [state.sender_id, state.recipient_id]
   end
 
   defp trim_tail(table) do

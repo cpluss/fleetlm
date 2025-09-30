@@ -57,8 +57,8 @@ defmodule Fleetlm.StorageCase do
   Create a test session in the database.
   Returns the session struct.
   """
-  def create_test_session(sender_id \\ "alice", recipient_id \\ "bob", metadata \\ %{}) do
-    {:ok, session} = FleetLM.Storage.API.create_session(sender_id, recipient_id, metadata)
+  def create_test_session(user_id \\ "alice", agent_id \\ "agent:bob", metadata \\ %{}) do
+    {:ok, session} = FleetLM.Storage.API.create_session(user_id, agent_id, metadata)
     session
   end
 
