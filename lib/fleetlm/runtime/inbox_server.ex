@@ -20,11 +20,17 @@ defmodule Fleetlm.Runtime.InboxServer do
   alias FleetLM.Storage.API, as: StorageAPI
 
   @inactivity_timeout :timer.minutes(15)
+  # 1 second
+  @batch_interval 1_000
+  # Broadcast immediately if 50+ dirty sessions
+  @batch_threshold 50
   @pubsub Fleetlm.PubSub
 
   defstruct [
     :participant_id,
     :sessions,
+    :dirty_sessions,
+    :batch_timer,
     :inactivity_timer,
     :last_activity
   ]
@@ -32,13 +38,16 @@ defmodule Fleetlm.Runtime.InboxServer do
   @type session_entry :: %{
           session_id: String.t(),
           other_participant_id: String.t(),
-          last_message: map() | nil,
-          last_message_at: NaiveDateTime.t() | nil
+          unread_count: non_neg_integer(),
+          last_activity_at: NaiveDateTime.t() | nil,
+          last_sender_id: String.t() | nil
         }
 
   @type state :: %__MODULE__{
           participant_id: String.t(),
           sessions: %{String.t() => session_entry()},
+          dirty_sessions: MapSet.t(),
+          batch_timer: reference() | nil,
           inactivity_timer: reference() | nil,
           last_activity: integer()
         }
@@ -73,21 +82,20 @@ defmodule Fleetlm.Runtime.InboxServer do
         # Subscribe to session PubSub
         Phoenix.PubSub.subscribe(@pubsub, "session:#{session.id}")
 
-        # Load last message for this session (DB query on init only)
-        last_message = load_last_message(session.id)
-
         entry = %{
           session_id: session.id,
           other_participant_id: other_participant_id,
-          last_message: last_message,
-          last_message_at: get_message_timestamp(last_message)
+          unread_count: 0,
+          last_activity_at: nil,
+          last_sender_id: nil
         }
 
         {session.id, entry}
       end)
       |> Enum.into(%{})
 
-    timer = schedule_inactivity_check()
+    inactivity_timer = schedule_inactivity_check()
+    batch_timer = schedule_batch_broadcast()
 
     Logger.info("InboxServer started for #{participant_id} with #{map_size(sessions)} sessions")
 
@@ -95,7 +103,9 @@ defmodule Fleetlm.Runtime.InboxServer do
      %__MODULE__{
        participant_id: participant_id,
        sessions: sessions,
-       inactivity_timer: timer,
+       dirty_sessions: MapSet.new(),
+       batch_timer: batch_timer,
+       inactivity_timer: inactivity_timer,
        last_activity: System.monotonic_time(:millisecond)
      }}
   end
@@ -111,28 +121,39 @@ defmodule Fleetlm.Runtime.InboxServer do
   def handle_info({:session_message, payload}, state) do
     session_id = payload["session_id"]
 
-    # Update session entry
-    new_sessions =
-      case Map.get(state.sessions, session_id) do
-        nil ->
-          # Session not in our inbox (shouldn't happen if subscriptions are correct)
-          Logger.warning("Received message for unknown session #{session_id}")
-          state.sessions
+    case Map.get(state.sessions, session_id) do
+      nil ->
+        # Session not in our inbox (shouldn't happen if subscriptions are correct)
+        Logger.warning("Received message for unknown session #{session_id}")
+        {:noreply, state}
 
-        entry ->
-          updated_entry = %{
-            entry
-            | last_message: payload,
-              last_message_at: parse_datetime(payload["inserted_at"])
-          }
+      entry ->
+        # Increment counters - no storage of message content
+        updated_entry = %{
+          entry
+          | unread_count: entry.unread_count + 1,
+            last_activity_at: parse_datetime(payload["inserted_at"]),
+            last_sender_id: payload["sender_id"]
+        }
 
-          Map.put(state.sessions, session_id, updated_entry)
-      end
+        new_sessions = Map.put(state.sessions, session_id, updated_entry)
+        new_dirty = MapSet.put(state.dirty_sessions, session_id)
 
-    # Broadcast updated snapshot
-    broadcast_snapshot(state.participant_id, build_snapshot(new_sessions))
+        # Check if we hit threshold → broadcast immediately
+        new_state =
+          if MapSet.size(new_dirty) >= @batch_threshold do
+            flush_batch(%{state | sessions: new_sessions, dirty_sessions: new_dirty})
+          else
+            %{state | sessions: new_sessions, dirty_sessions: new_dirty}
+          end
 
-    new_state = reset_inactivity_timer(%{state | sessions: new_sessions})
+        {:noreply, reset_inactivity_timer(new_state)}
+    end
+  end
+
+  @impl true
+  def handle_info(:batch_broadcast, state) do
+    new_state = flush_batch(state)
     {:noreply, new_state}
   end
 
@@ -152,6 +173,11 @@ defmodule Fleetlm.Runtime.InboxServer do
   @impl true
   def terminate(_reason, state) do
     Logger.info("InboxServer terminating for #{state.participant_id}")
+
+    # Cancel timers
+    if state.batch_timer, do: Process.cancel_timer(state.batch_timer)
+    if state.inactivity_timer, do: Process.cancel_timer(state.inactivity_timer)
+
     :ok
   end
 
@@ -169,37 +195,26 @@ defmodule Fleetlm.Runtime.InboxServer do
     end
   end
 
-  defp load_last_message(session_id) do
-    import Ecto.Query
-    alias FleetLM.Storage.Model.Message
+  defp flush_batch(state) do
+    if MapSet.size(state.dirty_sessions) > 0 do
+      snapshot = build_snapshot(state.sessions)
+      broadcast_snapshot(state.participant_id, snapshot)
 
-    # Query the most recent message directly from DB (only on init)
-    result =
-      Message
-      |> where([m], m.session_id == ^session_id)
-      |> order_by([m], desc: m.seq)
-      |> limit(1)
-      |> Fleetlm.Repo.one()
+      # Cancel old timer and schedule next batch
+      if state.batch_timer do
+        Process.cancel_timer(state.batch_timer)
+      end
 
-    format_message(result)
+      batch_timer = schedule_batch_broadcast()
+
+      %{state | dirty_sessions: MapSet.new(), batch_timer: batch_timer}
+    else
+      state
+    end
   end
 
-  defp get_message_timestamp(nil), do: nil
-  defp get_message_timestamp(message), do: parse_datetime(message["inserted_at"])
-
-  defp format_message(nil), do: nil
-
-  defp format_message(%FleetLM.Storage.Model.Message{} = message) do
-    %{
-      "id" => message.id,
-      "session_id" => message.session_id,
-      "seq" => message.seq,
-      "sender_id" => message.sender_id,
-      "kind" => message.kind,
-      "content" => message.content,
-      "metadata" => message.metadata,
-      "inserted_at" => encode_datetime(message.inserted_at)
-    }
+  defp schedule_batch_broadcast do
+    Process.send_after(self(), :batch_broadcast, @batch_interval)
   end
 
   defp build_snapshot(sessions) do
@@ -208,7 +223,7 @@ defmodule Fleetlm.Runtime.InboxServer do
     |> Enum.sort_by(
       fn entry ->
         # Use epoch for nil timestamps to sort them last
-        case entry.last_message_at do
+        case entry.last_activity_at do
           nil -> ~N[1970-01-01 00:00:00]
           dt -> dt
         end
@@ -219,8 +234,9 @@ defmodule Fleetlm.Runtime.InboxServer do
       %{
         "session_id" => entry.session_id,
         "other_participant_id" => entry.other_participant_id,
-        "last_message" => entry.last_message,
-        "last_message_at" => encode_datetime(entry.last_message_at)
+        "unread_count" => entry.unread_count,
+        "last_activity_at" => encode_datetime(entry.last_activity_at),
+        "last_sender_id" => entry.last_sender_id
       }
     end)
   end

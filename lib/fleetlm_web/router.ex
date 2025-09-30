@@ -23,11 +23,6 @@ defmodule FleetlmWeb.Router do
   scope "/api", FleetlmWeb do
     pipe_through :api
 
-    get "/participants", ParticipantController, :index
-    get "/participants/:id", ParticipantController, :show
-    post "/participants", ParticipantController, :create
-    delete "/participants/:id", ParticipantController, :delete
-
     post "/sessions", SessionController, :create
     get "/sessions/:session_id/messages", SessionController, :messages
     post "/sessions/:session_id/messages", SessionController, :append_message

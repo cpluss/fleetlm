@@ -112,10 +112,11 @@ defmodule Fleetlm.Integration.IntegrationTest do
           %{}
         )
 
-      # Should receive inbox update
-      assert_receive {:inbox_snapshot, snapshot}, 1000
+      # Should receive inbox update (batched)
+      assert_receive {:inbox_snapshot, snapshot}, 2000
       updated_session = Enum.find(snapshot, &(&1["session_id"] == session1.id))
-      assert updated_session["last_message"]["sender_id"] == "bob"
+      assert updated_session["unread_count"] == 1
+      assert updated_session["last_sender_id"] == "bob"
 
       # Send message to session2
       {:ok, _} =
@@ -127,10 +128,10 @@ defmodule Fleetlm.Integration.IntegrationTest do
           %{}
         )
 
-      # Should receive another inbox update
-      assert_receive {:inbox_snapshot, snapshot2}, 1000
+      # Should receive another inbox update (batched)
+      assert_receive {:inbox_snapshot, snapshot2}, 2000
 
-      # Verify both sessions in snapshot, ordered by last message
+      # Verify both sessions in snapshot, ordered by last activity
       assert length(snapshot2) == 2
       # Most recent (session2) should be first
       assert hd(snapshot2)["session_id"] == session2.id

@@ -47,8 +47,10 @@ defmodule Fleetlm.Runtime.InboxServerTest do
       # Find alice's session
       alice_session = Enum.find(snapshot, &(&1["session_id"] != nil))
 
-      # Should have no last message
-      assert alice_session["last_message"] == nil
+      # Should have no unread messages
+      assert alice_session["unread_count"] == 0
+      assert alice_session["last_activity_at"] == nil
+      assert alice_session["last_sender_id"] == nil
     end
   end
 
@@ -70,7 +72,7 @@ defmodule Fleetlm.Runtime.InboxServerTest do
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:alice")
 
       # Send a message via Router (which broadcasts to session PubSub)
-      {:ok, message} =
+      {:ok, _message} =
         Router.append_message(
           session.id,
           "bob",
@@ -79,22 +81,23 @@ defmodule Fleetlm.Runtime.InboxServerTest do
           %{}
         )
 
-      # Should receive inbox snapshot update
-      assert_receive {:inbox_snapshot, snapshot}, 1000
+      # Should receive inbox snapshot update (batched)
+      assert_receive {:inbox_snapshot, snapshot}, 2000
 
       # Find the session in snapshot
       updated_session = Enum.find(snapshot, &(&1["session_id"] == session.id))
 
-      # Should have updated last message
-      assert updated_session["last_message"]["seq"] == message.seq
-      assert updated_session["last_message"]["sender_id"] == "bob"
+      # Should have incremented unread count and updated metadata
+      assert updated_session["unread_count"] == 1
+      assert updated_session["last_sender_id"] == "bob"
+      assert updated_session["last_activity_at"] != nil
     end
 
     test "updates for messages from self too", %{session: session} do
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:alice")
 
       # Alice sends a message
-      {:ok, message} =
+      {:ok, _message} =
         Router.append_message(
           session.id,
           "alice",
@@ -103,27 +106,32 @@ defmodule Fleetlm.Runtime.InboxServerTest do
           %{}
         )
 
-      # Should receive inbox snapshot update
-      assert_receive {:inbox_snapshot, snapshot}, 1000
+      # Should receive inbox snapshot update (batched)
+      assert_receive {:inbox_snapshot, snapshot}, 2000
 
       updated_session = Enum.find(snapshot, &(&1["session_id"] == session.id))
 
-      # Should update last message regardless of sender
-      assert updated_session["last_message"]["seq"] == message.seq
-      assert updated_session["last_message"]["sender_id"] == "alice"
+      # Should update regardless of sender
+      assert updated_session["unread_count"] == 1
+      assert updated_session["last_sender_id"] == "alice"
+      assert updated_session["last_activity_at"] != nil
     end
 
-    test "sorts sessions by last message time", %{session1: session1, session2: session2, inbox_pid: _inbox_pid} do
+    test "sorts sessions by last message time", %{
+      session1: session1,
+      session2: session2,
+      inbox_pid: _inbox_pid
+    } do
       # Inbox already started by setup
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:alice")
 
       # Send message to session2 first
       {:ok, _} = Router.append_message(session2.id, "charlie", "text", %{"text" => "1"}, %{})
-      assert_receive {:inbox_snapshot, _}, 1000
+      assert_receive {:inbox_snapshot, _}, 2000
 
       # Then send message to session1
       {:ok, _} = Router.append_message(session1.id, "bob", "text", %{"text" => "2"}, %{})
-      assert_receive {:inbox_snapshot, snapshot}, 1000
+      assert_receive {:inbox_snapshot, snapshot}, 2000
 
       # session1 should be first (most recent)
       assert hd(snapshot)["session_id"] == session1.id
