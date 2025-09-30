@@ -1,6 +1,9 @@
 defmodule Fleetlm.Runtime.InboxServer do
   @moduledoc """
-  Event-driven inbox server for a user.
+  Event-driven inbox server for a user. It's a bit convoluted right now and may
+  be removed in the future depending on the direction we're going long-term. For
+  now it serves as a local queue to avoid overloading the client channels with chatter
+  from agents that aren't actually conversing directly with them (background conversations).
 
   Note: Agents do NOT have inboxes - they communicate via webhooks only.
 
@@ -49,9 +52,14 @@ defmodule Fleetlm.Runtime.InboxServer do
   @type state :: %__MODULE__{
           user_id: String.t(),
           sessions: %{String.t() => session_entry()},
+          # Sessions that have been updated and should be broadcast
+          # in the next batch.
           dirty_sessions: MapSet.t(),
+          # Timer to batch broadcast updates to the client
           batch_timer: reference() | nil,
+          # Timer to check for inactivity and shut down the server
           inactivity_timer: reference() | nil,
+          # Timestamp of last activity to detect inactivity
           last_activity: integer()
         }
 

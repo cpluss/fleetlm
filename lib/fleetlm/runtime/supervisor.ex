@@ -2,8 +2,8 @@ defmodule Fleetlm.Runtime.Supervisor do
   @moduledoc """
   Root supervisor for the session runtime tree.
 
-  Starts storage layer, registries, sharding control plane, and dynamic supervisors
-  that manage SessionServer/InboxServer processes. Also includes DrainCoordinator
+  Starts storage layer, registries, and dynamic supervisors that manage
+  SessionServer/InboxServer processes. Also includes DrainCoordinator
   for graceful SIGTERM handling during deployments.
   """
 
@@ -23,13 +23,8 @@ defmodule Fleetlm.Runtime.Supervisor do
       FleetLM.Storage.Supervisor,
 
       # Registries for process lookup
-      {Registry, keys: :unique, name: Fleetlm.Runtime.Sharding.LocalRegistry},
       {Registry, keys: :unique, name: Fleetlm.Runtime.SessionRegistry},
       {Registry, keys: :unique, name: Fleetlm.Runtime.InboxRegistry},
-
-      # Sharding control plane (HashRing, slot management)
-      Fleetlm.Runtime.Sharding.Supervisor,
-      Fleetlm.Runtime.Sharding.Manager,
 
       # Dynamic supervisors for session and inbox servers
       {SessionSupervisor, []},

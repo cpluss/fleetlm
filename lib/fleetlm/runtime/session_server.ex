@@ -22,7 +22,7 @@ defmodule Fleetlm.Runtime.SessionServer do
   require Logger
 
   alias FleetLM.Storage.API, as: StorageAPI
-  alias Fleetlm.Runtime.Sharding.HashRing
+  alias Fleetlm.Runtime.HashRing
 
   # How many messages to keep in the tail cache in memory
   # to avoid fetching all messages from storage on each session join

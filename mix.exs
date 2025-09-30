@@ -63,7 +63,6 @@ defmodule Fleetlm.MixProject do
       {:cachex, "~> 3.6"},
       {:prom_ex, "~> 1.11"},
       {:libcluster, "~> 3.3"},
-      {:horde, "~> 0.9"},
       {:gettext, "~> 0.26"},
       {:jason, "~> 1.2"},
       {:bandit, "~> 1.5"},

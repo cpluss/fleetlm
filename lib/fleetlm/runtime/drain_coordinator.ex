@@ -151,8 +151,8 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
           Logger.debug("Successfully drained session #{session_id}")
           :ok
 
-        {:error, reason} = error ->
-          Logger.error("Failed to drain session #{session_id}: #{inspect(reason)}")
+        {:error, _reason} = error ->
+          Logger.error("Failed to drain session #{session_id}: #{inspect(error)}")
           error
       end
     catch

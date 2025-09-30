@@ -13,7 +13,7 @@ defmodule Fleetlm.Runtime.Router do
 
   require Logger
 
-  alias Fleetlm.Runtime.Sharding.HashRing
+  alias Fleetlm.Runtime.HashRing
   alias Fleetlm.Runtime.SessionServer
   alias Fleetlm.Runtime.SessionSupervisor
 

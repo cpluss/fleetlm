@@ -1,4 +1,4 @@
-defmodule Fleetlm.Runtime.Sharding.HashRing do
+defmodule Fleetlm.Runtime.HashRing do
   @moduledoc """
   Consistent hash ring used to map session ids to shard slots and slots to owner nodes.
 
