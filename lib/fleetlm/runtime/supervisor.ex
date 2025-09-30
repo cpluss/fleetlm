@@ -21,6 +21,8 @@ defmodule Fleetlm.Runtime.Supervisor do
   @impl true
   def init(_arg) do
     children = [
+      # Storage layer (SlotLogServers with disk logs)
+      FleetLM.Storage.Supervisor,
       CacheSupervisor,
       {Registry, keys: :unique, name: Fleetlm.Runtime.Sharding.LocalRegistry},
       Fleetlm.Runtime.Sharding.Supervisor,

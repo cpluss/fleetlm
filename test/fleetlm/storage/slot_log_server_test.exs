@@ -1,56 +1,37 @@
 defmodule FleetLM.Storage.SlotLogServerTest do
-  use ExUnit.Case, async: false
-
-  alias FleetLM.Storage.{SlotLogServer, Entry, DiskLog}
-  alias FleetLM.Storage.Model.Message
-  alias Fleetlm.Repo
+  use Fleetlm.StorageCase, async: false
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Fleetlm.Repo)
-    Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()})
+    # Use a high slot number to avoid conflicts with production SlotLogServers
+    # and start our own test-specific SlotLogServer
+    slot = 100
 
-    temp_dir =
-      System.tmp_dir!()
-      |> Path.join("fleetlm_slot_logs_test_#{System.unique_integer([:positive])}")
-
-    File.rm_rf(temp_dir)
-    File.mkdir_p!(temp_dir)
-
-    previous_dir = Application.fetch_env(:fleetlm, :slot_log_dir)
-    Application.put_env(:fleetlm, :slot_log_dir, temp_dir)
-
-    on_exit(fn ->
-      case previous_dir do
-        {:ok, dir} -> Application.put_env(:fleetlm, :slot_log_dir, dir)
-        :error -> Application.delete_env(:fleetlm, :slot_log_dir)
-      end
-
-      File.rm_rf(temp_dir)
-    end)
-
-    # Start a SlotLogServer for slot 0
-    slot = 0
-    {:ok, pid} = start_supervised({SlotLogServer, slot})
-
-    %{slot: slot, server_pid: pid}
+    case start_supervised({SlotLogServer, slot}) do
+      {:ok, pid} -> %{slot: slot, server_pid: pid}
+      {:error, {:already_started, pid}} -> %{slot: slot, server_pid: pid}
+    end
   end
 
   describe "append/2" do
     test "appends an entry to the disk log", %{slot: slot} do
-      entry = build_entry(slot, "session-1", 1)
+      session = create_test_session()
+      entry = build_entry(slot, session.id, 1)
       assert :ok = SlotLogServer.append(slot, entry)
 
       {:ok, log} = SlotLogServer.get_log_handle(slot)
       {:ok, entries} = DiskLog.read_all(log)
       assert length(entries) == 1
-      assert hd(entries).session_id == "session-1"
+      assert hd(entries).session_id == session.id
       assert hd(entries).seq == 1
     end
 
     test "handles multiple appends", %{slot: slot} do
-      entry1 = build_entry(slot, "session-1", 1)
-      entry2 = build_entry(slot, "session-1", 2)
-      entry3 = build_entry(slot, "session-2", 1)
+      session1 = create_test_session("alice", "bob")
+      session2 = create_test_session("charlie", "dave")
+
+      entry1 = build_entry(slot, session1.id, 1)
+      entry2 = build_entry(slot, session1.id, 2)
+      entry3 = build_entry(slot, session2.id, 1)
 
       assert :ok = SlotLogServer.append(slot, entry1)
       assert :ok = SlotLogServer.append(slot, entry2)
@@ -65,15 +46,12 @@ defmodule FleetLM.Storage.SlotLogServerTest do
 
   describe "flush to database" do
     test "flushes entries to database on schedule", %{slot: slot} do
-      session1 = "session-#{System.unique_integer([:positive])}"
-      session2 = "session-#{System.unique_integer([:positive])}"
+      session1 = create_test_session("alice", "bob")
+      session2 = create_test_session("charlie", "dave")
 
-      create_test_session(session1)
-      create_test_session(session2)
-
-      entry1 = build_entry(slot, session1, 1)
-      entry2 = build_entry(slot, session1, 2)
-      entry3 = build_entry(slot, session2, 1)
+      entry1 = build_entry(slot, session1.id, 1)
+      entry2 = build_entry(slot, session1.id, 2)
+      entry3 = build_entry(slot, session2.id, 1)
 
       SlotLogServer.notify_next_flush(slot)
       assert :ok = SlotLogServer.append(slot, entry1)
@@ -103,10 +81,8 @@ defmodule FleetLM.Storage.SlotLogServerTest do
     end
 
     test "truncates disk log after successful flush", %{slot: slot} do
-      session_id = "session-#{System.unique_integer([:positive])}"
-      create_test_session(session_id)
-
-      entry = build_entry(slot, session_id, 1)
+      session = create_test_session()
+      entry = build_entry(slot, session.id, 1)
       SlotLogServer.append(slot, entry)
 
       SlotLogServer.notify_next_flush(slot)
@@ -128,14 +104,11 @@ defmodule FleetLM.Storage.SlotLogServerTest do
     end
 
     test "handles multiple sessions in one flush", %{slot: slot} do
-      session1 = "session-#{System.unique_integer([:positive])}"
-      session2 = "session-#{System.unique_integer([:positive])}"
+      session1 = create_test_session("alice", "bob")
+      session2 = create_test_session("charlie", "dave")
 
-      create_test_session(session1)
-      create_test_session(session2)
-
-      entry1 = build_entry(slot, session1, 1)
-      entry2 = build_entry(slot, session2, 1)
+      entry1 = build_entry(slot, session1.id, 1)
+      entry2 = build_entry(slot, session2.id, 1)
 
       SlotLogServer.append(slot, entry1)
       SlotLogServer.append(slot, entry2)
@@ -151,23 +124,21 @@ defmodule FleetLM.Storage.SlotLogServerTest do
       messages = Repo.all(Message)
       session_ids = Enum.map(messages, & &1.session_id)
 
-      assert session1 in session_ids
-      assert session2 in session_ids
+      assert session1.id in session_ids
+      assert session2.id in session_ids
     end
   end
 
   describe "terminate/2" do
     test "flushes dirty data on shutdown" do
       slot = 99
-      session_id = "session-#{System.unique_integer([:positive])}"
-
-      create_test_session(session_id)
+      session = create_test_session()
 
       # Start server manually so we can stop it
       {:ok, pid} = SlotLogServer.start_link(slot)
       Process.unlink(pid)
 
-      entry = build_entry(slot, session_id, 1)
+      entry = build_entry(slot, session.id, 1)
       SlotLogServer.append(slot, entry)
 
       # Stop the server and wait for it to complete termination
@@ -189,40 +160,4 @@ defmodule FleetLM.Storage.SlotLogServerTest do
     end
   end
 
-  defp build_entry(slot, session_id, seq) do
-    message_id = Ulid.generate()
-    build_entry_with_id(slot, session_id, seq, message_id)
-  end
-
-  defp build_entry_with_id(slot, session_id, seq, message_id) do
-    message = %Message{
-      id: message_id,
-      session_id: session_id,
-      sender_id: "sender-#{seq}",
-      recipient_id: "recipient-#{seq}",
-      seq: seq,
-      kind: "text",
-      content: %{"text" => "message #{seq}"},
-      metadata: %{},
-      shard_key: slot,
-      inserted_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
-    }
-
-    Entry.from_message(slot, seq, "idem-#{seq}", message)
-  end
-
-  defp create_test_session(session_id) do
-    # Calculate shard_key the same way the API does
-    num_slots = Application.get_env(:fleetlm, :num_storage_slots, 64)
-    shard_key = :erlang.phash2(session_id, num_slots)
-
-    Repo.insert!(%FleetLM.Storage.Model.Session{
-      id: session_id,
-      sender_id: "test-sender",
-      recipient_id: "test-recipient",
-      status: "active",
-      metadata: %{},
-      shard_key: shard_key
-    })
-  end
 end

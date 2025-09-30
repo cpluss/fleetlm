@@ -34,8 +34,6 @@ defmodule Fleetlm.Runtime.InboxServer do
 
   @impl true
   def init(participant_id) do
-    # Enable graceful shutdown for database cleanup during tests
-    Process.flag(:trap_exit, true)
     # Load snapshot lazily to avoid database access during init
     {:ok, %{participant_id: participant_id, snapshot: nil}}
   end
@@ -59,11 +57,6 @@ defmodule Fleetlm.Runtime.InboxServer do
     {:reply, :ok, %{state | snapshot: snapshot}}
   end
 
-  @impl true
-  def handle_info({:EXIT, _pid, _reason}, state) do
-    # Handle EXIT messages from trap_exit gracefully
-    {:noreply, state}
-  end
 
   @impl true
   def terminate(_reason, state) do
