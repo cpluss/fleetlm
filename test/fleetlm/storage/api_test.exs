@@ -1,5 +1,5 @@
 defmodule FleetLM.Storage.APITest do
-  use Fleetlm.StorageCase, async: false
+  use Fleetlm.TestCase
 
   test "get_messages returns entries from disk log before they are persisted" do
     session = create_test_session()

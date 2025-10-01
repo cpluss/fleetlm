@@ -32,7 +32,8 @@ defmodule FleetLM.Storage.SlotLogServer do
           dirty: boolean(),
           notify_next_flush: [pid()],
           task_supervisor: Supervisor.name(),
-          pending_flush: Task.t() | nil
+          pending_flush: Task.t() | nil,
+          registry: atom() | :global
         }
 
   ## Public API
@@ -43,7 +44,8 @@ defmodule FleetLM.Storage.SlotLogServer do
 
   def start_link({slot, opts}) when is_integer(slot) and is_list(opts) do
     task_supervisor = Keyword.get(opts, :task_supervisor, @default_task_supervisor)
-    GenServer.start_link(__MODULE__, {slot, task_supervisor}, name: via(slot))
+    registry = Keyword.get(opts, :registry, :global)
+    GenServer.start_link(__MODULE__, {slot, task_supervisor, registry}, name: via(slot, registry))
   end
 
   @doc """
@@ -91,7 +93,7 @@ defmodule FleetLM.Storage.SlotLogServer do
   ## GenServer callbacks
 
   @impl true
-  def init({slot, task_supervisor}) do
+  def init({slot, task_supervisor, registry}) do
     {:ok, log} = DiskLog.open(slot)
     schedule_flush()
 
@@ -100,6 +102,7 @@ defmodule FleetLM.Storage.SlotLogServer do
        slot: slot,
        log: log,
        task_supervisor: task_supervisor,
+       registry: registry,
        dirty: false,
        notify_next_flush: [],
        pending_flush: nil
@@ -216,7 +219,16 @@ defmodule FleetLM.Storage.SlotLogServer do
 
   ## Internal helpers
 
-  defp via(slot), do: {:global, {:fleetlm_slot_log_server, slot}}
+  defp via(slot) do
+    registry = Application.get_env(:fleetlm, :slot_log_registry, :global)
+    via(slot, registry)
+  end
+
+  defp via(slot, :global), do: {:global, {:fleetlm_slot_log_server, slot}}
+
+  defp via(slot, registry) when is_atom(registry) do
+    {:via, Registry, {registry, slot}}
+  end
 
   defp schedule_flush do
     Process.send_after(self(), :flush, @flush_interval_ms)

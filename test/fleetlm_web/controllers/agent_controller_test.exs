@@ -1,5 +1,5 @@
 defmodule FleetlmWeb.AgentControllerTest do
-  use FleetlmWeb.ConnCase, async: true
+  use Fleetlm.TestCase, mode: :conn
 
   alias Fleetlm.Agent
 

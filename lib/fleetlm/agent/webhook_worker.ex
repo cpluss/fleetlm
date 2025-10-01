@@ -31,46 +31,27 @@ defmodule Fleetlm.Agent.WebhookWorker do
 
   @impl true
   def init(_args) do
-    {:ok, %{stats: %{dispatches: 0, successes: 0, failures: 0}}}
+    {:ok, %{stats: %{dispatches: 0, successes: 0, failures: 0}, jobs: %{}}}
   end
 
   @impl true
   def handle_cast({:dispatch, session_id, agent_id}, state) do
-    # Spawn task to avoid blocking the worker
-    Task.start(fn -> do_dispatch(session_id, agent_id) end)
-    {:noreply, update_in(state.stats.dispatches, &(&1 + 1))}
-  end
+    Logger.info("Dispatching agent webhook",
+      session_id: session_id,
+      agent_id: agent_id
+    )
 
-  ## Private Functions
-
-  defp do_dispatch(session_id, agent_id) do
     start_time = System.monotonic_time(:millisecond)
 
-    result =
-      with {:ok, agent} <- Agent.get(agent_id),
-           :ok <- check_agent_enabled(agent),
-           {:ok, session} <- StorageAPI.get_session(session_id),
-           {:ok, messages} <- fetch_message_history(session_id, agent),
-           # post_to_agent now streams and appends messages directly
-           :ok <- post_to_agent(agent, session, messages) do
-        :ok
-      else
-        error -> error
-      end
-
-    duration = System.monotonic_time(:millisecond) - start_time
-
-    case result do
-      :ok ->
-        Logger.debug("Agent webhook success",
-          session_id: session_id,
-          agent_id: agent_id,
-          duration_ms: duration
-        )
-
-        log_success(agent_id, session_id, duration)
+    case begin_dispatch(session_id, agent_id, start_time) do
+      {:ok, job} ->
+        stats = update_in(state.stats.dispatches, &(&1 + 1))
+        jobs = Map.put(state.jobs, job.ref, job)
+        {:noreply, %{state | stats: stats, jobs: jobs}}
 
       {:error, reason} ->
+        duration = System.monotonic_time(:millisecond) - start_time
+
         Logger.warning("Agent webhook failed: #{inspect(reason)}",
           session_id: session_id,
           agent_id: agent_id,
@@ -78,6 +59,32 @@ defmodule Fleetlm.Agent.WebhookWorker do
         )
 
         log_failure(agent_id, session_id, reason, duration)
+
+        stats = update_in(state.stats.failures, &(&1 + 1))
+        {:noreply, %{state | stats: stats}}
+    end
+  end
+
+  @impl true
+  def handle_info(message, %{jobs: jobs} = state) do
+    case locate_job(message, jobs) do
+      :unknown ->
+        {:noreply, state}
+
+      {:error, ref, job, reason} ->
+        {:noreply, fail_job(state, ref, job, reason)}
+
+      {:ok, ref, job, chunks} ->
+        case process_chunks(job, chunks) do
+          {:ok, pending_job} ->
+            {:noreply, %{state | jobs: Map.put(state.jobs, ref, pending_job)}}
+
+          {:done, finished_job} ->
+            {:noreply, succeed_job(state, ref, finished_job)}
+
+          {:error, reason, errored_job} ->
+            {:noreply, fail_job(state, ref, errored_job, reason)}
+        end
     end
   end
 
@@ -101,142 +108,6 @@ defmodule Fleetlm.Agent.WebhookWorker do
       "last" ->
         {:ok, messages} = StorageAPI.get_messages(session_id, 0, 1)
         {:ok, Enum.take(messages, -1)}
-    end
-  end
-
-  # POST to agent endpoint using Req + Finch
-  defp post_to_agent(agent, session, messages) do
-    payload = build_payload(session, messages)
-    url = agent.origin_url <> agent.webhook_path
-    headers = build_headers_map(agent)
-
-    req_post_streaming(url, payload, headers, session.id, agent.id)
-  end
-
-  # POST with streaming JSONL response handling
-  defp req_post_streaming(url, payload, headers, session_id, agent_id) do
-    body = Jason.encode!(payload)
-
-    # Base options
-    base_opts = [
-      url: url,
-      method: :post,
-      headers: headers,
-      body: body,
-      connect_options: [timeout: 5_000],
-      pool_timeout: 50,
-      receive_timeout: @receive_timeout,
-      retry: false
-    ]
-
-    # Merge test opts first, then add defaults
-    req_opts =
-      base_opts
-      |> Keyword.merge(Application.get_env(:fleetlm, :agent_req_opts, []))
-      |> Keyword.put_new(:finch, Fleetlm.Finch)
-      |> Keyword.put_new(:into, :self)
-
-    req = Req.new(req_opts)
-
-    case Req.request(req) do
-      {:ok, %Req.Response{status: status, body: body}} when status in 200..299 ->
-        # Handle three cases: binary JSONL, decoded map, or stream
-        result =
-          cond do
-            is_binary(body) ->
-              # JSONL string response
-              process_jsonl_body(body, session_id, agent_id)
-
-            is_map(body) and not Map.has_key?(body, :__struct__) ->
-              # Decoded JSON response (plug adapter auto-decodes)
-              # Parse and append single message
-              line = Jason.encode!(body)
-              parse_and_append_message(line, session_id, agent_id)
-
-            true ->
-              # Streaming response (Finch with :self)
-              consume_stream(body, session_id, agent_id, "")
-          end
-
-        case result do
-          {:ok, _message_count} -> :ok
-          error -> error
-        end
-
-      {:ok, %Req.Response{status: status}} ->
-        Logger.error("HTTP error: #{status}")
-        {:error, {:http_error, status}}
-
-      {:error, reason} ->
-        Logger.error("Req request failed: #{inspect(reason)}",
-          url: url,
-          session_id: session_id,
-          agent_id: agent_id
-        )
-
-        {:error, {:request_failed, reason}}
-    end
-  end
-
-  # Process complete JSONL body (for test mode)
-  defp process_jsonl_body(body, session_id, agent_id) do
-    lines =
-      body
-      |> String.split("\n")
-      |> Enum.reject(&(&1 == "" or String.trim(&1) == ""))
-
-    Enum.reduce_while(lines, {:ok, 0}, fn line, {:ok, count} ->
-      case parse_and_append_message(line, session_id, agent_id) do
-        :ok ->
-          {:cont, {:ok, count + 1}}
-
-        {:error, reason} ->
-          {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  # Consume streaming response, parsing JSONL and appending messages
-  defp consume_stream(stream, session_id, agent_id, buffer, message_count \\ 0) do
-    receive do
-      {^stream, {:data, chunk}} ->
-        # Add chunk to buffer and process complete lines
-        new_buffer = buffer <> chunk
-        {lines, remaining} = extract_lines(new_buffer)
-
-        # Process each complete line as a JSONL message
-        result =
-          Enum.reduce_while(lines, {:ok, message_count}, fn line, {:ok, count} ->
-            case parse_and_append_message(line, session_id, agent_id) do
-              :ok -> {:cont, {:ok, count + 1}}
-              {:error, reason} -> {:halt, {:error, reason}}
-            end
-          end)
-
-        case result do
-          {:ok, new_count} ->
-            consume_stream(stream, session_id, agent_id, remaining, new_count)
-
-          error ->
-            error
-        end
-
-      {^stream, :done} ->
-        # Process any remaining buffer content
-        if buffer != "" and String.trim(buffer) != "" do
-          case parse_and_append_message(buffer, session_id, agent_id) do
-            :ok -> {:ok, message_count + 1}
-            error -> error
-          end
-        else
-          {:ok, message_count}
-        end
-
-      {^stream, {:error, reason}} ->
-        {:error, {:stream_error, reason}}
-    after
-      @receive_timeout ->
-        {:error, :receive_timeout}
     end
   end
 
@@ -264,13 +135,10 @@ defmodule Fleetlm.Agent.WebhookWorker do
         {:ok, %{"kind" => kind, "content" => content} = msg} ->
           metadata = Map.get(msg, "metadata", %{})
 
-          Router.append_message(
-            session_id,
-            agent_id,
-            kind,
-            content,
-            metadata
-          )
+          case Router.append_message(session_id, agent_id, kind, content, metadata) do
+            {:ok, _message} -> :ok
+            {:error, reason} -> {:error, reason}
+          end
 
         {:ok, _other} ->
           Logger.warning("Invalid JSONL message format (missing kind/content)",
@@ -339,5 +207,164 @@ defmodule Fleetlm.Agent.WebhookWorker do
       error: inspect(reason),
       latency_ms: duration
     })
+  end
+
+  defp begin_dispatch(session_id, agent_id, started_at) do
+    with {:ok, agent} <- Agent.get(agent_id),
+         :ok <- check_agent_enabled(agent),
+         {:ok, session} <- StorageAPI.get_session(session_id),
+         {:ok, messages} <- fetch_message_history(session_id, agent),
+         {:ok, response} <- start_async_request(agent, session, messages) do
+      async = response.body
+
+      job = %{
+        ref: async.ref,
+        session_id: session_id,
+        agent_id: agent_id,
+        response: response,
+        buffer: "",
+        message_count: 0,
+        started_at: started_at
+      }
+
+      {:ok, job}
+    else
+      {:error, _} = error -> error
+    end
+  end
+
+  defp start_async_request(agent, session, messages) do
+    payload = build_payload(session, messages)
+    url = agent.origin_url <> agent.webhook_path
+    headers = build_headers_map(agent)
+    body = Jason.encode!(payload)
+
+    base_opts = [
+      url: url,
+      method: :post,
+      headers: headers,
+      body: body,
+      connect_options: [timeout: 5_000],
+      pool_timeout: 50,
+      receive_timeout: @receive_timeout,
+      retry: false
+    ]
+
+    req_opts =
+      base_opts
+      |> Keyword.merge(Application.get_env(:fleetlm, :agent_req_opts, []))
+      |> Keyword.put(:into, :self)
+      |> Keyword.put_new(:finch, Fleetlm.Finch)
+
+    case Req.request(Req.new(req_opts)) do
+      {:ok, %Req.Response{status: status} = response} when status in 200..299 ->
+        Logger.info("Agent webhook request started",
+          session_id: session.id,
+          agent_id: agent.id,
+          status: status,
+          async: match?(%Req.Response.Async{}, response.body)
+        )
+
+        {:ok, response}
+
+      {:ok, %Req.Response{status: status}} ->
+        {:error, {:http_error, status}}
+
+      {:error, reason} ->
+        {:error, {:request_failed, reason}}
+    end
+  end
+
+  defp locate_job(message, jobs) do
+    Enum.find_value(jobs, :unknown, fn {ref, job} ->
+      case Req.parse_message(job.response, message) do
+        :unknown -> nil
+        {:ok, chunks} -> {:ok, ref, job, chunks}
+        {:error, reason} -> {:error, ref, job, reason}
+      end
+    end)
+  end
+
+  defp process_chunks(job, chunks) do
+    Enum.reduce_while(chunks, {:ok, job}, fn chunk, {:ok, current_job} ->
+      case handle_chunk(current_job, chunk) do
+        {:ok, updated_job} ->
+          {:cont, {:ok, updated_job}}
+
+        {:done, updated_job} ->
+          {:halt, {:done, updated_job}}
+
+        {:error, reason, errored_job} ->
+          {:halt, {:error, reason, errored_job}}
+      end
+    end)
+    |> case do
+      {:ok, updated_job} -> {:ok, updated_job}
+      {:done, updated_job} -> {:done, updated_job}
+      {:error, reason, errored_job} -> {:error, reason, errored_job}
+    end
+  end
+
+  defp handle_chunk(job, {:data, data}) do
+    buffer = job.buffer <> data
+    {lines, remaining} = extract_lines(buffer)
+
+    Enum.reduce_while(lines, {:ok, %{job | buffer: remaining}}, fn line, {:ok, acc_job} ->
+      case append_message(acc_job, line) do
+        {:ok, next_job} -> {:cont, {:ok, next_job}}
+        {:error, reason, errored_job} -> {:halt, {:error, reason, errored_job}}
+      end
+    end)
+  end
+
+  defp handle_chunk(job, {:trailers, _trailers}), do: {:ok, job}
+  defp handle_chunk(job, :done), do: {:done, job}
+  defp handle_chunk(job, _other), do: {:ok, job}
+
+  defp append_message(job, line) do
+    case parse_and_append_message(line, job.session_id, job.agent_id) do
+      :ok ->
+        {:ok, increment_count(job)}
+
+      {:error, reason} ->
+        {:error, reason, job}
+    end
+  end
+
+  defp increment_count(job) do
+    Map.update!(job, :message_count, &(&1 + 1))
+  end
+
+  defp succeed_job(state, ref, job) do
+    duration = System.monotonic_time(:millisecond) - job.started_at
+
+    Logger.debug("Agent webhook success",
+      session_id: job.session_id,
+      agent_id: job.agent_id,
+      messages: job.message_count,
+      duration_ms: duration
+    )
+
+    log_success(job.agent_id, job.session_id, duration)
+
+    stats = update_in(state.stats.successes, &(&1 + 1))
+    %{state | stats: stats, jobs: Map.delete(state.jobs, ref)}
+  end
+
+  defp fail_job(state, ref, job, reason) do
+    duration = System.monotonic_time(:millisecond) - job.started_at
+
+    Logger.warning("Agent webhook failed: #{inspect(reason)}",
+      session_id: job.session_id,
+      agent_id: job.agent_id,
+      duration_ms: duration
+    )
+
+    log_failure(job.agent_id, job.session_id, reason, duration)
+
+    Req.cancel_async_response(job.response)
+
+    stats = update_in(state.stats.failures, &(&1 + 1))
+    %{state | stats: stats, jobs: Map.delete(state.jobs, ref)}
   end
 end

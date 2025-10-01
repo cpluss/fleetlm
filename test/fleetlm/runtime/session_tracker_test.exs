@@ -1,5 +1,5 @@
 defmodule Fleetlm.Runtime.SessionTrackerTest do
-  use Fleetlm.StorageCase, async: false
+  use Fleetlm.TestCase
 
   alias Fleetlm.Runtime.{SessionTracker, SessionServer}
 

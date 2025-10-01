@@ -1,11 +1,14 @@
 defmodule Fleetlm.Agent.WebhookIntegrationTest do
-  use Fleetlm.StorageCase, async: false
+  use Fleetlm.TestCase
 
   alias Fleetlm.Agent
   alias Fleetlm.Runtime.Router
   alias FleetLM.Storage.API, as: StorageAPI
 
   setup do
+    # Enable webhooks for this test (disabled globally in test_helper)
+    Application.put_env(:fleetlm, :disable_agent_webhooks, false)
+
     # Register test PID for the test plug
     Application.put_env(:fleetlm, :agent_test_pid, self())
 
@@ -27,6 +30,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
     {:ok, session} = StorageAPI.create_session("alice", "echo-agent", %{})
 
     on_exit(fn ->
+      Application.put_env(:fleetlm, :disable_agent_webhooks, true)
       Application.delete_env(:fleetlm, :agent_req_opts)
       Application.delete_env(:fleetlm, :agent_test_pid)
     end)

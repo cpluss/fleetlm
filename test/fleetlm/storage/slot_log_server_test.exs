@@ -1,14 +1,17 @@
 defmodule FleetLM.Storage.SlotLogServerTest do
-  use Fleetlm.StorageCase, async: false
+  use Fleetlm.TestCase
 
   import Ecto.Query
 
-  setup do
-    # Use a high slot number to avoid conflicts with production SlotLogServers
-    # and start our own test-specific SlotLogServer
+  setup context do
+    # Use a high slot number to avoid production range (0-63)
+    # Start test-specific SlotLogServer with test registry and directory
     slot = 100
 
-    case start_supervised({SlotLogServer, slot}) do
+    registry = context[:slot_registry]
+    task_supervisor = Application.get_env(:fleetlm, :slot_log_task_supervisor)
+
+    case start_supervised({SlotLogServer, {slot, task_supervisor: task_supervisor, registry: registry}}, id: {SlotLogServer, slot}) do
       {:ok, pid} -> %{slot: slot, server_pid: pid}
       {:error, {:already_started, pid}} -> %{slot: slot, server_pid: pid}
     end

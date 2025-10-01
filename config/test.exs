@@ -56,3 +56,7 @@ config :fleetlm, :skip_terminate_db_ops, true
 
 # Faster flush interval for tests (default is 300ms, but we can make it even faster)
 config :fleetlm, :storage_flush_interval_ms, 100
+
+# Use test mode for slot logs - SlotLogServers are started on-demand per test
+# instead of being globally supervised at application startup
+config :fleetlm, :slot_log_mode, :test

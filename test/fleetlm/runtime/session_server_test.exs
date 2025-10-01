@@ -1,5 +1,5 @@
 defmodule Fleetlm.Runtime.SessionServerTest do
-  use Fleetlm.StorageCase, async: false
+  use Fleetlm.TestCase
 
   alias Fleetlm.Runtime.SessionServer
 

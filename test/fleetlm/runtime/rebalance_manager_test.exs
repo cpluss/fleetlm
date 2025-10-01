@@ -1,5 +1,5 @@
 defmodule Fleetlm.Runtime.RebalanceManagerTest do
-  use Fleetlm.StorageCase, async: false
+  use Fleetlm.TestCase
 
   alias Fleetlm.Runtime.{RebalanceManager, SessionTracker, SessionServer, HashRing}
 

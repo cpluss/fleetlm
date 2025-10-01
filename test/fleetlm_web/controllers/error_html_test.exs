@@ -1,5 +1,5 @@
 defmodule FleetlmWeb.ErrorHTMLTest do
-  use FleetlmWeb.ConnCase, async: false
+  use Fleetlm.TestCase, mode: :conn
 
   # Bring render_to_string/4 for testing custom views
   import Phoenix.Template, only: [render_to_string: 4]

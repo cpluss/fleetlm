@@ -1,5 +1,5 @@
 defmodule Fleetlm.Runtime.DrainCoordinatorTest do
-  use Fleetlm.StorageCase, async: false
+  use Fleetlm.TestCase
 
   alias Fleetlm.Runtime.{DrainCoordinator, Router, SessionSupervisor}
 

@@ -1,13 +1,10 @@
-base_slot_dir = Path.join(System.tmp_dir!(), "fleetlm-slot-logs")
-_ = File.rm_rf(base_slot_dir)
-:ok = File.mkdir_p(base_slot_dir)
-Application.put_env(:fleetlm, :slot_log_dir, base_slot_dir)
-
+# Application is already started by mix test with config from config/test.exs
+# Just verify it started successfully
 {:ok, _} = Application.ensure_all_started(:fleetlm)
 
-# We cannot run tests concurrently because the runtime tears down and restarts
-# globally supervised processes (shard supervisors, persistence workers, etc.)
-# and switches application configuration (slot log directories) on the fly.
-# Running more than one test at a time would cause cross-test interference.
+# Tests must run serially because:
+# 1. SlotLogServers are started on-demand and must be isolated per test
+# 2. Runtime processes (SessionServer, InboxServer) are global and must be cleaned between tests
+# 3. Application.put_env changes affect global state
 ExUnit.start(max_cases: 1)
 Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()})

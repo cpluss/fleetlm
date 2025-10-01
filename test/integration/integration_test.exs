@@ -9,7 +9,7 @@ defmodule Fleetlm.Integration.IntegrationTest do
   - SessionChannel WebSocket integration
   - DrainCoordinator graceful shutdown
   """
-  use Fleetlm.StorageCase, async: false
+  use Fleetlm.TestCase
 
   alias Fleetlm.Runtime.{Router, SessionSupervisor, InboxServer, DrainCoordinator}
   alias FleetLM.Storage.API, as: StorageAPI

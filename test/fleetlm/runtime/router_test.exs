@@ -1,5 +1,5 @@
 defmodule Fleetlm.Runtime.RouterTest do
-  use Fleetlm.StorageCase, async: false
+  use Fleetlm.TestCase
 
   alias Fleetlm.Runtime.Router
 

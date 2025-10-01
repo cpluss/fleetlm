@@ -24,14 +24,23 @@ defmodule FleetLM.Storage.Supervisor do
     children =
       [
         {Task.Supervisor, name: slot_log_supervisor}
-      ] ++
-        for slot <- 0..(@num_storage_slots - 1) do
-          Supervisor.child_spec(
-            {FleetLM.Storage.SlotLogServer, {slot, task_supervisor: slot_log_supervisor}},
-            id: {FleetLM.Storage.SlotLogServer, slot}
-          )
-        end
+      ] ++ slot_log_servers(slot_log_supervisor)
 
     Supervisor.init(children, strategy: :rest_for_one)
+  end
+
+  defp slot_log_servers(task_supervisor) do
+    # In test mode, SlotLogServers are started on-demand by individual tests
+    # to enable proper isolation and per-test directories
+    if Application.get_env(:fleetlm, :slot_log_mode, :production) == :test do
+      []
+    else
+      for slot <- 0..(@num_storage_slots - 1) do
+        Supervisor.child_spec(
+          {FleetLM.Storage.SlotLogServer, {slot, task_supervisor: task_supervisor}},
+          id: {FleetLM.Storage.SlotLogServer, slot}
+        )
+      end
+    end
   end
 end

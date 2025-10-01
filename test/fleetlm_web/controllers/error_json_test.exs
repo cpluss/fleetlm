@@ -1,5 +1,5 @@
 defmodule FleetlmWeb.ErrorJSONTest do
-  use FleetlmWeb.ConnCase, async: false
+  use Fleetlm.TestCase, mode: :conn
 
   test "renders 404" do
     assert FleetlmWeb.ErrorJSON.render("404.json", %{}) == %{errors: %{detail: "Not Found"}}

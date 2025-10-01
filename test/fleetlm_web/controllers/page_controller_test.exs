@@ -1,5 +1,5 @@
 defmodule FleetlmWeb.PageControllerTest do
-  use FleetlmWeb.ConnCase
+  use Fleetlm.TestCase, mode: :conn
 
   test "GET /", %{conn: conn} do
     conn = get(conn, ~p"/")

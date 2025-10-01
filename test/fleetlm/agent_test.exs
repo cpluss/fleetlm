@@ -1,5 +1,5 @@
 defmodule Fleetlm.AgentTest do
-  use Fleetlm.StorageCase, async: true
+  use Fleetlm.TestCase
 
   alias Fleetlm.Agent
 

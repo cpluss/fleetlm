@@ -1,5 +1,5 @@
 defmodule FleetLM.Storage.IntegrationTest do
-  use Fleetlm.StorageCase, async: false
+  use Fleetlm.TestCase
 
   describe "complete message flow" do
     test "append -> flush -> retrieve" do
