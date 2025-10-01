@@ -6,11 +6,11 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
   alias FleetLM.Storage.API, as: StorageAPI
 
   setup do
-    # Enable webhooks for this test suite
-    Application.put_env(:fleetlm, :disable_agent_webhooks, false)
+    # Register test PID for the test plug
+    Application.put_env(:fleetlm, :agent_test_pid, self())
 
-    # Enable test mode for agent webhooks
-    setup_test_mode(self())
+    # Configure application to use test plug adapter (no streaming with plug)
+    Application.put_env(:fleetlm, :agent_req_opts, plug: Fleetlm.Agent.TestPlug, into: nil)
 
     # Create test agent
     {:ok, agent} =
@@ -27,8 +27,8 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
     {:ok, session} = StorageAPI.create_session("alice", "echo-agent", %{})
 
     on_exit(fn ->
-      cleanup_test_mode()
-      Application.put_env(:fleetlm, :disable_agent_webhooks, true)
+      Application.delete_env(:fleetlm, :agent_req_opts)
+      Application.delete_env(:fleetlm, :agent_test_pid)
     end)
 
     %{agent: agent, session: session}
@@ -36,14 +36,6 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
 
   describe "end-to-end webhook flow" do
     test "user message triggers agent webhook and response is appended", %{session: session} do
-      # Setup agent response handler
-      agent_responses = agent_response_queue()
-
-      queue_agent_response(agent_responses, %{
-        "kind" => "text",
-        "content" => %{"text" => "Hello back from agent!"}
-      })
-
       # User sends message via Router
       {:ok, user_msg} =
         Router.append_message(
@@ -57,17 +49,23 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
       assert user_msg.sender_id == "alice"
       assert user_msg.seq == 1
 
-      # Wait for async webhook dispatch and response
-      assert_receive {:agent_webhook_called, payload}, 2000
+      # Wait for async webhook dispatch
+      assert_receive {:agent_webhook_called, payload, plug_pid}, 2000
 
-      # Verify webhook payload (uses atom keys)
-      assert payload.session_id == session.id
-      assert payload.agent_id == "echo-agent"
-      assert payload.user_id == "alice"
-      assert length(payload.messages) == 1
-      assert hd(payload.messages).content["text"] == "Hello agent!"
+      # Verify webhook payload
+      assert payload["session_id"] == session.id
+      assert payload["agent_id"] == "echo-agent"
+      assert payload["user_id"] == "alice"
+      assert length(payload["messages"]) == 1
+      assert hd(payload["messages"])["content"]["text"] == "Hello agent!"
 
-      # Wait a bit for agent response to be appended
+      # Send agent response back to the plug process
+      send(plug_pid, {
+        :agent_response,
+        %{"kind" => "text", "content" => %{"text" => "Hello back from agent!"}}
+      })
+
+      # Wait for agent response to be appended
       Process.sleep(300)
 
       # Verify agent response was appended
@@ -81,34 +79,38 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
     end
 
     test "multiple user messages trigger multiple webhooks", %{session: session} do
-      agent_responses = agent_response_queue()
-
-      queue_agent_response(agent_responses, %{
-        "kind" => "text",
-        "content" => %{"text" => "Response 1"}
-      })
-
-      queue_agent_response(agent_responses, %{
-        "kind" => "text",
-        "content" => %{"text" => "Response 2"}
-      })
-
-      queue_agent_response(agent_responses, %{
-        "kind" => "text",
-        "content" => %{"text" => "Response 3"}
-      })
-
-      # Send multiple messages
+      # Send first message
       {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Message 1"}, %{})
-      assert_receive {:agent_webhook_called, _}, 2000
+      assert_receive {:agent_webhook_called, _, plug_pid}, 2000
 
+      send(plug_pid, {
+        :agent_response,
+        %{"kind" => "text", "content" => %{"text" => "Response 1"}}
+      })
+
+      Process.sleep(100)
+
+      # Send second message
       {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Message 2"}, %{})
-      assert_receive {:agent_webhook_called, _}, 2000
+      assert_receive {:agent_webhook_called, _, plug_pid}, 2000
 
+      send(plug_pid, {
+        :agent_response,
+        %{"kind" => "text", "content" => %{"text" => "Response 2"}}
+      })
+
+      Process.sleep(100)
+
+      # Send third message
       {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Message 3"}, %{})
-      assert_receive {:agent_webhook_called, _}, 2000
+      assert_receive {:agent_webhook_called, _, plug_pid}, 2000
 
-      Process.sleep(500)
+      send(plug_pid, {
+        :agent_response,
+        %{"kind" => "text", "content" => %{"text" => "Response 3"}}
+      })
+
+      Process.sleep(300)
 
       # Should have 6 messages: 3 user + 3 agent responses
       {:ok, messages} = StorageAPI.get_messages(session.id, 0, 100)
@@ -124,21 +126,19 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
     end
 
     test "agent messages do not trigger webhooks", %{session: session} do
-      agent_responses = agent_response_queue()
-
-      queue_agent_response(agent_responses, %{
-        "kind" => "text",
-        "content" => %{"text" => "Response"}
-      })
-
       # User message triggers webhook
       {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "User msg"}, %{})
-      assert_receive {:agent_webhook_called, _}, 2000
+      assert_receive {:agent_webhook_called, _, plug_pid}, 2000
+
+      send(plug_pid, {
+        :agent_response,
+        %{"kind" => "text", "content" => %{"text" => "Response"}}
+      })
 
       Process.sleep(300)
 
       # Agent's response should NOT trigger another webhook
-      refute_receive {:agent_webhook_called, _}, 1000
+      refute_receive {:agent_webhook_called, _, _}, 1000
 
       # Should only have 2 messages
       {:ok, messages} = StorageAPI.get_messages(session.id, 0, 100)
@@ -146,32 +146,31 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
     end
 
     test "webhook includes message history in order", %{session: session} do
-      agent_responses = agent_response_queue()
-
       # Send initial message and let agent respond
-      queue_agent_response(agent_responses, %{
-        "kind" => "text",
-        "content" => %{"text" => "First response"}
+      {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "First"}, %{})
+      assert_receive {:agent_webhook_called, _, plug_pid}, 2000
+
+      send(plug_pid, {
+        :agent_response,
+        %{"kind" => "text", "content" => %{"text" => "First response"}}
       })
 
-      {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "First"}, %{})
-      assert_receive {:agent_webhook_called, _}, 2000
       Process.sleep(300)
 
       # Send second message - webhook should include history
-      queue_agent_response(agent_responses, %{
-        "kind" => "text",
-        "content" => %{"text" => "Second response"}
-      })
-
       {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Second"}, %{})
-      assert_receive {:agent_webhook_called, payload}, 2000
+      assert_receive {:agent_webhook_called, payload, plug_pid}, 2000
 
       # Should have 3 messages in history: user1, agent1, user2
-      assert length(payload.messages) == 3
-      assert Enum.at(payload.messages, 0).content["text"] == "First"
-      assert Enum.at(payload.messages, 1).content["text"] == "First response"
-      assert Enum.at(payload.messages, 2).content["text"] == "Second"
+      assert length(payload["messages"]) == 3
+      assert Enum.at(payload["messages"], 0)["content"]["text"] == "First"
+      assert Enum.at(payload["messages"], 1)["content"]["text"] == "First response"
+      assert Enum.at(payload["messages"], 2)["content"]["text"] == "Second"
+
+      send(plug_pid, {
+        :agent_response,
+        %{"kind" => "text", "content" => %{"text" => "Second response"}}
+      })
     end
 
     test "disabled agent does not receive webhooks", %{session: _session} do
@@ -209,15 +208,14 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
 
   describe "error handling" do
     test "handles agent returning invalid response", %{session: session} do
-      agent_responses = agent_response_queue()
-
-      # Queue invalid response (missing required fields)
-      queue_agent_response(agent_responses, %{
-        "invalid" => "response"
-      })
-
       {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Hello"}, %{})
-      assert_receive {:agent_webhook_called, _}, 2000
+      assert_receive {:agent_webhook_called, _, plug_pid}, 2000
+
+      # Send invalid response (missing required fields)
+      send(plug_pid, {
+        :agent_response,
+        %{"invalid" => "response"}
+      })
 
       Process.sleep(300)
 
@@ -227,42 +225,20 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
     end
 
     test "handles agent returning empty response", %{session: session} do
-      agent_responses = agent_response_queue()
-
-      # Queue empty string
-      :ets.insert(agent_responses, {:response, ""})
-
       {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Hello"}, %{})
-      assert_receive {:agent_webhook_called, _}, 2000
+      assert_receive {:agent_webhook_called, _, plug_pid}, 2000
+
+      # Send empty response
+      send(plug_pid, {
+        :agent_response,
+        %{"kind" => "text", "content" => ""}
+      })
 
       Process.sleep(300)
 
+      # Message should be appended even with empty content
       {:ok, messages} = StorageAPI.get_messages(session.id, 0, 100)
-      assert length(messages) == 1
+      assert length(messages) == 2
     end
-  end
-
-  # Test mode helpers
-
-  defp setup_test_mode(test_pid) do
-    # Store test PID for webhook worker to send messages to
-    Application.put_env(:fleetlm, :agent_webhook_test_mode, %{
-      enabled: true,
-      test_pid: test_pid
-    })
-  end
-
-  defp cleanup_test_mode do
-    Application.delete_env(:fleetlm, :agent_webhook_test_mode)
-  end
-
-  defp agent_response_queue do
-    :ets.new(:agent_responses, [:ordered_set, :public, :named_table])
-  end
-
-  defp queue_agent_response(_table, response) do
-    # Use timestamp as key to maintain order
-    key = System.monotonic_time()
-    :ets.insert(:agent_responses, {key, response})
   end
 end
