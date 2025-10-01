@@ -434,8 +434,15 @@ defmodule Fleetlm.Runtime.SessionServer do
   defp flush_slot_sync(slot) do
     try do
       case FleetLM.Storage.SlotLogServer.flush_now(slot) do
-        :ok -> :ok
-        :already_clean -> :ok
+        :ok ->
+          :ok
+
+        :already_clean ->
+          :ok
+
+        {:error, reason} ->
+          Logger.error("Flush failed for slot #{slot}: #{inspect(reason)}")
+          :error
       end
     catch
       :exit, {:noproc, _} ->

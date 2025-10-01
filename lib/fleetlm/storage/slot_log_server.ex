@@ -5,12 +5,13 @@ defmodule FleetLM.Storage.SlotLogServer do
   in background batches.
 
   - appends are fast and don't block
-  - flushes cause a blocking sync to disk and schedules a background task to send
-    the data to the database
+  - flushes happen off the GenServer mailbox via a supervised task so heavy
+    database work never blocks incoming appends
+  - callers can synchronously wait for a flush when needed (eg. tests, drains)
 
-  Note that messages in flight aren't persisted in memory but rather to disk in order to
-  reduce churn overhead. On larger spikes it ensures memory usage stays consistent at the cost
-  of IO latency.
+  Messages in flight are written to disk to keep memory flat during spikes. If a flush
+  crashes we keep the slot marked dirty and try again on the next interval to avoid
+  silently dropping data.
   """
 
   use GenServer
@@ -20,18 +21,29 @@ defmodule FleetLM.Storage.SlotLogServer do
   alias FleetLM.Storage.Model.Message
   alias Fleetlm.Repo
 
-  # Configurable but default to 300ms
+  @default_task_supervisor FleetLM.Storage.SlotLogTaskSupervisor
+
   @flush_interval_ms Application.compile_env(:fleetlm, :storage_flush_interval_ms, 300)
+  @flush_timeout Application.compile_env(:fleetlm, :slot_flush_timeout, 10_000)
 
   @type state :: %{
           slot: non_neg_integer(),
           log: DiskLog.handle(),
           dirty: boolean(),
-          notify_next_flush: [GenServer.from()]
+          notify_next_flush: [pid()],
+          task_supervisor: Supervisor.name(),
+          pending_flush: Task.t() | nil
         }
 
+  ## Public API
+
   def start_link(slot) when is_integer(slot) do
-    GenServer.start_link(__MODULE__, slot, name: via(slot))
+    start_link({slot, []})
+  end
+
+  def start_link({slot, opts}) when is_integer(slot) and is_list(opts) do
+    task_supervisor = Keyword.get(opts, :task_supervisor, @default_task_supervisor)
+    GenServer.start_link(__MODULE__, {slot, task_supervisor}, name: via(slot))
   end
 
   @doc """
@@ -60,8 +72,7 @@ defmodule FleetLM.Storage.SlotLogServer do
   end
 
   @doc """
-  Notify the callee on the next flush, used for eg. testing purposes
-  when we want to test out the flush mechanism.
+  Notify the caller when the next flush finishes. Used heavily by tests.
   """
   @spec notify_next_flush(non_neg_integer()) :: :ok
   def notify_next_flush(slot) do
@@ -69,16 +80,18 @@ defmodule FleetLM.Storage.SlotLogServer do
   end
 
   @doc """
-  Immediately flush any dirty data to the database and wait for completion.
-  Returns :ok when flush is complete, or :already_clean if nothing to flush.
+  Force a flush and wait for completion. Returns :ok on success, :already_clean when
+  nothing needed flushing, or {:error, reason} when the flush failed.
   """
-  @spec flush_now(non_neg_integer()) :: :ok | :already_clean
+  @spec flush_now(non_neg_integer()) :: :ok | :already_clean | {:error, term()}
   def flush_now(slot) do
-    GenServer.call(via(slot), :flush_now, 30_000)
+    GenServer.call(via(slot), :flush_now, @flush_timeout + 5_000)
   end
 
-  @spec init(non_neg_integer()) :: {:ok, state()}
-  def init(slot) do
+  ## GenServer callbacks
+
+  @impl true
+  def init({slot, task_supervisor}) do
     {:ok, log} = DiskLog.open(slot)
     schedule_flush()
 
@@ -86,11 +99,14 @@ defmodule FleetLM.Storage.SlotLogServer do
      %{
        slot: slot,
        log: log,
+       task_supervisor: task_supervisor,
        dirty: false,
-       notify_next_flush: []
+       notify_next_flush: [],
+       pending_flush: nil
      }}
   end
 
+  @impl true
   def handle_call({:append, entry}, _from, state) do
     case DiskLog.append(state.log, entry) do
       :ok ->
@@ -101,6 +117,7 @@ defmodule FleetLM.Storage.SlotLogServer do
     end
   end
 
+  @impl true
   def handle_call({:read, session_id, after_seq}, _from, state) do
     case DiskLog.read_all(state.log) do
       {:ok, entries} ->
@@ -118,47 +135,86 @@ defmodule FleetLM.Storage.SlotLogServer do
     end
   end
 
+  @impl true
   def handle_call(:notify_next_flush, {from, _ref}, state) do
     {:reply, :ok, %{state | notify_next_flush: [from | state.notify_next_flush]}}
   end
 
-  def handle_call(:flush_now, _from, %{dirty: false} = state) do
+  @impl true
+  def handle_call(:flush_now, _from, %{dirty: false, pending_flush: nil} = state) do
     {:reply, :already_clean, state}
   end
 
-  def handle_call(:flush_now, _from, %{dirty: true} = state) do
-    # Flush synchronously - block until complete
-    flush_to_database(state)
-    {:reply, :ok, %{state | dirty: false}}
+  def handle_call(:flush_now, _from, %{pending_flush: %Task{} = task} = state) do
+    result = await_flush_task(task, @flush_timeout)
+    {reply, next_state} = handle_flush_completion(result, %{state | pending_flush: nil})
+    {:reply, reply, next_state}
   end
 
+  def handle_call(:flush_now, _from, %{dirty: true, pending_flush: nil} = state) do
+    result = flush_to_database(state.slot, state.log)
+    {reply, next_state} = handle_flush_completion(result, %{state | dirty: true})
+    {:reply, reply, next_state}
+  end
+
+  @impl true
   def handle_call(:get_log_handle, _from, state) do
     {:reply, {:ok, state.log}, state}
   end
 
-  def handle_info(:flush, %{dirty: true} = state) do
-    # Spawn async task to flush - doesn't block appends!
-    Task.start(fn -> flush_to_database(state) end)
-
-    schedule_flush()
-    {:noreply, %{state | dirty: false, notify_next_flush: []}}
-  end
-
+  @impl true
   def handle_info(:flush, state) do
-    # Nothing dirty, just reschedule
+    new_state = maybe_start_async_flush(state)
     schedule_flush()
-    {:noreply, state}
+    {:noreply, new_state}
   end
 
+  def handle_info({ref, result}, %{pending_flush: %Task{ref: ref}} = state) do
+    Process.demonitor(ref, [:flush])
+    {_, new_state} = handle_flush_completion(result, %{state | pending_flush: nil})
+    {:noreply, new_state}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %{pending_flush: %Task{ref: ref}} = state) do
+    Logger.error("Slot #{state.slot} flush task crashed: #{inspect(reason)}")
+    {:noreply, %{state | pending_flush: nil, dirty: true}}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl true
   def terminate(_reason, state) do
-    case state.dirty do
-      true -> flush_to_database(state)
-      false -> :ok
+    state =
+      case state.pending_flush do
+        %Task{} = task ->
+          case Task.yield(task, 5_000) || Task.shutdown(task, :brutal_kill) do
+            {:ok, result} ->
+              {_, new_state} = handle_flush_completion(result, %{state | pending_flush: nil})
+              new_state
+
+            _ ->
+              %{state | pending_flush: nil, dirty: true}
+          end
+
+        _ ->
+          state
+      end
+
+    if state.dirty do
+      case flush_to_database(state.slot, state.log) do
+        {:ok, _info} ->
+          Enum.each(state.notify_next_flush, &send(&1, :flushed))
+
+        {:error, reason} ->
+          Logger.error("Failed to flush slot #{state.slot} during terminate: #{inspect(reason)}")
+      end
     end
 
     DiskLog.close(state.log)
     :ok
   end
+
+  ## Internal helpers
 
   defp via(slot), do: {:global, {:fleetlm_slot_log_server, slot}}
 
@@ -166,46 +222,93 @@ defmodule FleetLM.Storage.SlotLogServer do
     Process.send_after(self(), :flush, @flush_interval_ms)
   end
 
-  defp flush_to_database(%{slot: slot, log: log, notify_next_flush: notify_next_flush}) do
-    DiskLog.sync(log)
+  defp maybe_start_async_flush(%{dirty: true, pending_flush: nil} = state) do
+    case start_async_flush(state) do
+      {:ok, task} ->
+        %{state | dirty: false, pending_flush: task}
 
-    case DiskLog.read_all(log) do
       {:error, reason} ->
-        Logger.error("Failed to read from disk_log for slot #{slot}: #{inspect(reason)}")
-
-      {:ok, []} ->
-        Enum.each(notify_next_flush, fn from ->
-          send(from, :flushed)
-        end)
-
-      {:ok, entries} ->
-        messages =
-          Enum.map(entries, fn entry ->
-            %{
-              id: entry.payload.id,
-              session_id: entry.payload.session_id,
-              sender_id: entry.payload.sender_id,
-              recipient_id: entry.payload.recipient_id,
-              seq: entry.payload.seq,
-              kind: entry.payload.kind,
-              content: entry.payload.content,
-              metadata: entry.payload.metadata,
-              shard_key: entry.payload.shard_key,
-              inserted_at: entry.payload.inserted_at
-            }
-          end)
-
-        case Repo.insert_all(Message, messages, on_conflict: :nothing) do
-          {count, _} when is_integer(count) ->
-            DiskLog.truncate(log)
-
-            Enum.each(notify_next_flush, fn from ->
-              send(from, :flushed)
-            end)
-
-          error ->
-            Logger.error("Failed to flush slot #{slot} to database: #{inspect(error)}")
-        end
+        Logger.error("Failed to start flush task for slot #{state.slot}: #{inspect(reason)}")
+        %{state | dirty: true}
     end
+  end
+
+  defp maybe_start_async_flush(state), do: state
+
+  defp start_async_flush(state) do
+    task =
+      Task.Supervisor.async_nolink(state.task_supervisor, fn ->
+        flush_to_database(state.slot, state.log)
+      end)
+
+    {:ok, task}
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp await_flush_task(%Task{} = task, timeout) do
+    Task.await(task, timeout)
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp handle_flush_completion({:ok, _info}, state) do
+    Enum.each(state.notify_next_flush, &send(&1, :flushed))
+
+    new_state = %{state | notify_next_flush: [], dirty: false}
+    {:ok, new_state}
+  end
+
+  defp handle_flush_completion({:error, reason}, state) do
+    Logger.error("Flush failed for slot #{state.slot}: #{inspect(reason)}")
+    {{:error, reason}, %{state | dirty: true}}
+  end
+
+  defp flush_to_database(slot, log) do
+    with :ok <- DiskLog.sync(log),
+         {:ok, entries} <- DiskLog.read_all(log) do
+      persist_entries(slot, log, entries)
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp persist_entries(_slot, _log, []), do: {:ok, :noop}
+
+  defp persist_entries(slot, log, entries) do
+    messages =
+      Enum.map(entries, fn entry ->
+        %{
+          id: entry.payload.id,
+          session_id: entry.payload.session_id,
+          sender_id: entry.payload.sender_id,
+          recipient_id: entry.payload.recipient_id,
+          seq: entry.payload.seq,
+          kind: entry.payload.kind,
+          content: entry.payload.content,
+          metadata: entry.payload.metadata,
+          shard_key: entry.payload.shard_key,
+          inserted_at: entry.payload.inserted_at
+        }
+      end)
+
+    case Repo.insert_all(Message, messages, on_conflict: :nothing) do
+      {count, _} when is_integer(count) ->
+        :ok = DiskLog.truncate(log)
+        {:ok, {:persisted, count}}
+
+      other ->
+        {:error, {slot, other}}
+    end
+  rescue
+    error -> {:error, error}
+  catch
+    kind, reason -> {:error, {kind, reason}}
   end
 end

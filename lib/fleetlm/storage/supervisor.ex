@@ -19,15 +19,19 @@ defmodule FleetLM.Storage.Supervisor do
 
   @impl true
   def init(_init_arg) do
-    # Start one SlotLogServer per storage slot (local to this node)
-    children =
-      for slot <- 0..(@num_storage_slots - 1) do
-        Supervisor.child_spec(
-          {FleetLM.Storage.SlotLogServer, slot},
-          id: {FleetLM.Storage.SlotLogServer, slot}
-        )
-      end
+    slot_log_supervisor = FleetLM.Storage.SlotLogTaskSupervisor
 
-    Supervisor.init(children, strategy: :one_for_one)
+    children =
+      [
+        {Task.Supervisor, name: slot_log_supervisor}
+      ] ++
+        for slot <- 0..(@num_storage_slots - 1) do
+          Supervisor.child_spec(
+            {FleetLM.Storage.SlotLogServer, {slot, task_supervisor: slot_log_supervisor}},
+            id: {FleetLM.Storage.SlotLogServer, slot}
+          )
+        end
+
+    Supervisor.init(children, strategy: :rest_for_one)
   end
 end

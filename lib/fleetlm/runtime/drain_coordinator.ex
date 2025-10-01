@@ -45,7 +45,7 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
     # Trap exit to handle SIGTERM gracefully
     Process.flag(:trap_exit, true)
 
-    Logger.info("DrainCoordinator started, ready to handle SIGTERM")
+    Logger.debug("DrainCoordinator started, ready to handle SIGTERM")
 
     {:ok, %{draining: false}}
   end
@@ -55,7 +55,7 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
     if state.draining do
       {:reply, {:error, :already_draining}, state}
     else
-      Logger.warning("DrainCoordinator: Starting graceful drain")
+      Logger.debug("DrainCoordinator: Starting graceful drain")
       result = perform_drain()
       # Reset draining state after completion (for testing)
       {:reply, result, %{state | draining: false}}
@@ -81,7 +81,7 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
 
   @impl true
   def terminate(reason, _state) do
-    Logger.info("DrainCoordinator terminating: #{inspect(reason)}")
+    Logger.debug("DrainCoordinator terminating: #{inspect(reason)}")
 
     # On SIGTERM, perform graceful drain
     if reason == :shutdown or reason == :normal do
@@ -100,7 +100,7 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
     # Get all active session servers
     active_sessions = get_active_sessions()
 
-    Logger.info("DrainCoordinator: Draining #{length(active_sessions)} active sessions")
+    Logger.debug("DrainCoordinator: Draining #{length(active_sessions)} active sessions")
 
     # Drain each session in parallel with timeout
     tasks =
@@ -131,7 +131,7 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
 
     elapsed = System.monotonic_time(:millisecond) - start_time
 
-    Logger.info(
+    Logger.debug(
       "DrainCoordinator: Completed drain in #{elapsed}ms - " <>
         "#{successes} succeeded, #{failures} failed/timed out"
     )
