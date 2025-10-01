@@ -134,6 +134,18 @@ defmodule Fleetlm.TestCase do
   end
 
   @doc """
+  Retry the provided assertion until it succeeds or the timeout elapses.
+  Re-raises the last assertion error when the timeout is exceeded.
+  """
+  def eventually(fun, opts \\ []) when is_function(fun, 0) do
+    timeout = Keyword.get(opts, :timeout, 1_000)
+    interval = Keyword.get(opts, :interval, 25)
+    deadline = System.monotonic_time(:millisecond) + timeout
+
+    try_eventually(fun, interval, deadline)
+  end
+
+  @doc """
   Ensure a SlotLogServer is running for the given slot.
   Delegates to the canonical storage supervisor so tests use the same
   supervision tree as the runtime.
@@ -246,19 +258,36 @@ defmodule Fleetlm.TestCase do
     Process.sleep(25)
   end
 
+  defp try_eventually(fun, interval, deadline) do
+    fun.()
+    :ok
+  rescue
+    error in [ExUnit.AssertionError] ->
+      if System.monotonic_time(:millisecond) >= deadline do
+        reraise(error, __STACKTRACE__)
+      else
+        Process.sleep(interval)
+        try_eventually(fun, interval, deadline)
+      end
+  end
+
   defp cleanup_slot_logs(temp_dir) do
     FleetLM.Storage.Supervisor.active_slots()
     |> Enum.each(fn slot ->
       case FleetLM.Storage.Supervisor.flush_slot(slot) do
         {:error, reason} ->
           Logger.warning("Failed to flush slot #{slot} during test cleanup: #{inspect(reason)}")
-        _ -> :ok
+
+        _ ->
+          :ok
       end
 
       case FleetLM.Storage.Supervisor.stop_slot(slot) do
         {:error, reason} ->
           Logger.warning("Failed to stop slot #{slot} during test cleanup: #{inspect(reason)}")
-        _ -> :ok
+
+        _ ->
+          :ok
       end
     end)
 

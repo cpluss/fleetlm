@@ -5,6 +5,8 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
   alias Fleetlm.Runtime.Router
   alias FleetLM.Storage.API, as: StorageAPI
 
+  require ExUnit.CaptureLog
+
   setup do
     # Enable webhooks for this test (disabled globally in test_helper)
     Application.put_env(:fleetlm, :disable_agent_webhooks, false)
@@ -70,11 +72,10 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
       })
 
       # Wait for agent response to be appended
-      Process.sleep(300)
+      assert_message_count(session.id, 2)
 
       # Verify agent response was appended
       {:ok, messages} = StorageAPI.get_messages(session.id, 0, 100)
-      assert length(messages) == 2
 
       [_user_msg, agent_msg] = messages
       assert agent_msg.sender_id == "echo-agent"
@@ -92,7 +93,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
         %{"kind" => "text", "content" => %{"text" => "Response 1"}}
       })
 
-      Process.sleep(100)
+      assert_message_count(session.id, 2)
 
       # Send second message
       {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Message 2"}, %{})
@@ -103,7 +104,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
         %{"kind" => "text", "content" => %{"text" => "Response 2"}}
       })
 
-      Process.sleep(100)
+      assert_message_count(session.id, 4)
 
       # Send third message
       {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Message 3"}, %{})
@@ -114,7 +115,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
         %{"kind" => "text", "content" => %{"text" => "Response 3"}}
       })
 
-      Process.sleep(300)
+      assert_message_count(session.id, 6)
 
       # Should have 6 messages: 3 user + 3 agent responses
       {:ok, messages} = StorageAPI.get_messages(session.id, 0, 100)
@@ -139,7 +140,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
         %{"kind" => "text", "content" => %{"text" => "Response"}}
       })
 
-      Process.sleep(300)
+      assert_message_count(session.id, 2)
 
       # Agent's response should NOT trigger another webhook
       refute_receive {:agent_webhook_called, _, _}, 1000
@@ -159,7 +160,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
         %{"kind" => "text", "content" => %{"text" => "First response"}}
       })
 
-      Process.sleep(300)
+      assert_message_count(session.id, 2)
 
       # Send second message - webhook should include history
       {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Second"}, %{})
@@ -178,50 +179,53 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
     end
 
     test "disabled agent does not receive webhooks", %{session: _session} do
-      # Create disabled agent
-      {:ok, _disabled_agent} =
-        Agent.create(%{
-          id: "disabled-agent",
-          name: "Disabled",
-          origin_url: "http://localhost:3000",
-          status: "disabled"
-        })
+      ExUnit.CaptureLog.capture_log(fn ->
+        # Create disabled agent
+        {:ok, _disabled_agent} =
+          Agent.create(%{
+            id: "disabled-agent",
+            name: "Disabled",
+            origin_url: "http://localhost:3000",
+            status: "disabled"
+          })
 
-      # Create session with disabled agent
-      {:ok, disabled_session} =
-        StorageAPI.create_session("alice", "disabled-agent", %{})
+        # Create session with disabled agent
+        {:ok, disabled_session} =
+          StorageAPI.create_session("alice", "disabled-agent", %{})
 
-      # Send message
-      {:ok, _} =
-        Router.append_message(
-          disabled_session.id,
-          "alice",
-          "text",
-          %{"text" => "Hello"},
-          %{}
-        )
+        # Send message
+        {:ok, _} =
+          Router.append_message(
+            disabled_session.id,
+            "alice",
+            "text",
+            %{"text" => "Hello"},
+            %{}
+          )
 
-      # Should not receive webhook
-      refute_receive {:agent_webhook_called, _}, 1000
+        # Should not receive webhook
+        refute_receive {:agent_webhook_called, _}, 1000
 
-      # Only user message should exist
-      {:ok, messages} = StorageAPI.get_messages(disabled_session.id, 0, 100)
-      assert length(messages) == 1
+        # Only user message should exist
+        {:ok, messages} = StorageAPI.get_messages(disabled_session.id, 0, 100)
+        assert length(messages) == 1
+      end)
     end
   end
 
   describe "error handling" do
     test "handles agent returning invalid response", %{session: session} do
-      {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Hello"}, %{})
-      assert_receive {:agent_webhook_called, _, plug_pid}, 2000
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Hello"}, %{})
+        assert_receive {:agent_webhook_called, _, plug_pid}, 2000
 
-      # Send invalid response (missing required fields)
-      send(plug_pid, {
-        :agent_response,
-        %{"invalid" => "response"}
-      })
+        send(plug_pid, {
+          :agent_response,
+          %{"invalid" => "response"}
+        })
 
-      Process.sleep(300)
+        assert_message_count(session.id, 1)
+      end)
 
       # Should only have user message (agent response failed)
       {:ok, messages} = StorageAPI.get_messages(session.id, 0, 100)
@@ -229,20 +233,28 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
     end
 
     test "handles agent returning empty response", %{session: session} do
-      {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Hello"}, %{})
-      assert_receive {:agent_webhook_called, _, plug_pid}, 2000
+      ExUnit.CaptureLog.capture_log(fn ->
+        {:ok, _} = Router.append_message(session.id, "alice", "text", %{"text" => "Hello"}, %{})
+        assert_receive {:agent_webhook_called, _, plug_pid}, 2000
 
-      # Send empty response
-      send(plug_pid, {
-        :agent_response,
-        %{"kind" => "text", "content" => ""}
-      })
+        send(plug_pid, {
+          :agent_response,
+          %{"kind" => "text", "content" => ""}
+        })
 
-      Process.sleep(300)
+        assert_message_count(session.id, 2)
+      end)
 
       # Message should be appended even with empty content
       {:ok, messages} = StorageAPI.get_messages(session.id, 0, 100)
       assert length(messages) == 2
     end
+  end
+
+  defp assert_message_count(session_id, expected) do
+    eventually(fn ->
+      {:ok, messages} = StorageAPI.get_messages(session_id, 0, 100)
+      assert length(messages) == expected
+    end)
   end
 end

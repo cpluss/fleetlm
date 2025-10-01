@@ -26,8 +26,13 @@ defmodule Fleetlm.Runtime.SessionServerTest do
     test "loads current sequence number from storage", %{session: session} do
       # Append some messages first
       slot = :erlang.phash2(session.id, 64)
-      :ok = StorageAPI.append_message(session.id, 1, "alice", "bob", "text", %{"text" => "msg1"}, %{})
-      :ok = StorageAPI.append_message(session.id, 2, "bob", "alice", "text", %{"text" => "msg2"}, %{})
+
+      :ok =
+        StorageAPI.append_message(session.id, 1, "alice", "bob", "text", %{"text" => "msg1"}, %{})
+
+      :ok =
+        StorageAPI.append_message(session.id, 2, "bob", "alice", "text", %{"text" => "msg2"}, %{})
+
       wait_for_flush(slot)
 
       # Start server - should load seq = 2

@@ -29,6 +29,7 @@ defmodule Fleetlm.Runtime.TestHelper do
         case StorageSupervisor.flush_slot(slot) do
           {:error, reason} ->
             Logger.warning("Failed to flush slot #{slot} during test cleanup: #{inspect(reason)}")
+
           _ ->
             :ok
         end
@@ -36,6 +37,7 @@ defmodule Fleetlm.Runtime.TestHelper do
         case StorageSupervisor.stop_slot(slot) do
           {:error, reason} ->
             Logger.warning("Failed to stop slot #{slot} during test cleanup: #{inspect(reason)}")
+
           _ ->
             :ok
         end

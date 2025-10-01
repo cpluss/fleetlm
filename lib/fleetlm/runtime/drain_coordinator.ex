@@ -16,7 +16,7 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
   require Logger
 
   @drain_timeout :timer.seconds(30)
-  @drain_grace_period :timer.seconds(2)
+  @default_drain_grace_period :timer.seconds(2)
 
   # Client API
 
@@ -137,7 +137,11 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
     )
 
     # Give a brief grace period for final cleanup
-    Process.sleep(@drain_grace_period)
+    grace_period = drain_grace_period()
+
+    if grace_period > 0 do
+      Process.sleep(grace_period)
+    end
 
     if failures > 0 do
       {:error, {:partial_drain, successes, failures}}
@@ -177,5 +181,10 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
         Logger.error("Error draining session #{session_id}: #{kind} #{inspect(reason)}")
         {:error, {kind, reason}}
     end
+  end
+
+  defp drain_grace_period do
+    Application.get_env(:fleetlm, __MODULE__, [])
+    |> Keyword.get(:drain_grace_period, @default_drain_grace_period)
   end
 end

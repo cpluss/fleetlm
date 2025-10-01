@@ -3,6 +3,8 @@ defmodule Fleetlm.Runtime.RouterTest do
 
   alias Fleetlm.Runtime.Router
 
+  require ExUnit.CaptureLog
+
   setup do
     session = create_test_session("alice", "bob")
     %{session: session}
@@ -50,7 +52,9 @@ defmodule Fleetlm.Runtime.RouterTest do
     end
 
     test "returns error for nonexistent session" do
-      assert {:error, _reason} = Router.append_message("nonexistent", "alice", "text", %{})
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, _reason} = Router.append_message("nonexistent", "alice", "text", %{})
+      end)
     end
   end
 
@@ -78,7 +82,9 @@ defmodule Fleetlm.Runtime.RouterTest do
     end
 
     test "enforces authorization", %{session: session} do
-      assert {:error, :unauthorized} = Router.join(session.id, "charlie", last_seq: 0)
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, :unauthorized} = Router.join(session.id, "charlie", last_seq: 0)
+      end)
     end
   end
 
@@ -100,12 +106,14 @@ defmodule Fleetlm.Runtime.RouterTest do
       node = Node.self()
       assert {:ok, ^node, :draining} = SessionTracker.find_session(session.id)
 
-      # Attempts to append should now fail with :draining
-      assert {:error, :draining} =
-               Router.append_message(session.id, "alice", "text", %{"text" => "rejected"})
+      ExUnit.CaptureLog.capture_log(fn ->
+        # Attempts to append should now fail with :draining
+        assert {:error, :draining} =
+                 Router.append_message(session.id, "alice", "text", %{"text" => "rejected"})
 
-      # Join should also fail
-      assert {:error, :draining} = Router.join(session.id, "alice", last_seq: 0)
+        # Join should also fail
+        assert {:error, :draining} = Router.join(session.id, "alice", last_seq: 0)
+      end)
     end
 
     test "allows operations on non-draining sessions", %{session: session} do

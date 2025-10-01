@@ -60,3 +60,9 @@ config :fleetlm, :storage_flush_interval_ms, 100
 # Use test mode for slot logs - SlotLogServers are started on-demand per test
 # instead of being globally supervised at application startup
 config :fleetlm, :slot_log_mode, :test
+
+# Eliminate drain grace period in tests to reduce artificial sleeps
+config :fleetlm, Fleetlm.Runtime.DrainCoordinator, drain_grace_period: 0
+
+# Suppress expected slot flush error logs in negative-path storage tests
+config :fleetlm, :suppress_slot_flush_errors, true

@@ -58,7 +58,9 @@ defmodule FleetLM.Storage.Supervisor do
           :already_clean -> :ok
           {:error, _} = error -> error
         end
-      [] -> :ok
+
+      [] ->
+        :ok
     end
   end
 
@@ -83,6 +85,7 @@ defmodule FleetLM.Storage.Supervisor do
     case Registry.lookup(@registry, slot) do
       [{pid, _}] when is_pid(pid) ->
         _ = flush_slot(slot)
+
         case DynamicSupervisor.terminate_child(@slot_supervisor, pid) do
           :ok -> :ok
           {:error, :not_found} -> :ok

@@ -13,6 +13,8 @@ defmodule FleetLM.Storage.PoisonedDataTest do
   use Fleetlm.TestCase
 
   import Ecto.Query
+  require Logger
+  require ExUnit.CaptureLog
 
   describe "NULL value handling" do
     test "rejects messages with NULL kind at API boundary" do
@@ -38,7 +40,11 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       # (perhaps from a previous bug or race condition)
       slot = 100 + System.unique_integer([:positive])
 
-      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      {:ok, _pid} =
+        suppress_expected_errors(fn ->
+          FleetLM.Storage.Supervisor.ensure_started(slot)
+        end)
+
       on_exit(fn ->
         _ = FleetLM.Storage.Supervisor.flush_slot(slot)
         _ = FleetLM.Storage.Supervisor.stop_slot(slot)
@@ -58,8 +64,10 @@ defmodule FleetLM.Storage.PoisonedDataTest do
           sender_id: "sender",
           recipient_id: "recipient",
           seq: 1,
-          kind: nil,  # ❌ NULL kind - poison pill
-          content: nil,  # ❌ NULL content
+          # ❌ NULL kind - poison pill
+          kind: nil,
+          # ❌ NULL content
+          content: nil,
           metadata: %{},
           shard_key: slot,
           inserted_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
@@ -75,10 +83,10 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       :ok = DiskLog.append(log, corrupted_entry)
 
       # Attempt to flush - should fail gracefully
-      result = SlotLogServer.flush_now(slot)
-
-      # Flush should fail due to NOT NULL constraint (because of the corrupted entry)
-      assert {:error, _reason} = result
+      suppress_expected_errors(fn ->
+        # Flush should fail due to NOT NULL constraint (because of the corrupted entry)
+        assert {:error, _reason} = SlotLogServer.flush_now(slot)
+      end)
 
       # Verify both entries are still in the log (not truncated on failure - atomic behavior)
       {:ok, entries} = DiskLog.read_all(log)
@@ -95,6 +103,7 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       slot = 100 + System.unique_integer([:positive])
 
       {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+
       on_exit(fn ->
         _ = FleetLM.Storage.Supervisor.flush_slot(slot)
         _ = FleetLM.Storage.Supervisor.stop_slot(slot)
@@ -122,7 +131,8 @@ defmodule FleetLM.Storage.PoisonedDataTest do
           sender_id: "sender",
           recipient_id: "recipient",
           seq: 1,
-          kind: nil,  # ❌ Poison
+          # ❌ Poison
+          kind: nil,
           content: nil,
           metadata: %{},
           shard_key: slot,
@@ -133,8 +143,9 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       :ok = DiskLog.append(log, bad_entry)
 
       # Attempt flush - should fail because of the bad entry
-      result = SlotLogServer.flush_now(slot)
-      assert {:error, _} = result
+      suppress_expected_errors(fn ->
+        assert {:error, _} = SlotLogServer.flush_now(slot)
+      end)
 
       # Both entries should still be in the log (atomic flush behavior)
       {:ok, entries} = DiskLog.read_all(log)
@@ -158,7 +169,16 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       # Ensure slot server is started (handled automatically by StorageAPI)
 
       # Write a valid message
-      :ok = StorageAPI.append_message(session.id, 1, "alice", "bob", "text", %{"text" => "hello"}, %{})
+      :ok =
+        StorageAPI.append_message(
+          session.id,
+          1,
+          "alice",
+          "bob",
+          "text",
+          %{"text" => "hello"},
+          %{}
+        )
 
       # Force immediate flush
       result = SlotLogServer.flush_now(slot)
@@ -185,6 +205,7 @@ defmodule FleetLM.Storage.PoisonedDataTest do
 
       # Start SlotLogServer - should recover or recreate the log
       {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+
       on_exit(fn ->
         :ok = FleetLM.Storage.Supervisor.flush_slot(slot)
         :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
@@ -214,7 +235,16 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       assert String.contains?(slot_dir, "fleetlm-test-")
 
       # Write a message
-      :ok = StorageAPI.append_message(session.id, 1, "alice", "bob", "text", %{"text" => "test1"}, %{})
+      :ok =
+        StorageAPI.append_message(
+          session.id,
+          1,
+          "alice",
+          "bob",
+          "text",
+          %{"text" => "test1"},
+          %{}
+        )
 
       # Get the slot and verify the log file is in our directory
       slot = :erlang.phash2(session.id, 64)
@@ -232,7 +262,16 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       assert String.contains?(slot_dir, "fleetlm-test-")
 
       # Write a message
-      :ok = StorageAPI.append_message(session.id, 1, "alice", "bob", "text", %{"text" => "test2"}, %{})
+      :ok =
+        StorageAPI.append_message(
+          session.id,
+          1,
+          "alice",
+          "bob",
+          "text",
+          %{"text" => "test2"},
+          %{}
+        )
 
       # Verify isolation - directory should be empty of old test data
       slot = :erlang.phash2(session.id, 64)
@@ -242,6 +281,17 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       # Should only have the one entry we just wrote, not entries from previous tests
       assert length(entries) == 1
       assert hd(entries).payload.content["text"] == "test2"
+    end
+  end
+
+  defp suppress_expected_errors(fun) when is_function(fun, 0) do
+    previous_level = Logger.level()
+    Logger.configure(level: :critical)
+
+    try do
+      fun.()
+    after
+      Logger.configure(level: previous_level)
     end
   end
 end

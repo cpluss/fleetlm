@@ -13,6 +13,9 @@ defmodule Fleetlm.Integration.IntegrationTest do
 
   alias Fleetlm.Runtime.{Router, SessionSupervisor, InboxServer, DrainCoordinator}
   alias FleetLM.Storage.API, as: StorageAPI
+  alias FleetLM.Storage.Supervisor, as: StorageSupervisor
+
+  require ExUnit.CaptureLog
 
   describe "complete message flow" do
     test "Router -> SessionServer -> Storage -> PubSub" do
@@ -166,15 +169,15 @@ defmodule Fleetlm.Integration.IntegrationTest do
       # Verify all sessions have active servers
       assert SessionSupervisor.active_count() >= 3
 
-      # Wait for async flushes with longer timeout
-      Process.sleep(2000)
+      flush_active_slots()
 
       # Verify messages are stored - either in disk log or DB
       # (don't force immediate flush for parallel test)
       for session <- sessions do
-        # Messages should at least be readable via Router (from ETS cache or storage)
-        {:ok, replay} = Router.join(session.id, session.user_id, last_seq: 0, limit: 10)
-        assert length(replay.messages) >= 1
+        eventually(fn ->
+          {:ok, replay} = Router.join(session.id, session.user_id, last_seq: 0, limit: 10)
+          assert length(replay.messages) >= 1
+        end)
       end
     end
   end
@@ -204,10 +207,8 @@ defmodule Fleetlm.Integration.IntegrationTest do
       result = DrainCoordinator.trigger_drain()
       assert result == :ok or match?({:error, {:partial_drain, _, _}}, result)
 
-      # Wait a bit for drain to complete
-      Process.sleep(200)
-
       # Verify messages are flushed to DB
+      flush_active_slots()
       {:ok, messages1} = StorageAPI.get_messages(session1.id, 0, 10)
       {:ok, messages2} = StorageAPI.get_messages(session2.id, 0, 10)
 
@@ -270,26 +271,34 @@ defmodule Fleetlm.Integration.IntegrationTest do
     test "append to non-existent session fails gracefully" do
       fake_session_id = Ulid.generate()
 
-      result =
-        Router.append_message(
-          fake_session_id,
-          "alice",
-          "text",
-          %{"text" => "test"},
-          %{}
-        )
-
-      # Should return error, not crash
-      assert match?({:error, _}, result)
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, _} =
+                 Router.append_message(
+                   fake_session_id,
+                   "alice",
+                   "text",
+                   %{"text" => "test"},
+                   %{}
+                 )
+      end)
     end
 
     test "join non-existent session fails gracefully" do
       fake_session_id = Ulid.generate()
 
-      result = Router.join(fake_session_id, "alice", last_seq: 0, limit: 10)
-
-      # Should return error
-      assert match?({:error, _}, result)
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, _} = Router.join(fake_session_id, "alice", last_seq: 0, limit: 10)
+      end)
     end
+  end
+
+  defp flush_active_slots do
+    StorageSupervisor.active_slots()
+    |> Enum.each(fn slot ->
+      case StorageSupervisor.flush_slot(slot) do
+        {:error, reason} -> flunk("Failed to flush slot #{slot}: #{inspect(reason)}")
+        _ -> :ok
+      end
+    end)
   end
 end

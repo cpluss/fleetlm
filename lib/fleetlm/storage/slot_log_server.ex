@@ -276,7 +276,7 @@ defmodule FleetLM.Storage.SlotLogServer do
   end
 
   defp handle_flush_completion({:error, reason}, state) do
-    Logger.error("Flush failed for slot #{state.slot}: #{inspect(reason)}")
+    log_flush_error(state.slot, reason)
     {{:error, reason}, %{state | dirty: true}}
   end
 
@@ -322,5 +322,11 @@ defmodule FleetLM.Storage.SlotLogServer do
     error -> {:error, error}
   catch
     kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp log_flush_error(slot, reason) do
+    unless Application.get_env(:fleetlm, :suppress_slot_flush_errors, false) do
+      Logger.error("Flush failed for slot #{slot}: #{inspect(reason)}")
+    end
   end
 end
