@@ -5,8 +5,7 @@ defmodule Fleetlm.TestCase do
   Provides:
   - Ecto sandbox with {:shared, self()} mode for spawned processes
   - Isolated slot log directory per test
-  - On-demand SlotLogServer lifecycle management
-  - Runtime process cleanup (SessionServer, InboxServer)
+  - Runtime process cleanup (SessionServer, InboxServer, SlotLogServer)
   - Graceful teardown
 
   ## Usage
@@ -26,13 +25,13 @@ defmodule Fleetlm.TestCase do
   ## Slot Log Isolation
 
   Each test gets its own temporary slot log directory. SlotLogServers are started
-  on-demand when first accessed via Storage.API, using a test-specific registry.
-
-  Production uses :global registry with 64 pre-started SlotLogServers.
-  Tests use local Registry with on-demand SlotLogServers per test.
+  lazily via `FleetLM.Storage.Supervisor.ensure_started/1`, sharing the same
+  supervision pattern we use for sessions and inboxes. Tests flush and stop
+  active slot servers during teardown to maintain isolation.
   """
 
   use ExUnit.CaseTemplate
+  require Logger
 
   using opts do
     mode = Keyword.get(opts, :mode, :storage)
@@ -40,11 +39,13 @@ defmodule Fleetlm.TestCase do
     quote do
       alias Fleetlm.Repo
       alias FleetLM.Storage.API, as: StorageAPI
+      alias FleetLM.Storage.API, as: API
       alias FleetLM.Storage.{SlotLogServer, Entry, DiskLog}
       alias FleetLM.Storage.Model.{Session, Message, Cursor}
 
       import Fleetlm.TestCase
 
+      Module.register_attribute(__MODULE__, :fleetlm_test_mode, persist: true)
       @fleetlm_test_mode unquote(mode)
 
       unquote(mode_specific_imports(mode))
@@ -58,23 +59,19 @@ defmodule Fleetlm.TestCase do
     # Setup database sandbox
     setup_database_sandbox(tags)
 
-    # Setup test-specific SlotLogServer registry
-    registry_name = :"slot_log_registry_#{System.unique_integer([:positive])}"
-    start_supervised!({Registry, keys: :unique, name: registry_name})
-
     # Configure test environment
-    previous_config = configure_test_env(temp_dir, registry_name)
+    previous_config = configure_test_env(temp_dir)
 
     on_exit(fn ->
       cleanup_runtime_processes()
-      cleanup_slot_logs(temp_dir, registry_name)
+      cleanup_slot_logs(temp_dir)
       restore_config(previous_config)
     end)
 
-    context = %{slot_log_dir: temp_dir, slot_registry: registry_name}
+    context = %{slot_log_dir: temp_dir}
 
     # Add mode-specific context (e.g., conn for :conn mode)
-    # Mode is stored in @fleetlm_test_mode by the using macro
+    # Mode is stored in @fleetlm_test_mode by the using macro (persisted attribute)
     context =
       case tags[:module].__info__(:attributes)[:fleetlm_test_mode] do
         [:conn] -> Map.put(context, :conn, Phoenix.ConnTest.build_conn())
@@ -138,20 +135,21 @@ defmodule Fleetlm.TestCase do
 
   @doc """
   Ensure a SlotLogServer is running for the given slot.
-  Uses test-specific registry and directory.
+  Delegates to the canonical storage supervisor so tests use the same
+  supervision tree as the runtime.
   """
   def ensure_slot_server(slot) do
-    registry = Application.get_env(:fleetlm, :slot_log_registry)
-    task_supervisor = Application.get_env(:fleetlm, :slot_log_task_supervisor)
+    FleetLM.Storage.Supervisor.ensure_started(slot)
+  end
 
-    case Registry.lookup(registry, slot) do
-      [{pid, _}] when is_pid(pid) ->
-        {:ok, pid}
-
-      [] ->
-        # Start on-demand
-        spec = {SlotLogServer, {slot, task_supervisor: task_supervisor, registry: registry}}
-        start_supervised(spec, id: {SlotLogServer, slot})
+  @doc """
+  Allow a spawned process to access the current test's sandbox connection.
+  Returns :ok when the process is registered successfully.
+  """
+  def allow_sandbox_access(pid) when is_pid(pid) do
+    case Process.get(:fleetlm_sandbox_owner) do
+      nil -> {:error, :no_owner}
+      owner -> Ecto.Adapters.SQL.Sandbox.allow(Fleetlm.Repo, owner, pid)
     end
   end
 
@@ -221,25 +219,22 @@ defmodule Fleetlm.TestCase do
         ownership_timeout: ownership_timeout
       )
 
-    on_exit(fn -> Ecto.Adapters.SQL.Sandbox.stop_owner(pid) end)
+    Process.put(:fleetlm_sandbox_owner, pid)
+
+    on_exit(fn ->
+      Process.delete(:fleetlm_sandbox_owner)
+      Ecto.Adapters.SQL.Sandbox.stop_owner(pid)
+    end)
   end
 
-  defp configure_test_env(temp_dir, registry_name) do
+  defp configure_test_env(temp_dir) do
     previous = %{
       slot_log_dir: Application.get_env(:fleetlm, :slot_log_dir),
-      slot_log_registry: Application.get_env(:fleetlm, :slot_log_registry),
-      slot_log_task_supervisor: Application.get_env(:fleetlm, :slot_log_task_supervisor),
       skip_terminate_db_ops: Application.get_env(:fleetlm, :skip_terminate_db_ops),
       disable_agent_webhooks: Application.get_env(:fleetlm, :disable_agent_webhooks)
     }
 
-    # Setup test-specific task supervisor
-    supervisor_name = :"slot_log_task_sup_#{System.unique_integer([:positive])}"
-    start_supervised!({Task.Supervisor, name: supervisor_name})
-
     Application.put_env(:fleetlm, :slot_log_dir, temp_dir)
-    Application.put_env(:fleetlm, :slot_log_registry, registry_name)
-    Application.put_env(:fleetlm, :slot_log_task_supervisor, supervisor_name)
     Application.put_env(:fleetlm, :skip_terminate_db_ops, true)
     Application.put_env(:fleetlm, :disable_agent_webhooks, true)
 
@@ -251,9 +246,22 @@ defmodule Fleetlm.TestCase do
     Process.sleep(25)
   end
 
-  defp cleanup_slot_logs(temp_dir, _registry_name) do
-    # Supervised SlotLogServers will be stopped by ExUnit
-    # Just clean up the directory
+  defp cleanup_slot_logs(temp_dir) do
+    FleetLM.Storage.Supervisor.active_slots()
+    |> Enum.each(fn slot ->
+      case FleetLM.Storage.Supervisor.flush_slot(slot) do
+        {:error, reason} ->
+          Logger.warning("Failed to flush slot #{slot} during test cleanup: #{inspect(reason)}")
+        _ -> :ok
+      end
+
+      case FleetLM.Storage.Supervisor.stop_slot(slot) do
+        {:error, reason} ->
+          Logger.warning("Failed to stop slot #{slot} during test cleanup: #{inspect(reason)}")
+        _ -> :ok
+      end
+    end)
+
     File.rm_rf(temp_dir)
   end
 

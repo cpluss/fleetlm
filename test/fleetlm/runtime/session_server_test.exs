@@ -26,8 +26,8 @@ defmodule Fleetlm.Runtime.SessionServerTest do
     test "loads current sequence number from storage", %{session: session} do
       # Append some messages first
       slot = :erlang.phash2(session.id, 64)
-      :ok = API.append_message(session.id, 1, "alice", "bob", "text", %{"text" => "msg1"}, %{})
-      :ok = API.append_message(session.id, 2, "bob", "alice", "text", %{"text" => "msg2"}, %{})
+      :ok = StorageAPI.append_message(session.id, 1, "alice", "bob", "text", %{"text" => "msg1"}, %{})
+      :ok = StorageAPI.append_message(session.id, 2, "bob", "alice", "text", %{"text" => "msg2"}, %{})
       wait_for_flush(slot)
 
       # Start server - should load seq = 2
@@ -120,7 +120,7 @@ defmodule Fleetlm.Runtime.SessionServerTest do
       slot = :erlang.phash2(session.id, 64)
       wait_for_flush(slot)
 
-      {:ok, messages} = API.get_messages(session.id, 0, 10)
+      {:ok, messages} = StorageAPI.get_messages(session.id, 0, 10)
       persisted = Enum.find(messages, &(&1.seq == msg1.seq))
       assert persisted.recipient_id == "bob"
     end
@@ -138,7 +138,7 @@ defmodule Fleetlm.Runtime.SessionServerTest do
       slot = :erlang.phash2(session.id, 64)
       wait_for_flush(slot)
 
-      {:ok, messages} = API.get_messages(session.id, 0, 10)
+      {:ok, messages} = StorageAPI.get_messages(session.id, 0, 10)
       assert length(messages) == 1
       assert hd(messages).seq == message.seq
     end

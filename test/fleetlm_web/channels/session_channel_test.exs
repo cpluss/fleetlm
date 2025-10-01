@@ -2,16 +2,16 @@ defmodule FleetlmWeb.SessionChannelTest do
   use Fleetlm.TestCase, mode: :channel
 
   alias Fleetlm.Runtime.{Router, SessionSupervisor}
-  alias FleetLM.Storage.API
+  alias FleetLM.Storage.API, as: StorageAPI
   alias FleetlmWeb.SessionChannel
 
   setup do
     # Create session using new storage model
-    {:ok, session} = API.create_session("user:alice", "agent:bot", %{})
+    {:ok, session} = StorageAPI.create_session("user:alice", "agent:bot", %{})
 
     # Ensure SessionServer is started and has DB access
     {:ok, pid} = SessionSupervisor.ensure_started(session.id)
-    Fleetlm.DataCase.allow_sandbox_access(pid)
+    :ok = allow_sandbox_access(pid)
 
     {:ok, session: session}
   end

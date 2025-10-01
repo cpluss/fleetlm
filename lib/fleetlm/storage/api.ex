@@ -109,7 +109,7 @@ defmodule FleetLM.Storage.API do
     # NOTE: this method is on the extreme hot-path and should be optimized as much as possible.
     # It's called for every message across all sessions in a slot, so it's critical to keep it fast.
     slot = storage_slot_for_session(session_id)
-    ensure_slot_server_started(slot)
+    :ok = ensure_slot_server_started(slot)
 
     message = %Message{
       id: Ulid.generate(),
@@ -137,7 +137,7 @@ defmodule FleetLM.Storage.API do
           {:ok, [Message.t()]}
   def get_messages(session_id, after_seq, limit) do
     slot = storage_slot_for_session(session_id)
-    ensure_slot_server_started(slot)
+    :ok = ensure_slot_server_started(slot)
 
     # Get the tail of the messages from the slot log, assuming
     # they may be there.
@@ -247,26 +247,10 @@ defmodule FleetLM.Storage.API do
   # In production mode (slot_log_mode: :production), servers are pre-started by supervisor - no-op.
   # In test mode (slot_log_mode: :test), servers are started on-demand with test-specific config.
   defp ensure_slot_server_started(slot) do
-    if Application.get_env(:fleetlm, :slot_log_mode, :production) == :test do
-      registry = Application.get_env(:fleetlm, :slot_log_registry, :global)
-      task_supervisor = Application.get_env(:fleetlm, :slot_log_task_supervisor)
-
-      case Registry.lookup(registry, slot) do
-        [{_pid, _}] ->
-          :ok
-
-        [] ->
-          # Start on-demand via DynamicSupervisor
-          # We need a way to supervise these. For now, start unsupervised in test mode.
-          # Tests are responsible for cleanup via on_exit.
-          case SlotLogServer.start_link({slot, task_supervisor: task_supervisor, registry: registry}) do
-            {:ok, _pid} -> :ok
-            {:error, {:already_started, _pid}} -> :ok
-            {:error, reason} -> {:error, reason}
-          end
-      end
-    else
-      :ok
+    case FleetLM.Storage.Supervisor.ensure_started(slot) do
+      {:ok, _pid} -> :ok
+      {:error, {:already_started, _pid}} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 end

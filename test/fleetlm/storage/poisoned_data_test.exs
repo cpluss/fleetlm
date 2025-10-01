@@ -36,14 +36,15 @@ defmodule FleetLM.Storage.PoisonedDataTest do
     test "handles corrupted WAL entries with NULL kind during flush" do
       # This tests the scenario where somehow a bad entry made it into the disk log
       # (perhaps from a previous bug or race condition)
-      slot = 100
-      registry = Application.get_env(:fleetlm, :slot_log_registry)
-      task_supervisor = Application.get_env(:fleetlm, :slot_log_task_supervisor)
+      slot = 100 + System.unique_integer([:positive])
 
-      # Start test SlotLogServer
-      {:ok, _} = start_supervised({SlotLogServer, {slot, task_supervisor: task_supervisor, registry: registry}}, id: {SlotLogServer, slot})
+      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      on_exit(fn ->
+        _ = FleetLM.Storage.Supervisor.flush_slot(slot)
+        _ = FleetLM.Storage.Supervisor.stop_slot(slot)
+      end)
 
-      # Manually write a corrupted entry directly to disk log
+      # Manually write a corrupted entry directly to disk log (bypassing SlotLogServer validation)
       {:ok, log} = SlotLogServer.get_log_handle(slot)
 
       corrupted_entry = %FleetLM.Storage.Entry{
@@ -65,31 +66,39 @@ defmodule FleetLM.Storage.PoisonedDataTest do
         }
       }
 
+      # Write directly to disk log and mark the slot as dirty by writing a valid entry first
+      session = create_test_session()
+      valid_entry = build_entry(slot, session.id, 1)
+      :ok = SlotLogServer.append(slot, valid_entry)
+
+      # Now manually append the corrupted entry after the valid one
       :ok = DiskLog.append(log, corrupted_entry)
 
       # Attempt to flush - should fail gracefully
       result = SlotLogServer.flush_now(slot)
 
-      # Flush should fail due to NOT NULL constraint
+      # Flush should fail due to NOT NULL constraint (because of the corrupted entry)
       assert {:error, _reason} = result
 
-      # Verify the corrupted entry is still in the log (not truncated on failure)
+      # Verify both entries are still in the log (not truncated on failure - atomic behavior)
       {:ok, entries} = DiskLog.read_all(log)
-      assert length(entries) == 1
+      assert length(entries) == 2
 
-      # Verify no messages were persisted to DB
-      messages = Message |> where([m], m.session_id == "corrupted-session") |> Repo.all()
+      # Verify no messages were persisted to DB (all-or-nothing)
+      messages = Message |> Repo.all()
       assert length(messages) == 0
     end
   end
 
   describe "partial flush recovery" do
     test "recovers when some messages flush successfully and others fail" do
-      slot = 100
-      registry = Application.get_env(:fleetlm, :slot_log_registry)
-      task_supervisor = Application.get_env(:fleetlm, :slot_log_task_supervisor)
+      slot = 100 + System.unique_integer([:positive])
 
-      {:ok, _} = start_supervised({SlotLogServer, {slot, task_supervisor: task_supervisor, registry: registry}}, id: {SlotLogServer, slot})
+      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      on_exit(fn ->
+        _ = FleetLM.Storage.Supervisor.flush_slot(slot)
+        _ = FleetLM.Storage.Supervisor.stop_slot(slot)
+      end)
 
       # Create sessions
       session1 = create_test_session("alice", "bob")
@@ -165,9 +174,7 @@ defmodule FleetLM.Storage.PoisonedDataTest do
 
   describe "disk log corruption recovery" do
     test "recovers from corrupted disk log file" do
-      slot = 100
-      registry = Application.get_env(:fleetlm, :slot_log_registry)
-      task_supervisor = Application.get_env(:fleetlm, :slot_log_task_supervisor)
+      slot = 100 + System.unique_integer([:positive])
 
       # Write some garbage to the disk log file before opening
       slot_dir = Application.get_env(:fleetlm, :slot_log_dir)
@@ -177,10 +184,11 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       File.write!(log_path, <<255, 255, 255, 255, 0, 0, 0, 0>>)
 
       # Start SlotLogServer - should recover or recreate the log
-      {:ok, _} = start_supervised(
-        {SlotLogServer, {slot, task_supervisor: task_supervisor, registry: registry}},
-        id: {SlotLogServer, slot}
-      )
+      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      on_exit(fn ->
+        :ok = FleetLM.Storage.Supervisor.flush_slot(slot)
+        :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
+      end)
 
       # Should be able to append after recovery
       session = create_test_session()

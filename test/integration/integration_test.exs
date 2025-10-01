@@ -194,8 +194,11 @@ defmodule Fleetlm.Integration.IntegrationTest do
       # Verify sessions are active
       assert SessionSupervisor.active_count() >= 2
 
-      # Use shared sandbox mode for drain test
-      :ok = Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()})
+      # Use shared sandbox mode for drain test (may already be shared via TestCase)
+      case Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()}) do
+        :ok -> :ok
+        :already_shared -> :ok
+      end
 
       # Trigger drain
       result = DrainCoordinator.trigger_drain()

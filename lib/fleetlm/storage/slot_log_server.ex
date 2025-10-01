@@ -22,6 +22,7 @@ defmodule FleetLM.Storage.SlotLogServer do
   alias Fleetlm.Repo
 
   @default_task_supervisor FleetLM.Storage.SlotLogTaskSupervisor
+  @default_registry FleetLM.Storage.Registry
 
   @flush_interval_ms Application.compile_env(:fleetlm, :storage_flush_interval_ms, 300)
   @flush_timeout Application.compile_env(:fleetlm, :slot_flush_timeout, 10_000)
@@ -44,7 +45,7 @@ defmodule FleetLM.Storage.SlotLogServer do
 
   def start_link({slot, opts}) when is_integer(slot) and is_list(opts) do
     task_supervisor = Keyword.get(opts, :task_supervisor, @default_task_supervisor)
-    registry = Keyword.get(opts, :registry, :global)
+    registry = Keyword.get(opts, :registry, @default_registry)
     GenServer.start_link(__MODULE__, {slot, task_supervisor, registry}, name: via(slot, registry))
   end
 
@@ -220,8 +221,7 @@ defmodule FleetLM.Storage.SlotLogServer do
   ## Internal helpers
 
   defp via(slot) do
-    registry = Application.get_env(:fleetlm, :slot_log_registry, :global)
-    via(slot, registry)
+    via(slot, @default_registry)
   end
 
   defp via(slot, :global), do: {:global, {:fleetlm_slot_log_server, slot}}

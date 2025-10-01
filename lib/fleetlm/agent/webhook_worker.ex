@@ -45,7 +45,7 @@ defmodule Fleetlm.Agent.WebhookWorker do
 
     case begin_dispatch(session_id, agent_id, start_time) do
       {:ok, job} ->
-        stats = update_in(state.stats.dispatches, &(&1 + 1))
+        stats = increment_stats(state.stats, :dispatches)
         jobs = Map.put(state.jobs, job.ref, job)
         {:noreply, %{state | stats: stats, jobs: jobs}}
 
@@ -60,7 +60,7 @@ defmodule Fleetlm.Agent.WebhookWorker do
 
         log_failure(agent_id, session_id, reason, duration)
 
-        stats = update_in(state.stats.failures, &(&1 + 1))
+        stats = increment_stats(state.stats, :failures)
         {:noreply, %{state | stats: stats}}
     end
   end
@@ -347,7 +347,7 @@ defmodule Fleetlm.Agent.WebhookWorker do
 
     log_success(job.agent_id, job.session_id, duration)
 
-    stats = update_in(state.stats.successes, &(&1 + 1))
+    stats = increment_stats(state.stats, :successes)
     %{state | stats: stats, jobs: Map.delete(state.jobs, ref)}
   end
 
@@ -364,7 +364,11 @@ defmodule Fleetlm.Agent.WebhookWorker do
 
     Req.cancel_async_response(job.response)
 
-    stats = update_in(state.stats.failures, &(&1 + 1))
+    stats = increment_stats(state.stats, :failures)
     %{state | stats: stats, jobs: Map.delete(state.jobs, ref)}
+  end
+
+  defp increment_stats(stats, key) do
+    Map.update(stats, key, 1, &(&1 + 1))
   end
 end

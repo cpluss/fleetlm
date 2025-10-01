@@ -5,7 +5,10 @@ defmodule Fleetlm.Runtime.DrainCoordinatorTest do
 
   setup do
     # Use shared mode so spawned processes can access DB
-    :ok = Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()})
+    case Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()}) do
+      :ok -> :ok
+      :already_shared -> :ok
+    end
 
     # DrainCoordinator is already running as part of Runtime.Supervisor
     # Just verify it's alive

@@ -3,18 +3,18 @@ defmodule FleetLM.Storage.SlotLogServerTest do
 
   import Ecto.Query
 
-  setup context do
-    # Use a high slot number to avoid production range (0-63)
-    # Start test-specific SlotLogServer with test registry and directory
-    slot = 100
+  setup _context do
+    # Use a high, unique slot number to avoid production range (0-63)
+    slot = 100 + System.unique_integer([:positive])
 
-    registry = context[:slot_registry]
-    task_supervisor = Application.get_env(:fleetlm, :slot_log_task_supervisor)
+    {:ok, pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
 
-    case start_supervised({SlotLogServer, {slot, task_supervisor: task_supervisor, registry: registry}}, id: {SlotLogServer, slot}) do
-      {:ok, pid} -> %{slot: slot, server_pid: pid}
-      {:error, {:already_started, pid}} -> %{slot: slot, server_pid: pid}
-    end
+    on_exit(fn ->
+      :ok = FleetLM.Storage.Supervisor.flush_slot(slot)
+      :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
+    end)
+
+    %{slot: slot, server_pid: pid}
   end
 
   describe "append/2" do
@@ -140,19 +140,16 @@ defmodule FleetLM.Storage.SlotLogServerTest do
 
   describe "terminate/2" do
     test "flushes dirty data on shutdown" do
-      slot = 99
+      slot = 200 + System.unique_integer([:positive])
       session = create_test_session()
 
-      # Start server manually so we can stop it
-      {:ok, pid} = SlotLogServer.start_link(slot)
-      Process.unlink(pid)
+      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
 
       entry = build_entry(slot, session.id, 1)
       SlotLogServer.append(slot, entry)
 
-      # Stop the server and wait for it to complete termination
-      # The terminate callback runs synchronously during shutdown
-      :ok = GenServer.stop(pid, :shutdown)
+      # Stop the server via supervisor which triggers terminate/2
+      :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
 
       # Verify message was still persisted during shutdown
       messages = Repo.all(Message)
