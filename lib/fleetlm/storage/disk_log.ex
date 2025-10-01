@@ -51,6 +51,24 @@ defmodule FleetLM.Storage.DiskLog do
 
         {:ok, handle}
 
+      {:error, {:not_a_log_file, _path}} ->
+        # File is completely corrupted beyond repair - delete and recreate
+        Logger.warning(
+          "Disk log for slot #{slot} is not a valid log file, recreating from scratch"
+        )
+
+        File.rm(path)
+
+        case :disk_log.open([
+               {:name, name},
+               {:file, String.to_charlist(path)},
+               {:repair, false},
+               {:type, :halt}
+             ]) do
+          {:ok, handle} -> {:ok, handle}
+          {:error, _} = error -> error
+        end
+
       {:error, _} = error ->
         error
     end

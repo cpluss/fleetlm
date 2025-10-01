@@ -103,7 +103,9 @@ defmodule FleetLM.Storage.API do
           term()
         ) ::
           :ok | {:error, term()}
-  def append_message(session_id, seq, sender_id, recipient_id, kind, content, metadata \\ %{}) do
+  def append_message(session_id, seq, sender_id, recipient_id, kind, content, metadata \\ %{})
+      when is_binary(session_id) and is_integer(seq) and is_binary(sender_id) and
+             is_binary(recipient_id) and is_binary(kind) and not is_nil(content) do
     # NOTE: this method is on the extreme hot-path and should be optimized as much as possible.
     # It's called for every message across all sessions in a slot, so it's critical to keep it fast.
     slot = storage_slot_for_session(session_id)
