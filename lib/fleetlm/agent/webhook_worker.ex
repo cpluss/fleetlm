@@ -44,15 +44,12 @@ defmodule Fleetlm.Agent.WebhookWorker do
     start_time = System.monotonic_time(:millisecond)
 
     result =
-      with {:ok, agent} <- Agent.get(agent_id),
-           :ok <- check_agent_enabled(agent),
-           {:ok, session} <- StorageAPI.get_session(session_id),
-           {:ok, messages} <- fetch_message_history(session_id, agent),
-           {:ok, response} <- post_to_agent(agent, session, messages),
-           {:ok, _msg} <- append_agent_response(session_id, agent_id, response) do
-        :ok
-      else
-        error -> error
+      case Agent.get(agent_id) do
+        {:ok, agent} ->
+          dispatch_to_agent(session_id, agent_id, agent)
+
+        {:error, _reason} = error ->
+          error
       end
 
     duration = System.monotonic_time(:millisecond) - start_time
@@ -78,6 +75,33 @@ defmodule Fleetlm.Agent.WebhookWorker do
     end
   end
 
+  defp dispatch_to_agent(session_id, agent_id, agent) do
+    case check_agent_enabled(agent) do
+      :ok ->
+        case StorageAPI.get_session(session_id) do
+          {:ok, session} ->
+            {:ok, messages} = fetch_message_history(session_id, agent)
+
+            case post_to_agent(agent, session, messages) do
+              {:ok, response} ->
+                case append_agent_response(session_id, agent_id, response) do
+                  {:ok, _message} -> :ok
+                  {:error, _reason} = error -> error
+                end
+
+              {:error, _reason} = error ->
+                error
+            end
+
+          {:error, _reason} = error ->
+            error
+        end
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
   defp check_agent_enabled(%{status: "enabled"}), do: :ok
   defp check_agent_enabled(_), do: {:error, :agent_disabled}
 
@@ -96,10 +120,8 @@ defmodule Fleetlm.Agent.WebhookWorker do
         StorageAPI.get_all_messages(session_id)
 
       "last" ->
-        case StorageAPI.get_messages(session_id, 0, 1) do
-          {:ok, messages} -> {:ok, Enum.take(messages, -1)}
-          error -> error
-        end
+        {:ok, messages} = StorageAPI.get_messages(session_id, 0, 1)
+        {:ok, Enum.take(messages, -1)}
     end
   end
 
@@ -123,17 +145,22 @@ defmodule Fleetlm.Agent.WebhookWorker do
               [{^key, response}] when is_map(response) ->
                 # Remove this response from the queue
                 :ets.delete(:agent_responses, key)
-                # Convert string keys to atom keys to match parse_agent_response format
-                # Validate response has required fields
-                case {response["kind"], response["content"]} do
-                  {nil, _} -> {:error, :missing_kind}
-                  {_, nil} -> {:error, :missing_content}
-                  {kind, content} ->
-                    {:ok, %{
-                      kind: kind,
-                      content: content,
-                      metadata: Map.get(response, "metadata", %{})
-                    }}
+                # Validate response has required fields and convert
+                case response do
+                  %{"kind" => kind, "content" => content, "metadata" => metadata} ->
+                    {:ok, %{kind: kind, content: content, metadata: metadata}}
+
+                  %{"kind" => kind, "content" => content} ->
+                    {:ok, %{kind: kind, content: content, metadata: %{}}}
+
+                  %{"kind" => _kind} ->
+                    {:error, :missing_content}
+
+                  %{"content" => _content} ->
+                    {:error, :missing_kind}
+
+                  _ ->
+                    {:error, :invalid_response}
                 end
 
               [{^key, ""}] ->
@@ -232,8 +259,8 @@ defmodule Fleetlm.Agent.WebhookWorker do
 
   defp build_headers(agent) do
     base = [
-      {'content-type', 'application/json'},
-      {'accept', 'application/json'}
+      {~c"content-type", ~c"application/json"},
+      {~c"accept", ~c"application/json"}
     ]
 
     # Add custom headers
@@ -247,13 +274,17 @@ defmodule Fleetlm.Agent.WebhookWorker do
 
   defp parse_agent_response(body) when is_binary(body) and body != "" do
     case Jason.decode(body) do
-      {:ok, %{"kind" => kind, "content" => content} = resp} ->
-        {:ok,
-         %{
-           kind: kind,
-           content: content,
-           metadata: Map.get(resp, "metadata", %{})
-         }}
+      {:ok, %{"kind" => kind, "content" => content, "metadata" => metadata}} ->
+        {:ok, %{kind: kind, content: content, metadata: metadata}}
+
+      {:ok, %{"kind" => kind, "content" => content}} ->
+        {:ok, %{kind: kind, content: content, metadata: %{}}}
+
+      {:ok, %{"kind" => _kind}} ->
+        {:error, :missing_content}
+
+      {:ok, %{"content" => _content}} ->
+        {:error, :missing_kind}
 
       {:ok, _other} ->
         {:error, :invalid_response_format}

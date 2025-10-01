@@ -44,3 +44,15 @@ config :fleetlm, :participant_tick_interval_ms, 100
 config :fleetlm, :pubsub_adapter, :local
 
 config :fleetlm, :persistence_worker_mode, :noop
+
+# Increase slot flush timeout for tests (slower due to sandbox mode)
+config :fleetlm, :slot_flush_timeout, 15_000
+
+# Disable agent webhooks by default in tests
+config :fleetlm, :disable_agent_webhooks, true
+
+# Skip DB operations in terminate callbacks (avoids ownership errors when test exits)
+config :fleetlm, :skip_terminate_db_ops, true
+
+# Faster flush interval for tests (default is 300ms, but we can make it even faster)
+config :fleetlm, :storage_flush_interval_ms, 100

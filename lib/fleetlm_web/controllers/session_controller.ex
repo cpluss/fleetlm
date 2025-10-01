@@ -6,12 +6,28 @@ defmodule FleetlmWeb.SessionController do
 
   action_fallback FleetlmWeb.FallbackController
 
-  def create(conn, params) do
-    sender_id = Map.get(params, "initiator_id") || Map.get(params, "sender_id")
-    recipient_id = Map.get(params, "peer_id") || Map.get(params, "recipient_id")
+  # New API with sender_id/recipient_id
+  def create(conn, %{"sender_id" => sender_id, "recipient_id" => recipient_id} = params) do
     metadata = Map.get(params, "metadata", %{})
 
     case StorageAPI.create_session(sender_id, recipient_id, metadata) do
+      {:ok, session} ->
+        conn
+        |> put_status(:created)
+        |> json(%{session: render_session(session)})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: inspect(reason)})
+    end
+  end
+
+  # Legacy API with initiator_id/peer_id
+  def create(conn, %{"initiator_id" => initiator_id, "peer_id" => peer_id} = params) do
+    metadata = Map.get(params, "metadata", %{})
+
+    case StorageAPI.create_session(initiator_id, peer_id, metadata) do
       {:ok, session} ->
         conn
         |> put_status(:created)
@@ -48,13 +64,56 @@ defmodule FleetlmWeb.SessionController do
     end
   end
 
-  def append_message(conn, %{"session_id" => session_id} = params) do
-    sender_id = Map.get(params, "sender_id")
-    kind = Map.get(params, "kind", "text")
-    content = Map.get(params, "content", %{})
-    metadata = Map.get(params, "metadata", %{})
-
+  # Full message with all fields
+  def append_message(
+        conn,
+        %{
+          "session_id" => session_id,
+          "sender_id" => sender_id,
+          "kind" => kind,
+          "content" => content,
+          "metadata" => metadata
+        }
+      ) do
     case Router.append_message(session_id, sender_id, kind, content, metadata) do
+      {:ok, message} ->
+        json(conn, %{message: render_message(message)})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: inspect(reason)})
+    end
+  end
+
+  # Message with sender, kind, and content (metadata defaults to %{})
+  def append_message(
+        conn,
+        %{
+          "session_id" => session_id,
+          "sender_id" => sender_id,
+          "kind" => kind,
+          "content" => content
+        }
+      ) do
+    case Router.append_message(session_id, sender_id, kind, content, %{}) do
+      {:ok, message} ->
+        json(conn, %{message: render_message(message)})
+
+      {:error, reason} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: inspect(reason)})
+    end
+  end
+
+  # Message with sender and content only (kind defaults to "text", metadata to %{})
+  def append_message(conn, %{
+        "session_id" => session_id,
+        "sender_id" => sender_id,
+        "content" => content
+      }) do
+    case Router.append_message(session_id, sender_id, "text", content, %{}) do
       {:ok, message} ->
         json(conn, %{message: render_message(message)})
 
@@ -103,7 +162,7 @@ defmodule FleetlmWeb.SessionController do
     end
   end
 
-  defp render_session(session) do
+  defp render_session(%{metadata: nil} = session) do
     %{
       id: session.id,
       # Map new field names to old API for backward compatibility
@@ -112,39 +171,38 @@ defmodule FleetlmWeb.SessionController do
       sender_id: session.sender_id,
       recipient_id: session.recipient_id,
       status: session.status,
-      metadata: session.metadata || %{},
+      metadata: %{},
+      inserted_at: encode_datetime(session.inserted_at),
+      updated_at: encode_datetime(session.updated_at)
+    }
+  end
+
+  defp render_session(%{metadata: metadata} = session) do
+    %{
+      id: session.id,
+      # Map new field names to old API for backward compatibility
+      initiator_id: session.sender_id,
+      peer_id: session.recipient_id,
+      sender_id: session.sender_id,
+      recipient_id: session.recipient_id,
+      status: session.status,
+      metadata: metadata,
       inserted_at: encode_datetime(session.inserted_at),
       updated_at: encode_datetime(session.updated_at)
     }
   end
 
   defp render_message(%{} = message) when is_map(message) do
-    # Handle both struct and map formats
-    content = stringify_map(get_field(message, :content))
-    metadata = stringify_map(get_field(message, :metadata))
-
     %{
-      id: get_field(message, :id),
-      session_id: get_field(message, :session_id),
-      sender_id: get_field(message, :sender_id),
-      kind: get_field(message, :kind),
-      content: content,
-      metadata: metadata,
-      inserted_at: encode_datetime(get_field(message, :inserted_at))
+      id: message.id,
+      session_id: message.session_id,
+      sender_id: message.sender_id,
+      kind: message.kind,
+      content: message.content,
+      metadata: message.metadata,
+      inserted_at: encode_datetime(message.inserted_at)
     }
   end
-
-  defp get_field(%{} = map, key) do
-    Map.get(map, key) || Map.get(map, to_string(key))
-  end
-
-  defp stringify_map(map) when is_map(map) do
-    map
-    |> Enum.map(fn {k, v} -> {to_string(k), v} end)
-    |> Enum.into(%{})
-  end
-
-  defp stringify_map(_), do: %{}
 
   defp encode_datetime(nil), do: nil
   defp encode_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)

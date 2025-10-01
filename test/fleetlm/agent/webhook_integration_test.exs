@@ -6,6 +6,9 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
   alias FleetLM.Storage.API, as: StorageAPI
 
   setup do
+    # Enable webhooks for this test suite
+    Application.put_env(:fleetlm, :disable_agent_webhooks, false)
+
     # Enable test mode for agent webhooks
     setup_test_mode(self())
 
@@ -25,6 +28,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
 
     on_exit(fn ->
       cleanup_test_mode()
+      Application.put_env(:fleetlm, :disable_agent_webhooks, true)
     end)
 
     %{agent: agent, session: session}
@@ -170,9 +174,9 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
       assert Enum.at(payload.messages, 2).content["text"] == "Second"
     end
 
-    test "disabled agent does not receive webhooks", %{session: session} do
+    test "disabled agent does not receive webhooks", %{session: _session} do
       # Create disabled agent
-      {:ok, disabled_agent} =
+      {:ok, _disabled_agent} =
         Agent.create(%{
           id: "disabled-agent",
           name: "Disabled",

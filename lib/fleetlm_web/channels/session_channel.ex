@@ -14,15 +14,29 @@ defmodule FleetlmWeb.SessionChannel do
         _params,
         %{assigns: %{participant_id: participant_id}} = socket
       ) do
-    with {:ok, session} <- authorize(session_id, participant_id),
-         {:ok, result} <- Router.join(session_id, participant_id, last_seq: 0, limit: 100) do
-      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "session:" <> session_id)
+    case authorize(session_id, participant_id) do
+      {:ok, session} ->
+        case Router.join(session_id, participant_id, last_seq: 0, limit: 100) do
+          {:ok, result} ->
+            Phoenix.PubSub.subscribe(Fleetlm.PubSub, "session:" <> session_id)
+            response = %{session_id: session_id, messages: result.messages}
+            {:ok, response, assign(socket, :session, session)}
 
-      response = %{session_id: session_id, messages: result.messages}
+          {:error, :not_found} ->
+            {:error, %{reason: "not found"}}
 
-      {:ok, response, assign(socket, :session, session)}
-    else
-      {:error, reason} -> {:error, %{reason: error_reason(reason)}}
+          {:error, :unauthorized} ->
+            {:error, %{reason: "unauthorized"}}
+
+          {:error, reason} ->
+            {:error, %{reason: inspect(reason)}}
+        end
+
+      {:error, :not_found} ->
+        {:error, %{reason: "not found"}}
+
+      {:error, :unauthorized} ->
+        {:error, %{reason: "unauthorized"}}
     end
   end
 
@@ -32,24 +46,48 @@ defmodule FleetlmWeb.SessionChannel do
     {:noreply, socket}
   end
 
+  # Full message with all fields
   @impl true
   def handle_in(
         "send",
-        %{"content" => content},
+        %{
+          "content" => %{
+            "kind" => kind,
+            "content" => message_content,
+            "metadata" => metadata
+          }
+        },
         %{assigns: %{session: session, participant_id: participant_id}} = socket
       ) do
-    sender_id = participant_id
-    kind = Map.get(content, "kind", "text")
-    message_content = Map.get(content, "content", %{})
-    metadata = Map.get(content, "metadata", %{})
+    do_send_message(socket, session, participant_id, kind, message_content, metadata)
+  end
 
-    case Router.append_message(session.id, sender_id, kind, message_content, metadata) do
+  # Message with content and kind only (metadata defaults to %{})
+  @impl true
+  def handle_in(
+        "send",
+        %{"content" => %{"kind" => kind, "content" => message_content}},
+        %{assigns: %{session: session, participant_id: participant_id}} = socket
+      ) do
+    do_send_message(socket, session, participant_id, kind, message_content, %{})
+  end
+
+  # Message with only content (kind defaults to "text", metadata to %{})
+  @impl true
+  def handle_in(
+        "send",
+        %{"content" => %{"content" => message_content}},
+        %{assigns: %{session: session, participant_id: participant_id}} = socket
+      ) do
+    do_send_message(socket, session, participant_id, "text", message_content, %{})
+  end
+
+  defp do_send_message(socket, session, participant_id, kind, content, metadata) do
+    case Router.append_message(session.id, participant_id, kind, content, metadata) do
       {:ok, _message} ->
         {:noreply, socket}
 
       {:error, :draining} ->
-        # Session is draining - apply backpressure
-        # Tell client to retry after brief delay
         push(socket, "backpressure", %{
           reason: "session_draining",
           retry_after_ms: 1000
@@ -63,24 +101,16 @@ defmodule FleetlmWeb.SessionChannel do
   end
 
   defp authorize(session_id, participant_id) do
-    session = Fleetlm.Repo.get(Session, session_id)
-
-    case session do
+    case Fleetlm.Repo.get(Session, session_id) do
       nil ->
         {:error, :not_found}
 
-      %Session{} = session ->
-        if participant_id in [session.user_id, session.agent_id] do
-          {:ok, session}
-        else
-          {:error, :unauthorized}
-        end
-    end
-  rescue
-    _ -> {:error, :not_found}
-  end
+      %Session{user_id: user_id, agent_id: agent_id} = session
+      when participant_id in [user_id, agent_id] ->
+        {:ok, session}
 
-  defp error_reason(:unauthorized), do: "unauthorized"
-  defp error_reason(:not_found), do: "not found"
-  defp error_reason(other), do: inspect(other)
+      %Session{} ->
+        {:error, :unauthorized}
+    end
+  end
 end

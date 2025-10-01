@@ -26,7 +26,8 @@ defmodule Fleetlm.Observability.Telemetry do
   @cache_events [:fleetlm, :cache]
   @pubsub_broadcast_event [:fleetlm, :pubsub, :broadcast]
 
-  @spec measure_session_append(String.t(), map(), (-> {term(), map()})) :: term()
+  @spec measure_session_append(String.t(), %{optional(atom()) => term()}, (-> {term(), map()})) ::
+          term()
   def measure_session_append(session_id, metadata \\ %{}, fun) when is_function(fun, 0) do
     base_metadata =
       metadata
@@ -64,7 +65,8 @@ defmodule Fleetlm.Observability.Telemetry do
     :telemetry.execute(@session_queue_event, measurements, metadata)
   end
 
-  @spec record_session_fanout(String.t(), atom(), non_neg_integer(), map()) :: :ok
+  @spec record_session_fanout(String.t(), atom(), non_neg_integer(), %{optional(atom()) => term()}) ::
+          :ok
   def record_session_fanout(session_id, type, duration_us, metadata \\ %{})
       when is_atom(type) and is_integer(duration_us) and duration_us >= 0 do
     meta =
@@ -76,7 +78,8 @@ defmodule Fleetlm.Observability.Telemetry do
     :telemetry.execute(@session_fanout_event, measurements, meta)
   end
 
-  @spec record_disk_log_append(non_neg_integer(), non_neg_integer(), map()) :: :ok
+  @spec record_disk_log_append(non_neg_integer(), non_neg_integer(), %{optional(atom()) => term()}) ::
+          :ok
   def record_disk_log_append(slot, duration_us, metadata \\ %{})
       when is_integer(slot) and slot >= 0 and is_integer(duration_us) and duration_us >= 0 do
     meta = Map.put(metadata, :slot, slot)
@@ -145,17 +148,17 @@ defmodule Fleetlm.Observability.Telemetry do
   @doc """
   Record that a chat message was sent.
   """
-  @spec message_sent(String.t(), String.t(), String.t(), map()) :: :ok
+  @spec message_sent(String.t(), String.t(), String.t(), %{optional(:role) => String.t()}) :: :ok
   def message_sent(dm_key, sender_id, recipient_id, metadata \\ %{})
       when is_binary(dm_key) and is_binary(sender_id) and is_binary(recipient_id) do
-    tags =
-      metadata
-      |> normalize_message_metadata()
-      |> Map.merge(%{
-        dm_key: dm_key,
-        sender_id: sender_id,
-        recipient_id: recipient_id
-      })
+    role = normalize_role(metadata)
+
+    tags = %{
+      dm_key: dm_key,
+      sender_id: sender_id,
+      recipient_id: recipient_id,
+      role: role
+    }
 
     :telemetry.execute(@message_sent_event, %{count: 1}, tags)
   end
@@ -187,13 +190,9 @@ defmodule Fleetlm.Observability.Telemetry do
     :telemetry.execute(@pubsub_broadcast_event, measurements, metadata)
   end
 
-  defp normalize_message_metadata(metadata) when is_map(metadata) do
-    role =
-      metadata
-      |> Map.get(:role) || Map.get(metadata, "role") || "unknown"
-
-    %{role: to_string(role)}
-  end
+  defp normalize_role(%{role: role}) when is_binary(role) or is_atom(role), do: to_string(role)
+  defp normalize_role(%{"role" => role}) when is_binary(role), do: role
+  defp normalize_role(_), do: raise(ArgumentError, "missing or invalid :role in metadata")
 
   defp format_reason(%_{} = value) do
     if function_exported?(value.__struct__, :message, 1) do
@@ -206,7 +205,7 @@ defmodule Fleetlm.Observability.Telemetry do
   defp format_reason(reason) when is_binary(reason), do: reason
   defp format_reason(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_reason({:shutdown, inner}), do: format_reason(inner)
-  defp format_reason(_), do: "unknown"
+  defp format_reason(other), do: inspect(other)
 
   defp finalize_session_append(start, base_metadata, result, extra_metadata) do
     duration_us = duration_us(start)

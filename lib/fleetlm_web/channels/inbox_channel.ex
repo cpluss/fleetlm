@@ -9,14 +9,14 @@ defmodule FleetlmWeb.InboxChannel do
 
   @impl true
   def join("inbox:" <> user_id, _params, socket) do
-    with {:ok, _pid} <- InboxSupervisor.ensure_started(user_id) do
-      {:ok, snapshot} = InboxServer.get_snapshot(user_id)
+    case InboxSupervisor.ensure_started(user_id) do
+      {:ok, _pid} ->
+        {:ok, snapshot} = InboxServer.get_snapshot(user_id)
+        Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:user:#{user_id}")
+        {:ok, %{inbox: snapshot}, assign(socket, :user_id, user_id)}
 
-      Phoenix.PubSub.subscribe(Fleetlm.PubSub, "inbox:user:#{user_id}")
-
-      {:ok, %{inbox: snapshot}, assign(socket, :user_id, user_id)}
-    else
-      {:error, reason} -> {:error, %{reason: inspect(reason)}}
+      {:error, reason} ->
+        {:error, %{reason: inspect(reason)}}
     end
   end
 

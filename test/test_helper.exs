@@ -10,4 +10,4 @@ Application.put_env(:fleetlm, :slot_log_dir, base_slot_dir)
 # and switches application configuration (slot log directories) on the fly.
 # Running more than one test at a time would cause cross-test interference.
 ExUnit.start(max_cases: 1)
-Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, :manual)
+Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()})

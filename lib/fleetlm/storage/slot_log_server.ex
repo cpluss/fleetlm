@@ -68,6 +68,15 @@ defmodule FleetLM.Storage.SlotLogServer do
     GenServer.call(via(slot), :notify_next_flush)
   end
 
+  @doc """
+  Immediately flush any dirty data to the database and wait for completion.
+  Returns :ok when flush is complete, or :already_clean if nothing to flush.
+  """
+  @spec flush_now(non_neg_integer()) :: :ok | :already_clean
+  def flush_now(slot) do
+    GenServer.call(via(slot), :flush_now, 30_000)
+  end
+
   @spec init(non_neg_integer()) :: {:ok, state()}
   def init(slot) do
     {:ok, log} = DiskLog.open(slot)
@@ -111,6 +120,16 @@ defmodule FleetLM.Storage.SlotLogServer do
 
   def handle_call(:notify_next_flush, {from, _ref}, state) do
     {:reply, :ok, %{state | notify_next_flush: [from | state.notify_next_flush]}}
+  end
+
+  def handle_call(:flush_now, _from, %{dirty: false} = state) do
+    {:reply, :already_clean, state}
+  end
+
+  def handle_call(:flush_now, _from, %{dirty: true} = state) do
+    # Flush synchronously - block until complete
+    flush_to_database(state)
+    {:reply, :ok, %{state | dirty: false}}
   end
 
   def handle_call(:get_log_handle, _from, state) do

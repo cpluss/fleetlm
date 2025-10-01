@@ -14,10 +14,14 @@ defmodule Fleetlm.Agent.Dispatcher do
   """
   @spec dispatch_async(String.t(), String.t()) :: :ok
   def dispatch_async(session_id, agent_id) do
-    :poolboy.transaction(@pool_name, fn worker ->
-      GenServer.cast(worker, {:dispatch, session_id, agent_id})
-    end)
+    if Application.get_env(:fleetlm, :disable_agent_webhooks, false) do
+      :ok
+    else
+      :poolboy.transaction(@pool_name, fn worker ->
+        GenServer.cast(worker, {:dispatch, session_id, agent_id})
+      end)
 
-    :ok
+      :ok
+    end
   end
 end

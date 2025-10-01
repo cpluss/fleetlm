@@ -127,57 +127,74 @@ defmodule Fleetlm.Runtime.InboxServer do
   end
 
   @impl true
-  def handle_info({:message_notification, notification}, state) do
-    session_id = notification["session_id"]
+  def handle_info(
+        {:message_notification,
+         %{
+           "session_id" => session_id,
+           "agent_id" => _agent_id,
+           "timestamp" => timestamp,
+           "message_sender" => message_sender
+         }},
+        %{sessions: sessions} = state
+      )
+      when is_map_key(sessions, session_id) do
+    # Existing session - increment counters
+    entry = Map.fetch!(sessions, session_id)
 
-    # Check if this is an existing session or new
-    case Map.get(state.sessions, session_id) do
-      nil ->
-        # New session - add it to our state
-        Logger.debug("InboxServer user #{state.user_id}: new session #{session_id}")
+    updated_entry = %{
+      entry
+      | unread_count: entry.unread_count + 1,
+        last_activity_at: parse_datetime(timestamp),
+        last_sender_id: message_sender
+    }
 
-        entry = %{
-          session_id: session_id,
-          agent_id: notification["agent_id"],
-          unread_count: 1,
-          last_activity_at: parse_datetime(notification["timestamp"]),
-          last_sender_id: notification["message_sender"]
-        }
+    new_sessions = Map.put(state.sessions, session_id, updated_entry)
+    new_dirty = MapSet.put(state.dirty_sessions, session_id)
 
-        new_sessions = Map.put(state.sessions, session_id, entry)
-        new_dirty = MapSet.put(state.dirty_sessions, session_id)
+    # Check if we hit threshold → broadcast immediately
+    new_state =
+      if MapSet.size(new_dirty) >= @batch_threshold do
+        flush_batch(%{state | sessions: new_sessions, dirty_sessions: new_dirty})
+      else
+        %{state | sessions: new_sessions, dirty_sessions: new_dirty}
+      end
 
-        new_state =
-          if MapSet.size(new_dirty) >= @batch_threshold do
-            flush_batch(%{state | sessions: new_sessions, dirty_sessions: new_dirty})
-          else
-            %{state | sessions: new_sessions, dirty_sessions: new_dirty}
-          end
+    {:noreply, reset_inactivity_timer(new_state)}
+  end
 
-        {:noreply, reset_inactivity_timer(new_state)}
+  @impl true
+  def handle_info(
+        {:message_notification,
+         %{
+           "session_id" => session_id,
+           "agent_id" => agent_id,
+           "timestamp" => timestamp,
+           "message_sender" => message_sender
+         }},
+        state
+      ) do
+    # New session - add it to our state
+    Logger.debug("InboxServer user #{state.user_id}: new session #{session_id}")
 
-      entry ->
-        # Existing session - increment counters
-        updated_entry = %{
-          entry
-          | unread_count: entry.unread_count + 1,
-            last_activity_at: parse_datetime(notification["timestamp"]),
-            last_sender_id: notification["message_sender"]
-        }
+    entry = %{
+      session_id: session_id,
+      agent_id: agent_id,
+      unread_count: 1,
+      last_activity_at: parse_datetime(timestamp),
+      last_sender_id: message_sender
+    }
 
-        new_sessions = Map.put(state.sessions, session_id, updated_entry)
-        new_dirty = MapSet.put(state.dirty_sessions, session_id)
+    new_sessions = Map.put(state.sessions, session_id, entry)
+    new_dirty = MapSet.put(state.dirty_sessions, session_id)
 
-        # Check if we hit threshold → broadcast immediately
-        new_state =
-          if MapSet.size(new_dirty) >= @batch_threshold do
-            flush_batch(%{state | sessions: new_sessions, dirty_sessions: new_dirty})
-          else
-            %{state | sessions: new_sessions, dirty_sessions: new_dirty}
-          end
+    new_state =
+      if MapSet.size(new_dirty) >= @batch_threshold do
+        flush_batch(%{state | sessions: new_sessions, dirty_sessions: new_dirty})
+      else
+        %{state | sessions: new_sessions, dirty_sessions: new_dirty}
+      end
 
-        {:noreply, reset_inactivity_timer(new_state)}
-    end
+    {:noreply, reset_inactivity_timer(new_state)}
   end
 
   @impl true

@@ -69,7 +69,7 @@ defmodule Fleetlm.Runtime.SessionServer do
     GenServer.start_link(__MODULE__, session_id, name: via(session_id))
   end
 
-  @spec append_message(String.t(), String.t(), String.t(), map(), map()) ::
+  @spec append_message(String.t(), String.t(), String.t(), term(), term()) ::
           {:ok, map()} | {:error, term()}
   def append_message(session_id, sender_id, kind, content, metadata \\ %{}) do
     GenServer.call(
@@ -299,8 +299,10 @@ defmodule Fleetlm.Runtime.SessionServer do
     # Flush slot log if not already drained
     flush_slot_sync(state.slot)
 
-    # Mark session inactive
-    mark_session_inactive(state.session_id)
+    # Mark session inactive (skip in tests to avoid DB ownership issues)
+    unless Application.get_env(:fleetlm, :skip_terminate_db_ops, false) do
+      mark_session_inactive(state.session_id)
+    end
 
     # Clean up ETS table
     :ets.delete(state.tail_table)
@@ -376,13 +378,13 @@ defmodule Fleetlm.Runtime.SessionServer do
     # Get max seq directly from DB (more efficient than fetching all messages)
     import Ecto.Query
 
-    result =
-      FleetLM.Storage.Model.Message
-      |> where([m], m.session_id == ^session_id)
-      |> select([m], max(m.seq))
-      |> Fleetlm.Repo.one()
-
-    result || 0
+    case FleetLM.Storage.Model.Message
+         |> where([m], m.session_id == ^session_id)
+         |> select([m], max(m.seq))
+         |> Fleetlm.Repo.one() do
+      nil -> 0
+      seq when is_integer(seq) -> seq
+    end
   end
 
   defp trim_tail(table) do
@@ -431,17 +433,17 @@ defmodule Fleetlm.Runtime.SessionServer do
 
   defp flush_slot_sync(slot) do
     try do
-      FleetLM.Storage.SlotLogServer.notify_next_flush(slot)
-
-      receive do
-        :flushed -> :ok
-      after
-        5_000 ->
-          Logger.error("Timeout flushing slot #{slot}")
-          :error
+      case FleetLM.Storage.SlotLogServer.flush_now(slot) do
+        :ok -> :ok
+        :already_clean -> :ok
       end
     catch
-      :exit, {:noproc, _} -> :ok
+      :exit, {:noproc, _} ->
+        :ok
+
+      :exit, {:timeout, _} ->
+        Logger.error("Timeout flushing slot #{slot}")
+        :error
     end
   end
 

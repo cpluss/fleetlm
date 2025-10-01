@@ -9,14 +9,13 @@ defmodule FleetlmWeb.AgentController do
   List all agents.
   Optional query param: ?status=enabled
   """
-  def index(conn, params) do
-    filters =
-      case Map.get(params, "status") do
-        status when status in ["enabled", "disabled"] -> [status: status]
-        _ -> []
-      end
+  def index(conn, %{"status" => status}) when status in ["enabled", "disabled"] do
+    agents = Agent.list(status: status) |> Enum.map(&format_agent/1)
+    json(conn, %{agents: agents})
+  end
 
-    agents = Agent.list(filters) |> Enum.map(&format_agent/1)
+  def index(conn, _params) do
+    agents = Agent.list() |> Enum.map(&format_agent/1)
     json(conn, %{agents: agents})
   end
 

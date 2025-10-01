@@ -23,7 +23,7 @@ defmodule FleetLM.Storage.API do
   @doc """
   Create a session. Hits database immediately - not for hot-path.
   """
-  @spec create_session(String.t(), String.t(), map()) :: {:ok, Session.t()} | {:error, any()}
+  @spec create_session(String.t(), String.t(), term()) :: {:ok, Session.t()} | {:error, any()}
   def create_session(user_id, agent_id, metadata) do
     session_id = Ulid.generate()
     shard_key = storage_slot_for_session(session_id)
@@ -99,8 +99,8 @@ defmodule FleetLM.Storage.API do
           String.t(),
           String.t(),
           String.t(),
-          map(),
-          map()
+          term(),
+          term()
         ) ::
           :ok | {:error, term()}
   def append_message(session_id, seq, sender_id, recipient_id, kind, content, metadata \\ %{}) do
@@ -137,19 +137,14 @@ defmodule FleetLM.Storage.API do
     # Get the tail of the messages from the slot log, assuming
     # they may be there.
     tail =
-      try do
-        case SlotLogServer.read(slot, session_id, after_seq) do
-          {:ok, entries} ->
-            entries
-            |> Enum.filter(&(&1.seq > after_seq))
-            |> Enum.sort_by(& &1.seq)
-            |> Enum.map(&Entry.to_message/1)
+      case SlotLogServer.read(slot, session_id, after_seq) do
+        {:ok, entries} ->
+          entries
+          |> Enum.filter(&(&1.seq > after_seq))
+          |> Enum.sort_by(& &1.seq)
+          |> Enum.map(&Entry.to_message/1)
 
-          {:error, _} ->
-            []
-        end
-      catch
-        :exit, {:noproc, _} ->
+        {:error, _} ->
           []
       end
 

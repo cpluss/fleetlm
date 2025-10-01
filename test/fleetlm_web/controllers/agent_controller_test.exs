@@ -197,9 +197,15 @@ defmodule FleetlmWeb.AgentControllerTest do
   describe "REST resource routes" do
     test "all standard routes are available", %{conn: conn} do
       # Create
-      conn = post(conn, ~p"/api/agents", %{
-        "agent" => %{"id" => "rest-test", "name" => "REST Test", "origin_url" => "http://localhost:3000"}
-      })
+      conn =
+        post(conn, ~p"/api/agents", %{
+          "agent" => %{
+            "id" => "rest-test",
+            "name" => "REST Test",
+            "origin_url" => "http://localhost:3000"
+          }
+        })
+
       assert conn.status == 201
 
       # List
@@ -211,9 +217,11 @@ defmodule FleetlmWeb.AgentControllerTest do
       assert conn.status == 200
 
       # Update
-      conn = put(conn, ~p"/api/agents/rest-test", %{
-        "agent" => %{"name" => "Updated"}
-      })
+      conn =
+        put(conn, ~p"/api/agents/rest-test", %{
+          "agent" => %{"name" => "Updated"}
+        })
+
       assert conn.status == 200
 
       # Delete
