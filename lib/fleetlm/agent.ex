@@ -1,115 +1,162 @@
 defmodule Fleetlm.Agent do
   @moduledoc """
-  Context for managing agent participants and webhook endpoints.
+  Agent context for managing external AI agent endpoints.
+
+  Agents are stateless HTTP endpoints that receive message history
+  and return responses synchronously.
   """
 
+  use Ecto.Schema
+  import Ecto.Changeset
   import Ecto.Query
 
   alias Fleetlm.Repo
-  alias Fleetlm.Conversation.Participants
-  alias Fleetlm.Conversation.Participant
-  alias Fleetlm.Agent.{AgentEndpoint, DeliveryLog}
-  alias Ulid
+  alias Fleetlm.Agent.DeliveryLog
 
-  @doc """
-  Register or update an agent participant and its endpoint in a single call.
-  """
-  @spec upsert_agent(map()) ::
-          {:ok, %{participant: Participant.t(), endpoint: AgentEndpoint.t() | nil}}
-          | {:error, Ecto.Changeset.t()}
-  def upsert_agent(attrs) do
-    Repo.transaction(fn ->
-      {:ok, participant} =
-        Participants.upsert_participant(%{
-          id: attrs[:id] || attrs["id"],
-          kind: "agent",
-          display_name:
-            attrs[:display_name] || attrs["display_name"] || attrs[:id] || attrs["id"],
-          metadata: attrs[:metadata] || attrs["metadata"] || %{}
-        })
+  @primary_key {:id, :string, autogenerate: false}
+  @foreign_key_type :string
 
-      endpoint_attrs = attrs[:endpoint] || attrs["endpoint"]
+  @type t :: %__MODULE__{}
 
-      endpoint =
-        case endpoint_attrs do
-          nil -> nil
-          map when is_map(map) -> upsert_endpoint!(participant.id, map)
-        end
+  schema "agents" do
+    field :name, :string
+    field :origin_url, :string
+    field :webhook_path, :string, default: "/webhook"
 
-      %{participant: participant, endpoint: endpoint}
-    end)
+    # Message history configuration
+    field :message_history_mode, :string, default: "tail"
+    field :message_history_limit, :integer, default: 50
+
+    # HTTP configuration
+    field :timeout_ms, :integer, default: 30_000
+    field :headers, :map, default: %{}
+    field :status, :string, default: "enabled"
+
+    timestamps()
   end
 
   @doc """
-  Upsert an agent endpoint.
+  Changeset for creating/updating agents.
   """
-  @spec upsert_endpoint!(String.t(), map()) :: AgentEndpoint.t()
-  def upsert_endpoint!(agent_id, attrs) do
-    attrs =
-      attrs
-      |> Map.put(:agent_id, agent_id)
-      |> Map.put_new(:id, Ulid.generate())
+  def changeset(agent, attrs) do
+    agent
+    |> cast(attrs, [
+      :id,
+      :name,
+      :origin_url,
+      :webhook_path,
+      :message_history_mode,
+      :message_history_limit,
+      :timeout_ms,
+      :headers,
+      :status
+    ])
+    |> validate_required([:id, :name, :origin_url, :webhook_path])
+    |> validate_inclusion(:message_history_mode, ["tail", "entire", "last"])
+    |> validate_inclusion(:status, ["enabled", "disabled"])
+    |> validate_number(:timeout_ms, greater_than: 0)
+    |> validate_number(:message_history_limit, greater_than: 0)
+    |> unique_constraint(:id, name: :agents_pkey)
+  end
 
-    endpoint =
-      Repo.get_by(AgentEndpoint, agent_id: agent_id)
-      |> case do
-        nil -> %AgentEndpoint{}
-        endpoint -> endpoint
-      end
-      |> AgentEndpoint.changeset(attrs)
-      |> Repo.insert_or_update!()
+  ## Public API
 
-    # Update the endpoint cache with the new status
-    if Code.ensure_loaded?(Fleetlm.Agent.EndpointCache) do
-      Fleetlm.Agent.EndpointCache.warm_cache(agent_id, endpoint.status)
+  @doc """
+  Create a new agent.
+  """
+  @spec create(map()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
+  def create(attrs) do
+    %__MODULE__{}
+    |> changeset(attrs)
+    |> Repo.insert()
+  end
+
+  @doc """
+  Get an agent by ID.
+  """
+  @spec get(String.t()) :: {:ok, t()} | {:error, :not_found}
+  def get(id) when is_binary(id) do
+    case Repo.get(__MODULE__, id) do
+      nil -> {:error, :not_found}
+      agent -> {:ok, agent}
     end
-
-    endpoint
   end
 
   @doc """
-  Fetch endpoint by agent id.
+  Get agent without error tuple (raises if not found).
   """
-  @spec get_endpoint(String.t()) :: AgentEndpoint.t() | nil
-  def get_endpoint(agent_id) when is_binary(agent_id) do
-    Repo.get_by(AgentEndpoint, agent_id: agent_id)
+  @spec get!(String.t()) :: t()
+  def get!(id) when is_binary(id) do
+    Repo.get!(__MODULE__, id)
   end
 
   @doc """
-  Get only the status of an agent endpoint (optimized for dispatcher).
-  Returns the status string or nil if endpoint doesn't exist.
+  List all agents with optional filters.
+
+  ## Options
+  - `:status` - Filter by status ("enabled" | "disabled")
   """
-  @spec get_endpoint_status(String.t()) :: String.t() | nil
-  def get_endpoint_status(agent_id) when is_binary(agent_id) do
-    AgentEndpoint
-    |> select([e], e.status)
-    |> where([e], e.agent_id == ^agent_id)
-    |> Repo.one()
+  @spec list(keyword()) :: [t()]
+  def list(opts \\ []) do
+    query = from(a in __MODULE__, order_by: [asc: a.name])
+
+    query =
+      case Keyword.get(opts, :status) do
+        nil -> query
+        status -> where(query, [a], a.status == ^status)
+      end
+
+    Repo.all(query)
   end
 
   @doc """
-  Batch get endpoint statuses for multiple agents (optimized for concurrent operations).
-  Returns a map of agent_id -> status.
+  Update an agent.
   """
-  @spec get_endpoint_statuses([String.t()]) :: %{String.t() => String.t() | nil}
-  def get_endpoint_statuses(agent_ids) when is_list(agent_ids) do
-    results =
-      AgentEndpoint
-      |> select([e], {e.agent_id, e.status})
-      |> where([e], e.agent_id in ^agent_ids)
-      |> Repo.all()
+  @spec update(String.t(), map()) :: {:ok, t()} | {:error, Ecto.Changeset.t() | :not_found}
+  def update(id, attrs) do
+    case get(id) do
+      {:ok, agent} ->
+        agent
+        |> changeset(attrs)
+        |> Repo.update()
 
-    # Convert to map, with nil for missing agents
-    agent_ids
-    |> Enum.map(fn agent_id ->
-      status = Enum.find_value(results, fn {id, status} -> if id == agent_id, do: status end)
-      {agent_id, status}
-    end)
-    |> Map.new()
+      {:error, :not_found} = error ->
+        error
+    end
   end
 
   @doc """
-  Persist a delivery log entry for webhook attempts.
+  Delete (disable) an agent.
+  Soft delete by setting status to "disabled".
+  """
+  @spec delete(String.t()) :: {:ok, t()} | {:error, :not_found}
+  def delete(id) do
+    case get(id) do
+      {:ok, agent} ->
+        agent
+        |> changeset(%{status: "disabled"})
+        |> Repo.update()
+
+      {:error, :not_found} = error ->
+        error
+    end
+  end
+
+  @doc """
+  Check if an agent is enabled.
+  """
+  @spec enabled?(String.t()) :: boolean()
+  def enabled?(id) when is_binary(id) do
+    case get(id) do
+      {:ok, %{status: "enabled"}} -> true
+      _ -> false
+    end
+  end
+
+  ## Delivery Logs
+
+  @doc """
+  Log a webhook delivery attempt.
   """
   @spec log_delivery(map()) :: {:ok, DeliveryLog.t()} | {:error, Ecto.Changeset.t()}
   def log_delivery(attrs) do
@@ -119,7 +166,7 @@ defmodule Fleetlm.Agent do
   end
 
   @doc """
-  List delivery logs for an agent (optional limit).
+  List delivery logs for an agent.
   """
   @spec list_delivery_logs(String.t(), keyword()) :: [DeliveryLog.t()]
   def list_delivery_logs(agent_id, opts \\ []) do
@@ -130,13 +177,5 @@ defmodule Fleetlm.Agent do
     |> order_by([d], desc: d.inserted_at)
     |> limit(^limit)
     |> Repo.all()
-  end
-
-  @doc """
-  List agents with optional status filtering.
-  """
-  @spec list_agents(keyword()) :: [Participant.t()]
-  def list_agents(opts \\ []) do
-    Participants.list_participants(Keyword.put(opts, :kind, "agent"))
   end
 end

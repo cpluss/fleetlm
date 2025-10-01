@@ -183,6 +183,34 @@ defmodule FleetLM.Storage.API do
   end
 
   @doc """
+  Get a single session by ID.
+  """
+  @spec get_session(String.t()) :: {:ok, Session.t()} | {:error, :not_found}
+  def get_session(session_id) do
+    case Repo.get(Session, session_id) do
+      nil -> {:error, :not_found}
+      session -> {:ok, session}
+    end
+  end
+
+  @doc """
+  Get ALL messages for a session (expensive!).
+
+  This fetches every message from the database. Use sparingly.
+  Prefer get_messages/3 with a limit for most use cases.
+  """
+  @spec get_all_messages(String.t()) :: {:ok, [Message.t()]}
+  def get_all_messages(session_id) do
+    messages =
+      Message
+      |> where([m], m.session_id == ^session_id)
+      |> order_by([m], asc: m.seq)
+      |> Repo.all()
+
+    {:ok, messages}
+  end
+
+  @doc """
   Update read cursor for a participant on a session.
 
   Hits database - not for hot-path.

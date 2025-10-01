@@ -60,6 +60,7 @@ defmodule Fleetlm.MixProject do
        depth: 1},
       {:swoosh, "~> 1.16"},
       {:req, "~> 0.5"},
+      {:gun, "~> 2.1"},
       {:cachex, "~> 3.6"},
       {:prom_ex, "~> 1.11"},
       {:libcluster, "~> 3.3"},

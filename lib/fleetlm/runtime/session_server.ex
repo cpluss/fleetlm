@@ -208,8 +208,10 @@ defmodule Fleetlm.Runtime.SessionServer do
           {:message_notification, notification}
         )
 
-        # Trigger agent dispatcher if applicable
-        maybe_dispatch_agent(state, message)
+        # Dispatch to agent if sender is user and agent exists
+        if sender_id == state.user_id and state.agent_id do
+          dispatch_agent(state)
+        end
 
         # Reset inactivity timer
         new_state = reset_inactivity_timer(state)
@@ -406,12 +408,9 @@ defmodule Fleetlm.Runtime.SessionServer do
     delete_n_entries(next, table, n - 1)
   end
 
-  defp maybe_dispatch_agent(state, _message) do
-    # In the new model, we don't track agent_id in session
-    # Agent dispatching will be handled differently or removed
-    # For now, just log
-    Logger.debug("Agent dispatch not implemented in V2 for session #{state.session_id}")
-    :ok
+  # Dispatch webhook to agent asynchronously
+  defp dispatch_agent(state) do
+    Fleetlm.Agent.Dispatcher.dispatch_async(state.session_id, state.agent_id)
   end
 
   defp schedule_inactivity_check do

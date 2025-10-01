@@ -10,6 +10,7 @@ defmodule Fleetlm.Runtime.DrainCoordinatorTest do
     # DrainCoordinator is already running as part of Runtime.Supervisor
     # Just verify it's alive
     coordinator_pid = Process.whereis(DrainCoordinator)
+
     assert is_pid(coordinator_pid) and Process.alive?(coordinator_pid),
            "DrainCoordinator should be running"
 

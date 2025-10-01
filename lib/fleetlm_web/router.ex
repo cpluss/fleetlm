@@ -23,6 +23,10 @@ defmodule FleetlmWeb.Router do
   scope "/api", FleetlmWeb do
     pipe_through :api
 
+    # Agent CRUD
+    resources "/agents", AgentController, except: [:new, :edit]
+
+    # Session operations
     post "/sessions", SessionController, :create
     get "/sessions/:session_id/messages", SessionController, :messages
     post "/sessions/:session_id/messages", SessionController, :append_message

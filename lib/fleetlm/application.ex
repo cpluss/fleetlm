@@ -18,11 +18,8 @@ defmodule Fleetlm.Application do
         pubsub_spec(),
         dns_cluster_spec(),
         Fleetlm.Runtime.Supervisor,
-        {Task.Supervisor, name: Fleetlm.Agent.DispatcherSupervisor},
-        # Agent endpoint status cache for hot path optimization
-        Fleetlm.Agent.EndpointCache,
-        # Pooled webhook delivery system
-        webhook_manager_spec()
+        # Agent webhook delivery pool
+        Fleetlm.Agent.Supervisor
       ]
       |> Enum.concat(cluster_children(topologies))
       |> Enum.reject(&is_nil/1)
@@ -43,17 +40,6 @@ defmodule Fleetlm.Application do
   def config_change(changed, _new, removed) do
     FleetlmWeb.Endpoint.config_change(changed, removed)
     :ok
-  end
-
-  defp webhook_manager_spec do
-    # Only start webhook manager if poolboy is available
-    if Code.ensure_loaded?(:poolboy) do
-      pool_size = Application.get_env(:fleetlm, :webhook_pool_size, 10)
-      {Fleetlm.Agent.WebhookManager, pool_size: pool_size}
-    else
-      # Return a no-op spec if poolboy is not available
-      Supervisor.child_spec({Task, fn -> :ok end}, id: :webhook_manager_noop, restart: :temporary)
-    end
   end
 
   defp pubsub_spec do
