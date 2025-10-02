@@ -159,8 +159,18 @@ defmodule FleetLM.Storage.API do
     case length(tail) >= limit do
       true ->
         result = Enum.take(tail, limit)
-        duration_us = System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
-        Fleetlm.Observability.Telemetry.emit_storage_read(session_id, slot, :disk_log, length(result), duration_us)
+
+        duration_us =
+          System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+
+        Fleetlm.Observability.Telemetry.emit_storage_read(
+          session_id,
+          slot,
+          :disk_log,
+          length(result),
+          duration_us
+        )
+
         {:ok, result}
 
       false ->
@@ -182,8 +192,16 @@ defmodule FleetLM.Storage.API do
           |> Enum.sort_by(& &1.seq)
           |> Enum.take(limit)
 
-        duration_us = System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
-        Fleetlm.Observability.Telemetry.emit_storage_read(session_id, slot, :database, length(messages), duration_us)
+        duration_us =
+          System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+
+        Fleetlm.Observability.Telemetry.emit_storage_read(
+          session_id,
+          slot,
+          :database,
+          length(messages),
+          duration_us
+        )
 
         {:ok, messages}
     end

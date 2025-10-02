@@ -3,7 +3,7 @@ defmodule FleetLM.Storage.SlotLogServerTest do
 
   import Ecto.Query
 
-  setup _context do
+  setup %{slot_log_dir: slot_log_dir} do
     # Use a high, unique slot number to avoid production range (0-63)
     slot = 100 + System.unique_integer([:positive])
 
@@ -14,7 +14,7 @@ defmodule FleetLM.Storage.SlotLogServerTest do
       :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
     end)
 
-    %{slot: slot, server_pid: pid}
+    %{slot: slot, server_pid: pid, slot_log_dir: slot_log_dir}
   end
 
   describe "append/2" do
@@ -89,7 +89,7 @@ defmodule FleetLM.Storage.SlotLogServerTest do
       assert expected == actual
     end
 
-    test "truncates disk log after successful flush", %{slot: slot} do
+    test "retains entries on disk after successful flush", %{slot: slot} do
       session = create_test_session()
       entry = build_entry(slot, session.id, 1)
       SlotLogServer.append(slot, entry)
@@ -107,9 +107,116 @@ defmodule FleetLM.Storage.SlotLogServerTest do
         1000 -> raise "Timeout waiting for flush"
       end
 
-      # Verify disk log was truncated
+      # Verify disk log still contains the flushed entry
       {:ok, entries_after} = DiskLog.read_all(log)
-      assert entries_after == []
+      assert Enum.map(entries_after, & &1.seq) == [1]
+    end
+
+    test "compacts disk log when retention limit is exceeded", %{slot: slot} do
+      previous_max_bytes = Application.get_env(:fleetlm, :slot_log_max_bytes)
+      previous_target = Application.get_env(:fleetlm, :slot_log_compact_target)
+
+      # Restart the slot with a small retention window to exercise compaction.
+      :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
+
+      session = create_test_session()
+
+      entry_template =
+        build_entry(slot, session.id, 1, content: %{"text" => String.duplicate("x", 64)})
+
+      entry_size = :erlang.external_size(entry_template)
+      max_bytes = entry_size * 2
+
+      Application.put_env(:fleetlm, :slot_log_max_bytes, max_bytes)
+      Application.put_env(:fleetlm, :slot_log_compact_target, 1.0)
+
+      on_exit(fn ->
+        maybe_restore_env(:slot_log_max_bytes, previous_max_bytes)
+        maybe_restore_env(:slot_log_compact_target, previous_target)
+      end)
+
+      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+
+      entry1 = entry_template
+      entry2 = build_entry(slot, session.id, 2, content: %{"text" => String.duplicate("y", 64)})
+      entry3 = build_entry(slot, session.id, 3, content: %{"text" => String.duplicate("z", 64)})
+
+      :ok = SlotLogServer.append(slot, entry1)
+      :ok = SlotLogServer.append(slot, entry2)
+      :ok = SlotLogServer.append(slot, entry3)
+
+      assert :ok = SlotLogServer.flush_now(slot)
+
+      {:ok, log} = SlotLogServer.get_log_handle(slot)
+      {:ok, entries_after} = DiskLog.read_all(log)
+
+      assert Enum.map(entries_after, & &1.seq) == [2, 3]
+
+      # Appending a new entry should keep the two most recent flushed messages on disk
+      # once the new entry has been persisted.
+      entry4 = build_entry(slot, session.id, 4, content: %{"text" => String.duplicate("w", 64)})
+      :ok = SlotLogServer.append(slot, entry4)
+      assert :ok = SlotLogServer.flush_now(slot)
+
+      {:ok, entries_final} = DiskLog.read_all(log)
+      assert Enum.map(entries_final, & &1.seq) == [3, 4]
+    end
+
+    test "persists cursor to disk and restores after restart", %{
+      slot: slot,
+      slot_log_dir: slot_log_dir
+    } do
+      session = create_test_session()
+      entry = build_entry(slot, session.id, 1)
+
+      :ok = SlotLogServer.append(slot, entry)
+      assert :ok = SlotLogServer.flush_now(slot)
+
+      cursor_path = Path.join(slot_log_dir, "slot_#{slot}.cursor")
+      assert File.exists?(cursor_path)
+      assert {:ok, 1} = DiskLog.load_cursor(slot)
+
+      :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
+      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+
+      wait_for_slot(slot)
+      assert :already_clean = SlotLogServer.flush_now(slot)
+
+      {:ok, log} = SlotLogServer.get_log_handle(slot)
+      {:ok, entries} = DiskLog.read_all(log)
+      assert Enum.map(entries, & &1.seq) == [1]
+      assert {:ok, 1} = DiskLog.load_cursor(slot)
+    end
+
+    test "restores dirty cursor after crash", %{slot: slot, server_pid: server_pid} do
+      session = create_test_session()
+
+      entry1 = build_entry(slot, session.id, 1)
+      entry2 = build_entry(slot, session.id, 2)
+
+      :ok = SlotLogServer.append(slot, entry1)
+      assert :ok = SlotLogServer.flush_now(slot)
+      assert {:ok, 1} = DiskLog.load_cursor(slot)
+
+      :ok = SlotLogServer.append(slot, entry2)
+
+      ref = Process.monitor(server_pid)
+      Process.exit(server_pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^server_pid, :killed}, 1_000
+
+      {:ok, _new_pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      wait_for_slot(slot, exclude: server_pid)
+
+      assert :ok = SlotLogServer.flush_now(slot)
+
+      messages =
+        Message
+        |> where([m], m.session_id == ^session.id)
+        |> order_by([m], asc: m.seq)
+        |> Repo.all()
+
+      assert Enum.map(messages, & &1.seq) == [1, 2]
+      assert {:ok, 2} = DiskLog.load_cursor(slot)
     end
 
     test "handles multiple sessions in one flush", %{slot: slot} do
@@ -165,4 +272,23 @@ defmodule FleetLM.Storage.SlotLogServerTest do
       assert expected == actual
     end
   end
+
+  defp wait_for_slot(slot), do: wait_for_slot(slot, [])
+
+  defp wait_for_slot(slot, opts) do
+    exclude = Keyword.get(opts, :exclude)
+
+    eventually(fn ->
+      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      assert [{pid, _}] = Registry.lookup(FleetLM.Storage.Registry, slot)
+      assert Process.alive?(pid)
+
+      if exclude do
+        refute pid == exclude
+      end
+    end)
+  end
+
+  defp maybe_restore_env(key, nil), do: Application.delete_env(:fleetlm, key)
+  defp maybe_restore_env(key, value), do: Application.put_env(:fleetlm, key, value)
 end
