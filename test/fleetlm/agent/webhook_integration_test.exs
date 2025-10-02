@@ -239,7 +239,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
 
         send(plug_pid, {
           :agent_response,
-          %{"kind" => "text", "content" => ""}
+          %{"kind" => "text", "content" => %{"text" => ""}}
         })
 
         assert_message_count(session.id, 2)

@@ -11,7 +11,7 @@ config :fleetlm, Fleetlm.Repo,
   hostname: "localhost",
   database: "fleetlm_test#{System.get_env("MIX_TEST_PARTITION")}",
   pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: System.schedulers_online() * 3,
+  pool_size: 10,
   timeout: 60000,
   ownership_timeout: 120_000
 

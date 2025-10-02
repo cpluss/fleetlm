@@ -271,7 +271,13 @@ defmodule Fleetlm.Observability.Telemetry do
   @doc """
   Emit session drain telemetry - CRITICAL for graceful shutdown tracking.
   """
-  @spec emit_session_drain(atom(), non_neg_integer(), non_neg_integer(), non_neg_integer(), integer()) ::
+  @spec emit_session_drain(
+          atom(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          integer()
+        ) ::
           :ok
   def emit_session_drain(reason, attempted, succeeded, failed, duration_ms)
       when reason in [:rebalance, :shutdown, :sigterm] and is_integer(attempted) and
