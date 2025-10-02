@@ -57,31 +57,46 @@ if config_env() == :prod do
   host = System.get_env("PHX_HOST") || "example.com"
   port = String.to_integer(System.get_env("PORT") || "4000")
 
+  # Cluster configuration
+  # For production: DNS_CLUSTER_QUERY=fleetlm-headless.default.svc.cluster.local
+  # For local dev: CLUSTER_NODES=node1@localhost,node2@localhost
   dns_query = System.get_env("DNS_CLUSTER_QUERY")
+  cluster_nodes = System.get_env("CLUSTER_NODES")
 
   dns_poll_interval =
     System.get_env("DNS_POLL_INTERVAL_MS", "5000")
     |> String.to_integer()
 
   topologies =
-    case dns_query do
-      nil ->
-        []
-
-      "" ->
-        []
-
-      query ->
+    cond do
+      dns_query && dns_query != "" ->
         [
           fleetlm_dns: [
             strategy: Cluster.Strategy.DNSPoll,
             config: [
               polling_interval: dns_poll_interval,
-              query: query,
+              query: dns_query,
               node_basename: System.get_env("DNS_CLUSTER_NODE_BASENAME", "fleetlm")
             ]
           ]
         ]
+
+      cluster_nodes && cluster_nodes != "" ->
+        hosts =
+          cluster_nodes
+          |> String.split(",")
+          |> Enum.map(&String.trim/1)
+          |> Enum.map(&String.to_atom/1)
+
+        [
+          local: [
+            strategy: Cluster.Strategy.Epmd,
+            config: [hosts: hosts]
+          ]
+        ]
+
+      true ->
+        []
     end
 
   config :libcluster, topologies: topologies
@@ -89,10 +104,7 @@ if config_env() == :prod do
   config :fleetlm, FleetlmWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
-      # Enable IPv6 and bind on all interfaces.
-      # Set it to  {0, 0, 0, 0, 0, 0, 0, 1} for local network only access.
-      # See the documentation on https://hexdocs.pm/bandit/Bandit.html#t:options/0
-      # for details about using IPv6 vs IPv4 and loopback vs public addresses.
+      # Bind on all interfaces (IPv6 :: supports both IPv4 and IPv6 via dual-stack)
       ip: {0, 0, 0, 0, 0, 0, 0, 0},
       port: port
     ],
