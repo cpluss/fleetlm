@@ -15,6 +15,8 @@ defmodule FleetLM.Storage.DiskLog do
 
   alias FleetLM.Storage.Entry
 
+  @cursor_version 1
+
   @type handle :: :disk_log.log()
 
   @doc """
@@ -23,16 +25,9 @@ defmodule FleetLM.Storage.DiskLog do
   """
   @spec open(non_neg_integer()) :: {:ok, handle()} | {:error, term()}
   def open(slot) when is_integer(slot) do
-    base_dir =
-      Application.get_env(
-        :fleetlm,
-        :slot_log_dir,
-        Application.app_dir(:fleetlm, "priv/storage/slot_logs")
-      )
+    :ok = ensure_base_dir()
 
-    :ok = File.mkdir_p(base_dir)
-
-    path = Path.join(base_dir, "slot_#{slot}.log")
+    path = log_path(slot)
     name = {:fleetlm_slot_log, slot}
 
     case :disk_log.open([
@@ -128,7 +123,7 @@ defmodule FleetLM.Storage.DiskLog do
           {:ok, []}
 
         {continuation, terms} when is_list(terms) ->
-          collect_chunks(handle, continuation, terms)
+          collect_chunks(handle, continuation, Enum.reverse(terms))
 
         {:error, _} = error ->
           error
@@ -144,6 +139,66 @@ defmodule FleetLM.Storage.DiskLog do
   @spec truncate(handle()) :: :ok | {:error, term()}
   def truncate(handle) do
     :disk_log.truncate(handle)
+  end
+
+  @doc """
+  Rewrite the log with the provided entries.
+
+  This helper is used by retention logic that wants to drop the oldest items
+  while keeping the newest tail in order. The operation is atomic with respect
+  to the owning process because the GenServer serialises access to the handle.
+  """
+  @spec rewrite(handle(), [Entry.t()]) :: :ok | {:error, term()}
+  def rewrite(handle, entries) when is_list(entries) do
+    with :ok <- :disk_log.truncate(handle) do
+      Enum.reduce_while(entries, :ok, fn entry, :ok ->
+        case :disk_log.log(handle, entry) do
+          :ok -> {:cont, :ok}
+          {:error, _} = error -> {:halt, error}
+        end
+      end)
+    end
+  end
+
+  @doc """
+  Persist the flushed cursor for the given slot to disk.
+  """
+  @spec persist_cursor(non_neg_integer(), non_neg_integer()) :: :ok | {:error, term()}
+  def persist_cursor(slot, flushed_count) when is_integer(flushed_count) and flushed_count >= 0 do
+    :ok = ensure_base_dir()
+
+    payload =
+      :erlang.term_to_binary(%{
+        version: @cursor_version,
+        flushed_count: flushed_count
+      })
+
+    path = cursor_path(slot)
+    temp_path = path <> ".tmp"
+
+    with :ok <- File.write(temp_path, payload, [:binary]),
+         :ok <- File.rename(temp_path, path) do
+      :ok
+    end
+  end
+
+  @doc """
+  Load the flushed cursor from disk. Missing cursors default to zero.
+  """
+  @spec load_cursor(non_neg_integer()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def load_cursor(slot) do
+    path = cursor_path(slot)
+
+    case File.read(path) do
+      {:ok, binary} ->
+        decode_cursor(binary)
+
+      {:error, :enoent} ->
+        {:ok, 0}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   @doc """
@@ -165,13 +220,44 @@ defmodule FleetLM.Storage.DiskLog do
   defp collect_chunks(handle, continuation, acc) do
     case :disk_log.chunk(handle, continuation) do
       :eof ->
-        {:ok, acc}
+        {:ok, Enum.reverse(acc)}
 
       {new_continuation, terms} when is_list(terms) ->
-        collect_chunks(handle, new_continuation, acc ++ terms)
+        reduced = Enum.reduce(terms, acc, fn term, acc -> [term | acc] end)
+        collect_chunks(handle, new_continuation, reduced)
 
       {:error, _} = error ->
         error
     end
+  end
+
+  defp decode_cursor(binary) do
+    case :erlang.binary_to_term(binary, [:safe]) do
+      %{version: @cursor_version, flushed_count: count} when is_integer(count) and count >= 0 ->
+        {:ok, count}
+
+      count when is_integer(count) and count >= 0 ->
+        {:ok, count}
+
+      other ->
+        {:error, {:invalid_cursor, other}}
+    end
+  rescue
+    ArgumentError -> {:error, :invalid_cursor_format}
+  end
+
+  defp log_path(slot), do: Path.join(base_dir(), "slot_#{slot}.log")
+  defp cursor_path(slot), do: Path.join(base_dir(), "slot_#{slot}.cursor")
+
+  defp base_dir do
+    Application.get_env(
+      :fleetlm,
+      :slot_log_dir,
+      Application.app_dir(:fleetlm, "priv/storage/slot_logs")
+    )
+  end
+
+  defp ensure_base_dir do
+    File.mkdir_p(base_dir())
   end
 end

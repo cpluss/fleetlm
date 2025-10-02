@@ -27,6 +27,9 @@ defmodule FleetLM.Storage.SlotLogServer do
   @default_flush_interval_ms 300
   @flush_timeout Application.compile_env(:fleetlm, :slot_flush_timeout, 10_000)
 
+  @default_retention_bytes 128 * 1024 * 1024
+  @default_retention_target 0.75
+
   @type state :: %{
           slot: non_neg_integer(),
           log: DiskLog.handle(),
@@ -34,7 +37,10 @@ defmodule FleetLM.Storage.SlotLogServer do
           notify_next_flush: [pid()],
           task_supervisor: Supervisor.name(),
           pending_flush: Task.t() | nil,
-          registry: atom() | :global
+          registry: atom() | :global,
+          flushed_count: non_neg_integer(),
+          retention_bytes: pos_integer() | :infinity,
+          retention_target: float()
         }
 
   ## Public API
@@ -96,6 +102,43 @@ defmodule FleetLM.Storage.SlotLogServer do
   @impl true
   def init({slot, task_supervisor, registry}) do
     {:ok, log} = DiskLog.open(slot)
+    {retention_bytes, retention_target} = retention_config()
+
+    {dirty?, flushed_count} =
+      case DiskLog.read_all(log) do
+        {:ok, entries} ->
+          entry_count = length(entries)
+
+          case DiskLog.load_cursor(slot) do
+            {:ok, cursor} ->
+              clamped = min(entry_count, cursor)
+
+              if cursor > entry_count do
+                Logger.warning(
+                  "Slot #{slot} cursor #{cursor} exceeds entry count #{entry_count}; clamping to #{clamped}"
+                )
+              end
+
+              {entry_count > clamped, clamped}
+
+            {:error, reason} ->
+              Logger.warning(
+                "Slot #{slot} failed to load cursor: #{inspect(reason)}. " <>
+                  "Defaulting flushed count to 0."
+              )
+
+              {entry_count > 0, 0}
+          end
+
+        {:error, reason} ->
+          Logger.warning(
+            "Slot #{slot} failed to read existing log on init: #{inspect(reason)}. " <>
+              "Marking dirty to trigger recovery flush."
+          )
+
+          {true, 0}
+      end
+
     schedule_flush()
 
     {:ok,
@@ -104,9 +147,12 @@ defmodule FleetLM.Storage.SlotLogServer do
        log: log,
        task_supervisor: task_supervisor,
        registry: registry,
-       dirty: false,
+       dirty: dirty?,
        notify_next_flush: [],
-       pending_flush: nil
+       pending_flush: nil,
+       flushed_count: flushed_count,
+       retention_bytes: retention_bytes,
+       retention_target: retention_target
      }}
   end
 
@@ -178,7 +224,7 @@ defmodule FleetLM.Storage.SlotLogServer do
   end
 
   def handle_call(:flush_now, _from, %{dirty: true, pending_flush: nil} = state) do
-    result = flush_to_database(state.slot, state.log)
+    result = flush_to_database(state.slot, state.log, state.flushed_count)
     {reply, next_state} = handle_flush_completion(result, %{state | dirty: true})
     {:reply, reply, next_state}
   end
@@ -227,9 +273,18 @@ defmodule FleetLM.Storage.SlotLogServer do
       end
 
     if state.dirty do
-      case flush_to_database(state.slot, state.log) do
-        {:ok, _info} ->
+      case flush_to_database(state.slot, state.log, state.flushed_count) do
+        {:ok, info} ->
           Enum.each(state.notify_next_flush, &send(&1, :flushed))
+
+          updated =
+            state
+            |> Map.put(:notify_next_flush, [])
+            |> Map.put(:dirty, false)
+            |> Map.put(:flushed_count, info.flushed_count)
+            |> maybe_compact_log()
+
+          _ = persist_cursor_state(updated)
 
         {:error, reason} ->
           Logger.error("Failed to flush slot #{state.slot} during terminate: #{inspect(reason)}")
@@ -275,7 +330,7 @@ defmodule FleetLM.Storage.SlotLogServer do
   defp start_async_flush(state) do
     task =
       Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-        flush_to_database(state.slot, state.log)
+        flush_to_database(state.slot, state.log, state.flushed_count)
       end)
 
     {:ok, task}
@@ -293,10 +348,20 @@ defmodule FleetLM.Storage.SlotLogServer do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  defp handle_flush_completion({:ok, _info}, state) do
+  defp handle_flush_completion({:ok, info}, state) do
     Enum.each(state.notify_next_flush, &send(&1, :flushed))
 
-    new_state = %{state | notify_next_flush: [], dirty: false}
+    state_after_flush =
+      state
+      |> Map.put(:notify_next_flush, [])
+      |> Map.put(:dirty, false)
+      |> Map.put(:flushed_count, info.flushed_count)
+
+    new_state =
+      state_after_flush
+      |> maybe_compact_log()
+      |> persist_cursor_state()
+
     {:ok, new_state}
   end
 
@@ -305,27 +370,35 @@ defmodule FleetLM.Storage.SlotLogServer do
     {{:error, reason}, %{state | dirty: true}}
   end
 
-  defp flush_to_database(slot, log) do
+  defp flush_to_database(slot, log, flushed_count) do
     start = System.monotonic_time()
 
     try do
       result =
         with :ok <- DiskLog.sync(log),
-             {:ok, entries} <- DiskLog.read_all(log) do
-          persist_entries(slot, log, entries)
+             {:ok, entries} <- DiskLog.read_all(log),
+             {:ok, persist_info} <- persist_new_entries(slot, entries, flushed_count) do
+          {:ok,
+           %{
+             persisted_count: persist_info.count,
+             total_entries: length(entries),
+             flushed_count: persist_info.flushed_count
+           }}
         end
 
       duration_us =
         System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
 
       case result do
-        {:ok, {:persisted, count}} ->
-          Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :ok, count, duration_us)
-          result
+        {:ok, info} ->
+          Fleetlm.Observability.Telemetry.emit_storage_flush(
+            slot,
+            :ok,
+            info.persisted_count,
+            duration_us
+          )
 
-        {:ok, :noop} ->
-          Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :ok, 0, duration_us)
-          result
+          {:ok, info}
 
         {:error, reason} = error ->
           Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :error, 0, duration_us)
@@ -351,37 +424,204 @@ defmodule FleetLM.Storage.SlotLogServer do
     end
   end
 
-  defp persist_entries(_slot, _log, []), do: {:ok, :noop}
+  defp persist_new_entries(slot, entries, flushed_count) do
+    total_entries = length(entries)
+    to_persist = Enum.drop(entries, flushed_count)
 
-  defp persist_entries(slot, log, entries) do
-    messages =
-      Enum.map(entries, fn entry ->
-        %{
-          id: entry.payload.id,
-          session_id: entry.payload.session_id,
-          sender_id: entry.payload.sender_id,
-          recipient_id: entry.payload.recipient_id,
-          seq: entry.payload.seq,
-          kind: entry.payload.kind,
-          content: entry.payload.content,
-          metadata: entry.payload.metadata,
-          shard_key: entry.payload.shard_key,
-          inserted_at: entry.payload.inserted_at
-        }
-      end)
+    case to_persist do
+      [] ->
+        {:ok, %{count: 0, flushed_count: total_entries}}
 
-    case Repo.insert_all(Message, messages, on_conflict: :nothing) do
-      {count, _} when is_integer(count) ->
-        :ok = DiskLog.truncate(log)
-        {:ok, {:persisted, count}}
+      _ ->
+        messages =
+          Enum.map(to_persist, fn entry ->
+            %{
+              id: entry.payload.id,
+              session_id: entry.payload.session_id,
+              sender_id: entry.payload.sender_id,
+              recipient_id: entry.payload.recipient_id,
+              seq: entry.payload.seq,
+              kind: entry.payload.kind,
+              content: entry.payload.content,
+              metadata: entry.payload.metadata,
+              shard_key: entry.payload.shard_key,
+              inserted_at: entry.payload.inserted_at
+            }
+          end)
 
-      other ->
-        {:error, {slot, other}}
+        case Repo.insert_all(Message, messages, on_conflict: :nothing) do
+          {count, _} when is_integer(count) ->
+            {:ok, %{count: count, flushed_count: total_entries}}
+
+          other ->
+            {:error, {slot, other}}
+        end
     end
   rescue
     error -> {:error, error}
   catch
     kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp maybe_compact_log(%{retention_bytes: :infinity} = state), do: state
+
+  defp maybe_compact_log(%{retention_bytes: bytes} = state) when bytes <= 0, do: state
+
+  defp maybe_compact_log(%{flushed_count: 0} = state), do: state
+
+  defp maybe_compact_log(state) do
+    with {:ok, entries} <- DiskLog.read_all(state.log) do
+      {entries_with_bytes, total_bytes} = entries_with_sizes(entries)
+
+      if total_bytes <= state.retention_bytes do
+        state
+      else
+        target_bytes = retention_target_bytes(state.retention_bytes, state.retention_target)
+
+        {kept_entries, dropped_count, dropped_bytes} =
+          drop_persisted(entries_with_bytes, state.flushed_count, target_bytes)
+
+        cond do
+          dropped_count == 0 ->
+            state
+
+          true ->
+            case DiskLog.rewrite(state.log, kept_entries) do
+              :ok ->
+                Logger.debug(
+                  "Compacted slot #{state.slot} log: dropped #{dropped_count} entries (#{dropped_bytes} bytes)"
+                )
+
+                new_flushed_count =
+                  state.flushed_count
+                  |> Kernel.-(dropped_count)
+                  |> max(0)
+                  |> min(length(kept_entries))
+
+                %{state | flushed_count: new_flushed_count}
+
+              {:error, reason} ->
+                Logger.error(
+                  "Failed to rewrite slot #{state.slot} log during compaction: #{inspect(reason)}"
+                )
+
+                state
+            end
+        end
+      end
+    else
+      {:error, reason} ->
+        Logger.error("Failed to read slot #{state.slot} log for compaction: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp persist_cursor_state(state) do
+    case DiskLog.persist_cursor(state.slot, state.flushed_count) do
+      :ok ->
+        state
+
+      {:error, reason} ->
+        Logger.error("Failed to persist cursor for slot #{state.slot}: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp drop_persisted(entries_with_sizes, flushed_count, target_bytes) do
+    initial_bytes = total_bytes(entries_with_sizes)
+
+    {kept_rev, dropped_count, dropped_bytes, _current_bytes, _index} =
+      Enum.reduce(entries_with_sizes, {[], 0, 0, initial_bytes, 0}, fn {entry, size},
+                                                                       {acc, drop_count,
+                                                                        drop_bytes, current_bytes,
+                                                                        index} ->
+        cond do
+          index < flushed_count and current_bytes > target_bytes ->
+            {acc, drop_count + 1, drop_bytes + size, current_bytes - size, index + 1}
+
+          true ->
+            {[entry | acc], drop_count, drop_bytes, current_bytes, index + 1}
+        end
+      end)
+
+    {Enum.reverse(kept_rev), dropped_count, dropped_bytes}
+  end
+
+  defp total_bytes(entries_with_sizes) do
+    Enum.reduce(entries_with_sizes, 0, fn {_entry, size}, acc -> acc + size end)
+  end
+
+  defp entries_with_sizes(entries) do
+    Enum.map_reduce(entries, 0, fn entry, acc ->
+      size = :erlang.external_size(entry)
+      {{entry, size}, acc + size}
+    end)
+  end
+
+  defp retention_target_bytes(:infinity, _target), do: :infinity
+
+  defp retention_target_bytes(bytes, target) do
+    ratio = clamp_retention_target(target)
+
+    candidate =
+      bytes
+      |> Kernel.*(ratio)
+      |> Float.floor()
+      |> trunc()
+
+    cond do
+      candidate <= 0 -> bytes
+      candidate > bytes -> bytes
+      true -> candidate
+    end
+  end
+
+  defp retention_config do
+    bytes =
+      case Application.get_env(:fleetlm, :slot_log_max_bytes) do
+        :infinity ->
+          :infinity
+
+        nil ->
+          @default_retention_bytes
+
+        value when is_integer(value) and value > 0 ->
+          value
+
+        other ->
+          Logger.warning(
+            "Invalid :slot_log_max_bytes configuration #{inspect(other)}; falling back to #{@default_retention_bytes}"
+          )
+
+          @default_retention_bytes
+      end
+
+    target =
+      case Application.get_env(:fleetlm, :slot_log_compact_target) do
+        nil ->
+          @default_retention_target
+
+        value when is_integer(value) ->
+          clamp_retention_target(value / 1)
+
+        value when is_float(value) ->
+          clamp_retention_target(value)
+
+        other ->
+          Logger.warning(
+            "Invalid :slot_log_compact_target configuration #{inspect(other)}; falling back to #{@default_retention_target}"
+          )
+
+          @default_retention_target
+      end
+
+    {bytes, target}
+  end
+
+  defp clamp_retention_target(value) when is_number(value) do
+    value
+    |> max(0.0)
+    |> min(1.0)
   end
 
   defp log_flush_error(_slot, _reason) do
