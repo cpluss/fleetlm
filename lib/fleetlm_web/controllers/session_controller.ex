@@ -6,6 +6,39 @@ defmodule FleetlmWeb.SessionController do
 
   action_fallback FleetlmWeb.FallbackController
 
+  def index(conn, params) do
+    import Ecto.Query
+
+    query =
+      case Map.get(params, "user_id") do
+        nil ->
+          FleetLM.Storage.Model.Session
+
+        user_id when is_binary(user_id) ->
+          from(s in FleetLM.Storage.Model.Session, where: s.user_id == ^user_id)
+      end
+
+    sessions =
+      query
+      |> order_by([s], desc: s.inserted_at)
+      |> limit(50)
+      |> Fleetlm.Repo.all()
+
+    json(conn, %{sessions: Enum.map(sessions, &render_session/1)})
+  end
+
+  def show(conn, %{"id" => session_id}) do
+    case StorageAPI.get_session(session_id) do
+      {:ok, session} ->
+        json(conn, %{session: render_session(session)})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Session not found"})
+    end
+  end
+
   # New API with sender_id/recipient_id
   def create(conn, %{"sender_id" => sender_id, "recipient_id" => recipient_id} = params) do
     metadata = Map.get(params, "metadata", %{})

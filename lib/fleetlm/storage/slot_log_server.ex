@@ -24,7 +24,7 @@ defmodule FleetLM.Storage.SlotLogServer do
   @default_task_supervisor FleetLM.Storage.SlotLogTaskSupervisor
   @default_registry FleetLM.Storage.Registry
 
-  @flush_interval_ms Application.compile_env(:fleetlm, :storage_flush_interval_ms, 300)
+  @default_flush_interval_ms 300
   @flush_timeout Application.compile_env(:fleetlm, :slot_flush_timeout, 10_000)
 
   @type state :: %{
@@ -231,7 +231,10 @@ defmodule FleetLM.Storage.SlotLogServer do
   end
 
   defp schedule_flush do
-    Process.send_after(self(), :flush, @flush_interval_ms)
+    interval =
+      Application.get_env(:fleetlm, :storage_flush_interval_ms, @default_flush_interval_ms)
+
+    Process.send_after(self(), :flush, interval)
   end
 
   defp maybe_start_async_flush(%{dirty: true, pending_flush: nil} = state) do

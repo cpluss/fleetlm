@@ -93,3 +93,6 @@ config :swoosh, :api_client, false
 
 # Use local PubSub for development (change to :redis for testing horizontal scaling)
 config :fleetlm, :pubsub_adapter, :local
+
+# Slower flush interval in dev to keep messages in disk log longer for testing hot path
+config :fleetlm, :storage_flush_interval_ms, 500

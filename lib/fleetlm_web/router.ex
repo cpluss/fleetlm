@@ -27,7 +27,9 @@ defmodule FleetlmWeb.Router do
     resources "/agents", AgentController, except: [:new, :edit]
 
     # Session operations
+    get "/sessions", SessionController, :index
     post "/sessions", SessionController, :create
+    get "/sessions/:id", SessionController, :show
     get "/sessions/:session_id/messages", SessionController, :messages
     post "/sessions/:session_id/messages", SessionController, :append_message
     post "/sessions/:session_id/read", SessionController, :mark_read

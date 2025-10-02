@@ -157,9 +157,27 @@ defmodule FleetLM.Storage.API do
     # return them directly without hitting the database.
     case length(tail) >= limit do
       true ->
+        require Logger
+
+        Logger.debug("Serving #{length(tail)} messages from disk log for session #{session_id}",
+          session_id: session_id,
+          after_seq: after_seq,
+          limit: limit,
+          tail_count: length(tail)
+        )
+
         {:ok, Enum.take(tail, limit)}
 
       false ->
+        require Logger
+
+        Logger.debug(
+          "Reading from database for session #{session_id} (tail: #{length(tail)}, limit: #{limit})",
+          session_id: session_id,
+          after_seq: after_seq,
+          limit: limit,
+          tail_count: length(tail)
+        )
         entry_seqs = tail |> Enum.map(& &1.seq) |> MapSet.new()
         remaining = max(limit - length(tail), 0)
         # Over-fetch a bit to safely account for any overlap with slot entries
