@@ -18,6 +18,16 @@ const config = {
     defaultLocale: "en",
     locales: ["en"]
   },
+  themeConfig: {
+    announcementBar: {
+      id: "wip-banner",
+      content:
+        "<strong>Early access:</strong> FleetLM is an active work in progress. Expect rapid changes and review carefully before running in production.",
+      backgroundColor: "#f97316",
+      textColor: "#1f2937",
+      isCloseable: false
+    }
+  },
   presets: [
     [
       "@docusaurus/preset-classic",
