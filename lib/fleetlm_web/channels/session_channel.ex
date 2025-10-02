@@ -57,7 +57,8 @@ defmodule FleetlmWeb.SessionChannel do
           }
         },
         %{assigns: %{session: session, participant_id: participant_id}} = socket
-      ) do
+      )
+      when is_binary(kind) and is_map(message_content) and is_map(metadata) do
     do_send_message(socket, session, participant_id, kind, message_content, metadata)
   end
 
@@ -67,7 +68,8 @@ defmodule FleetlmWeb.SessionChannel do
         "send",
         %{"content" => %{"kind" => kind, "content" => message_content}},
         %{assigns: %{session: session, participant_id: participant_id}} = socket
-      ) do
+      )
+      when is_binary(kind) and is_map(message_content) do
     do_send_message(socket, session, participant_id, kind, message_content, %{})
   end
 
@@ -77,8 +79,21 @@ defmodule FleetlmWeb.SessionChannel do
         "send",
         %{"content" => %{"content" => message_content}},
         %{assigns: %{session: session, participant_id: participant_id}} = socket
-      ) do
+      )
+      when is_map(message_content) do
     do_send_message(socket, session, participant_id, "text", message_content, %{})
+  end
+
+  # Catch-all for malformed messages
+  @impl true
+  def handle_in("send", payload, socket) do
+    {:reply,
+     {:error,
+      %{
+        error: "invalid_message_format",
+        details: "content must be a map, metadata must be a map",
+        received: inspect(payload)
+      }}, socket}
   end
 
   defp do_send_message(socket, session, participant_id, kind, content, metadata) do

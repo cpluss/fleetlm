@@ -22,9 +22,10 @@ defmodule Fleetlm.Runtime.Router do
   Append a message to a session.
   Routes to the owner node for the session.
   """
-  @spec append_message(String.t(), String.t(), String.t(), term(), term()) ::
+  @spec append_message(String.t(), String.t(), String.t(), map(), map()) ::
           {:ok, map()} | {:error, term()}
-  def append_message(session_id, sender_id, kind, content, metadata \\ %{}) do
+  def append_message(session_id, sender_id, kind, content, metadata \\ %{})
+      when is_map(content) and is_map(metadata) do
     case route_to_owner(session_id, :append_message, [
            session_id,
            sender_id,
