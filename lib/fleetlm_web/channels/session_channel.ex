@@ -105,8 +105,8 @@ defmodule FleetlmWeb.SessionChannel do
 
   defp do_send_message(socket, session, participant_id, kind, content, metadata) do
     case Router.append_message(session.id, participant_id, kind, content, metadata) do
-      {:ok, _message} ->
-        {:noreply, socket}
+      {:ok, message} ->
+        {:reply, {:ok, %{seq: message.seq}}, socket}
 
       {:error, :draining} ->
         push(socket, "backpressure", %{
