@@ -244,7 +244,6 @@ defmodule Fleetlm.Agent.WebhookWorker do
       method: :post,
       headers: headers,
       body: body,
-      connect_options: [timeout: 5_000],
       pool_timeout: 50,
       receive_timeout: @receive_timeout,
       retry: false

@@ -51,3 +51,5 @@ npm-debug.log
 docs-site/node_modules
 docs-site/.docusaurus
 docs-site/build
+
+examples/*/node_modules

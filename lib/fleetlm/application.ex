@@ -80,20 +80,19 @@ defmodule Fleetlm.Application do
   defp finch_spec do
     {
       Finch,
-      # Global HTTP/2 settings
+      # Global HTTP/1 settings for broad compatibility
       name: Fleetlm.Finch,
       pools: %{
         # Default pool for all hosts - small, ephemeral connections
         :default => [
-          protocol: :http2,
+          protocol: :http1,
           size: 2,
           count: 1,
           pool_max_idle_time: 30_000
         ]
       },
       connect_options: [
-        timeout: 5_000,
-        protocols: [:http2]
+        timeout: 5_000
       ]
     }
   end
