@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.PoisonedDataTest do
+defmodule Fleetlm.Storage.PoisonedDataTest do
   @moduledoc """
   Tests for handling poisoned/corrupted data in the storage layer.
 
@@ -42,24 +42,24 @@ defmodule FleetLM.Storage.PoisonedDataTest do
 
       {:ok, _pid} =
         suppress_expected_errors(fn ->
-          FleetLM.Storage.Supervisor.ensure_started(slot)
+          Fleetlm.Storage.Supervisor.ensure_started(slot)
         end)
 
       on_exit(fn ->
-        _ = FleetLM.Storage.Supervisor.flush_slot(slot)
-        _ = FleetLM.Storage.Supervisor.stop_slot(slot)
+        _ = Fleetlm.Storage.Supervisor.flush_slot(slot)
+        _ = Fleetlm.Storage.Supervisor.stop_slot(slot)
       end)
 
       # Manually write a corrupted entry directly to disk log (bypassing SlotLogServer validation)
       {:ok, log} = SlotLogServer.get_log_handle(slot)
 
-      corrupted_entry = %FleetLM.Storage.Entry{
+      corrupted_entry = %Fleetlm.Storage.Entry{
         slot: slot,
         seq: 1,
         session_id: "corrupted-session",
         idempotency_key: "test-key",
-        payload: %FleetLM.Storage.Model.Message{
-          id: Ulid.generate(),
+        payload: %Fleetlm.Storage.Model.Message{
+          id: Uniq.UUID.uuid7(:slug),
           session_id: "corrupted-session",
           sender_id: "sender",
           recipient_id: "recipient",
@@ -102,11 +102,11 @@ defmodule FleetLM.Storage.PoisonedDataTest do
     test "recovers when some messages flush successfully and others fail" do
       slot = 100 + System.unique_integer([:positive])
 
-      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      {:ok, _pid} = Fleetlm.Storage.Supervisor.ensure_started(slot)
 
       on_exit(fn ->
-        _ = FleetLM.Storage.Supervisor.flush_slot(slot)
-        _ = FleetLM.Storage.Supervisor.stop_slot(slot)
+        _ = Fleetlm.Storage.Supervisor.flush_slot(slot)
+        _ = Fleetlm.Storage.Supervisor.stop_slot(slot)
       end)
 
       # Create sessions
@@ -120,13 +120,13 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       # Write bad entry directly to disk log
       {:ok, log} = SlotLogServer.get_log_handle(slot)
 
-      bad_entry = %FleetLM.Storage.Entry{
+      bad_entry = %Fleetlm.Storage.Entry{
         slot: slot,
         seq: 1,
         session_id: session2.id,
         idempotency_key: "bad-key",
-        payload: %FleetLM.Storage.Model.Message{
-          id: Ulid.generate(),
+        payload: %Fleetlm.Storage.Model.Message{
+          id: Uniq.UUID.uuid7(:slug),
           session_id: session2.id,
           sender_id: "sender",
           recipient_id: "recipient",
@@ -204,11 +204,11 @@ defmodule FleetLM.Storage.PoisonedDataTest do
       File.write!(log_path, <<255, 255, 255, 255, 0, 0, 0, 0>>)
 
       # Start SlotLogServer - should recover or recreate the log
-      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      {:ok, _pid} = Fleetlm.Storage.Supervisor.ensure_started(slot)
 
       on_exit(fn ->
-        :ok = FleetLM.Storage.Supervisor.flush_slot(slot)
-        :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
+        :ok = Fleetlm.Storage.Supervisor.flush_slot(slot)
+        :ok = Fleetlm.Storage.Supervisor.stop_slot(slot)
       end)
 
       # Should be able to append after recovery

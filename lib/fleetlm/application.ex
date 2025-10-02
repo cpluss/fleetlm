@@ -85,7 +85,7 @@ defmodule Fleetlm.Application do
       pools: %{
         # Default pool for all hosts - small, ephemeral connections
         :default => [
-          protocol: :http1,
+          protocols: [:http1],
           size: 2,
           count: 1,
           pool_max_idle_time: 30_000

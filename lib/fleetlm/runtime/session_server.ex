@@ -21,7 +21,7 @@ defmodule Fleetlm.Runtime.SessionServer do
   use GenServer, restart: :transient
   require Logger
 
-  alias FleetLM.Storage.API, as: StorageAPI
+  alias Fleetlm.Storage
   alias Fleetlm.Runtime.HashRing
   alias Fleetlm.Runtime.SessionTracker
 
@@ -160,7 +160,7 @@ defmodule Fleetlm.Runtime.SessionServer do
       if sender_id == state.user_id, do: state.agent_id, else: state.user_id
 
     # Append via Storage.API (writes to disk log)
-    case StorageAPI.append_message(
+    case Storage.append_message(
            state.session_id,
            next_seq,
            sender_id,
@@ -172,7 +172,7 @@ defmodule Fleetlm.Runtime.SessionServer do
       :ok ->
         # Build message for broadcasting/caching
         message = %{
-          id: Ulid.generate(),
+          id: Uniq.UUID.uuid7(:slug),
           session_id: state.session_id,
           seq: next_seq,
           sender_id: sender_id,
@@ -237,7 +237,7 @@ defmodule Fleetlm.Runtime.SessionServer do
       limit = Keyword.get(opts, :limit, 100)
 
       # Get messages from storage (disk log + DB fallback)
-      {:ok, messages} = StorageAPI.get_messages(state.session_id, last_seq, limit)
+      {:ok, messages} = Storage.get_messages(state.session_id, last_seq, limit)
 
       # Convert to channel format
       formatted_messages = Enum.map(messages, &format_storage_message/1)
@@ -319,7 +319,7 @@ defmodule Fleetlm.Runtime.SessionServer do
   defp load_session(session_id) do
     try do
       # Load session from new storage model
-      case Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session_id) do
+      case Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id) do
         nil -> {:error, :not_found}
         session -> {:ok, session}
       end
@@ -330,7 +330,7 @@ defmodule Fleetlm.Runtime.SessionServer do
 
   defp mark_session_active(session_id) do
     try do
-      Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session_id)
+      Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id)
       |> case do
         nil ->
           :ok
@@ -353,7 +353,7 @@ defmodule Fleetlm.Runtime.SessionServer do
 
   defp mark_session_inactive(session_id) do
     try do
-      Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session_id)
+      Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id)
       |> case do
         nil ->
           :ok
@@ -378,7 +378,7 @@ defmodule Fleetlm.Runtime.SessionServer do
     # Get max seq directly from DB (more efficient than fetching all messages)
     import Ecto.Query
 
-    case FleetLM.Storage.Model.Message
+    case Fleetlm.Storage.Model.Message
          |> where([m], m.session_id == ^session_id)
          |> select([m], max(m.seq))
          |> Fleetlm.Repo.one() do
@@ -433,7 +433,7 @@ defmodule Fleetlm.Runtime.SessionServer do
 
   defp flush_slot_sync(slot) do
     try do
-      case FleetLM.Storage.SlotLogServer.flush_now(slot) do
+      case Fleetlm.Storage.SlotLogServer.flush_now(slot) do
         :ok ->
           :ok
 

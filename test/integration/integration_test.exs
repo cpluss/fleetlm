@@ -12,8 +12,8 @@ defmodule Fleetlm.Integration.IntegrationTest do
   use Fleetlm.TestCase
 
   alias Fleetlm.Runtime.{Router, SessionSupervisor, InboxServer, DrainCoordinator}
-  alias FleetLM.Storage.API, as: StorageAPI
-  alias FleetLM.Storage.Supervisor, as: StorageSupervisor
+  alias Fleetlm.Storage, as: StorageAPI
+  alias Fleetlm.Storage.Supervisor, as: StorageSupervisor
 
   require ExUnit.CaptureLog
 
@@ -269,7 +269,7 @@ defmodule Fleetlm.Integration.IntegrationTest do
 
   describe "error handling" do
     test "append to non-existent session fails gracefully" do
-      fake_session_id = Ulid.generate()
+      fake_session_id = Uniq.UUID.uuid7(:slug)
 
       ExUnit.CaptureLog.capture_log(fn ->
         assert {:error, _} =
@@ -284,7 +284,7 @@ defmodule Fleetlm.Integration.IntegrationTest do
     end
 
     test "join non-existent session fails gracefully" do
-      fake_session_id = Ulid.generate()
+      fake_session_id = Uniq.UUID.uuid7(:slug)
 
       ExUnit.CaptureLog.capture_log(fn ->
         assert {:error, _} = Router.join(fake_session_id, "alice", last_seq: 0, limit: 10)

@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.DiskLog do
+defmodule Fleetlm.Storage.DiskLog do
   @moduledoc """
   Utility functions for working with disk_log as a write-ahead log.
 
@@ -13,7 +13,7 @@ defmodule FleetLM.Storage.DiskLog do
 
   require Logger
 
-  alias FleetLM.Storage.Entry
+  alias Fleetlm.Storage.Entry
 
   @cursor_version 1
 

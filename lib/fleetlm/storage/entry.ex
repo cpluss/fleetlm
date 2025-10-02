@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.Entry do
+defmodule Fleetlm.Storage.Entry do
   @moduledoc """
   Immutable representation of a message append written to the slot log.
 
@@ -9,7 +9,7 @@ defmodule FleetLM.Storage.Entry do
   recovery and replay.
   """
 
-  alias FleetLM.Storage.Model.Message
+  alias Fleetlm.Storage.Model.Message
 
   @type t :: %__MODULE__{
           # The effective disk slot / shard that owns this entry.

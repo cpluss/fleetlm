@@ -1,6 +1,6 @@
-defmodule FleetLM.Storage.API do
+defmodule Fleetlm.Storage do
   @moduledoc """
-  Public API for the storage layer.
+  Storage layer for sessions and message logs.
 
   Provides high-level operations for:
   - Session management (DB operations)
@@ -12,8 +12,8 @@ defmodule FleetLM.Storage.API do
   import Ecto.Query
   require Logger
 
-  alias FleetLM.Storage.Model.{Session, Message, Cursor}
-  alias FleetLM.Storage.{SlotLogServer, Entry}
+  alias Fleetlm.Storage.Model.{Session, Message, Cursor}
+  alias Fleetlm.Storage.{SlotLogServer, Entry}
   alias Fleetlm.Repo
 
   @num_storage_slots Application.compile_env(:fleetlm, :num_storage_slots, 64)
@@ -25,7 +25,7 @@ defmodule FleetLM.Storage.API do
   """
   @spec create_session(String.t(), String.t(), term()) :: {:ok, Session.t()} | {:error, any()}
   def create_session(user_id, agent_id, metadata) do
-    session_id = Ulid.generate()
+    session_id = Uniq.UUID.uuid7(:slug)
     shard_key = storage_slot_for_session(session_id)
 
     %Session{id: session_id}
@@ -112,7 +112,7 @@ defmodule FleetLM.Storage.API do
     :ok = ensure_slot_server_started(slot)
 
     message = %Message{
-      id: Ulid.generate(),
+      id: Uniq.UUID.uuid7(:slug),
       session_id: session_id,
       sender_id: sender_id,
       recipient_id: recipient_id,
@@ -124,7 +124,7 @@ defmodule FleetLM.Storage.API do
       inserted_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
     }
 
-    entry = Entry.from_message(slot, seq, Ulid.generate(), message)
+    entry = Entry.from_message(slot, seq, Uniq.UUID.uuid7(:slug), message)
     SlotLogServer.append(slot, entry)
   end
 
@@ -272,7 +272,7 @@ defmodule FleetLM.Storage.API do
   # In production mode (slot_log_mode: :production), servers are pre-started by supervisor - no-op.
   # In test mode (slot_log_mode: :test), servers are started on-demand with test-specific config.
   defp ensure_slot_server_started(slot) do
-    case FleetLM.Storage.Supervisor.ensure_started(slot) do
+    case Fleetlm.Storage.Supervisor.ensure_started(slot) do
       {:ok, _pid} -> :ok
       {:error, {:already_started, _pid}} -> :ok
       {:error, reason} -> {:error, reason}

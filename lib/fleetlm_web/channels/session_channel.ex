@@ -6,7 +6,7 @@ defmodule FleetlmWeb.SessionChannel do
   use FleetlmWeb, :channel
 
   alias Fleetlm.Runtime.Router
-  alias FleetLM.Storage.Model.Session
+  alias Fleetlm.Storage.Model.Session
 
   @impl true
   def join(

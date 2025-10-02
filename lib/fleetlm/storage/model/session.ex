@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.Model.Session do
+defmodule Fleetlm.Storage.Model.Session do
   @moduledoc """
   Model for the session.
   """
@@ -8,8 +8,6 @@ defmodule FleetLM.Storage.Model.Session do
   @primary_key {:id, :string, autogenerate: false}
 
   @type t :: %__MODULE__{}
-
-  alias Ulid
 
   # Sessions are 1:1 conversations between a user (human) and an agent (AI).
   schema "sessions" do
@@ -39,7 +37,7 @@ defmodule FleetLM.Storage.Model.Session do
 
   defp ensure_id(changeset) do
     case get_field(changeset, :id) do
-      nil -> put_change(changeset, :id, Ulid.generate())
+      nil -> put_change(changeset, :id, Uniq.UUID.uuid7(:slug))
       _ -> changeset
     end
   end

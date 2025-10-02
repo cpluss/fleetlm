@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.SlotLogServerTest do
+defmodule Fleetlm.Storage.SlotLogServerTest do
   use Fleetlm.TestCase
 
   import Ecto.Query
@@ -7,11 +7,11 @@ defmodule FleetLM.Storage.SlotLogServerTest do
     # Use a high, unique slot number to avoid production range (0-63)
     slot = 100 + System.unique_integer([:positive])
 
-    {:ok, pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+    {:ok, pid} = Fleetlm.Storage.Supervisor.ensure_started(slot)
 
     on_exit(fn ->
-      :ok = FleetLM.Storage.Supervisor.flush_slot(slot)
-      :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
+      :ok = Fleetlm.Storage.Supervisor.flush_slot(slot)
+      :ok = Fleetlm.Storage.Supervisor.stop_slot(slot)
     end)
 
     %{slot: slot, server_pid: pid, slot_log_dir: slot_log_dir}
@@ -117,7 +117,7 @@ defmodule FleetLM.Storage.SlotLogServerTest do
       previous_target = Application.get_env(:fleetlm, :slot_log_compact_target)
 
       # Restart the slot with a small retention window to exercise compaction.
-      :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
+      :ok = Fleetlm.Storage.Supervisor.stop_slot(slot)
 
       session = create_test_session()
 
@@ -135,7 +135,7 @@ defmodule FleetLM.Storage.SlotLogServerTest do
         maybe_restore_env(:slot_log_compact_target, previous_target)
       end)
 
-      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      {:ok, _pid} = Fleetlm.Storage.Supervisor.ensure_started(slot)
 
       entry1 = entry_template
       entry2 = build_entry(slot, session.id, 2, content: %{"text" => String.duplicate("y", 64)})
@@ -176,8 +176,8 @@ defmodule FleetLM.Storage.SlotLogServerTest do
       assert File.exists?(cursor_path)
       assert {:ok, 1} = DiskLog.load_cursor(slot)
 
-      :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
-      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      :ok = Fleetlm.Storage.Supervisor.stop_slot(slot)
+      {:ok, _pid} = Fleetlm.Storage.Supervisor.ensure_started(slot)
 
       wait_for_slot(slot)
       assert :already_clean = SlotLogServer.flush_now(slot)
@@ -204,7 +204,7 @@ defmodule FleetLM.Storage.SlotLogServerTest do
       Process.exit(server_pid, :kill)
       assert_receive {:DOWN, ^ref, :process, ^server_pid, :killed}, 1_000
 
-      {:ok, _new_pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      {:ok, _new_pid} = Fleetlm.Storage.Supervisor.ensure_started(slot)
       wait_for_slot(slot, exclude: server_pid)
 
       assert :ok = SlotLogServer.flush_now(slot)
@@ -250,13 +250,13 @@ defmodule FleetLM.Storage.SlotLogServerTest do
       slot = 200 + System.unique_integer([:positive])
       session = create_test_session()
 
-      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
+      {:ok, _pid} = Fleetlm.Storage.Supervisor.ensure_started(slot)
 
       entry = build_entry(slot, session.id, 1)
       SlotLogServer.append(slot, entry)
 
       # Stop the server via supervisor which triggers terminate/2
-      :ok = FleetLM.Storage.Supervisor.stop_slot(slot)
+      :ok = Fleetlm.Storage.Supervisor.stop_slot(slot)
 
       # Verify message was still persisted during shutdown
       messages = Repo.all(Message)
@@ -279,8 +279,8 @@ defmodule FleetLM.Storage.SlotLogServerTest do
     exclude = Keyword.get(opts, :exclude)
 
     eventually(fn ->
-      {:ok, _pid} = FleetLM.Storage.Supervisor.ensure_started(slot)
-      assert [{pid, _}] = Registry.lookup(FleetLM.Storage.Registry, slot)
+      {:ok, _pid} = Fleetlm.Storage.Supervisor.ensure_started(slot)
+      assert [{pid, _}] = Registry.lookup(Fleetlm.Storage.Registry, slot)
       assert Process.alive?(pid)
 
       if exclude do

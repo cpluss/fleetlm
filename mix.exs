@@ -73,7 +73,7 @@ defmodule Fleetlm.MixProject do
       {:opentelemetry_api, "~> 1.3"},
       {:opentelemetry, "~> 1.3"},
       {:opentelemetry_exporter, "~> 1.7"},
-      {:ulid, "~> 0.2"},
+      {:uniq, "~> 0.6"},
       {:benchee, "~> 1.3", only: [:dev, :test]}
     ]
   end

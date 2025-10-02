@@ -16,7 +16,7 @@ defmodule Fleetlm.Agent.WebhookWorker do
 
   alias Fleetlm.Agent
   alias Fleetlm.Runtime.Router
-  alias FleetLM.Storage.API, as: StorageAPI
+  alias Fleetlm.Storage
 
   # 10 minutes for long-running agent requests
   @receive_timeout 10 * 60 * 1000
@@ -95,7 +95,7 @@ defmodule Fleetlm.Agent.WebhookWorker do
   defp fetch_message_history(session_id, agent) do
     case agent.message_history_mode do
       "tail" ->
-        StorageAPI.get_messages(session_id, 0, agent.message_history_limit)
+        Storage.get_messages(session_id, 0, agent.message_history_limit)
 
       "entire" ->
         Logger.warning("Fetching ENTIRE message history for session #{session_id} (expensive!)",
@@ -103,10 +103,10 @@ defmodule Fleetlm.Agent.WebhookWorker do
           agent_id: agent.id
         )
 
-        StorageAPI.get_all_messages(session_id)
+        Storage.get_all_messages(session_id)
 
       "last" ->
-        {:ok, messages} = StorageAPI.get_messages(session_id, 0, 1)
+        {:ok, messages} = Storage.get_messages(session_id, 0, 1)
         {:ok, Enum.take(messages, -1)}
     end
   end
@@ -228,7 +228,7 @@ defmodule Fleetlm.Agent.WebhookWorker do
   defp begin_dispatch(session_id, agent_id, started_at) do
     with {:ok, agent} <- Agent.get(agent_id),
          :ok <- check_agent_enabled(agent),
-         {:ok, session} <- StorageAPI.get_session(session_id),
+         {:ok, session} <- Storage.get_session(session_id),
          {:ok, messages} <- fetch_message_history(session_id, agent),
          {:ok, response} <- start_async_request(agent, session, messages) do
       async = response.body

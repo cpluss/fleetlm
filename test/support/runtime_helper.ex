@@ -3,7 +3,7 @@ defmodule Fleetlm.Runtime.TestHelper do
 
   alias Fleetlm.Runtime.SessionSupervisor
   alias Fleetlm.Runtime.InboxSupervisor
-  alias FleetLM.Storage.Supervisor, as: StorageSupervisor
+  alias Fleetlm.Storage.Supervisor, as: StorageSupervisor
 
   require ExUnit.CaptureLog
   require Logger

@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.IntegrationTest do
+defmodule Fleetlm.Storage.IntegrationTest do
   use Fleetlm.TestCase
 
   describe "complete message flow" do

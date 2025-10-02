@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.Model.Cursor do
+defmodule Fleetlm.Storage.Model.Cursor do
   @moduledoc """
   Maintaining read cursors for participants on a given session. Separate
   table in order to avoid hammering the session table with what could be
@@ -12,7 +12,7 @@ defmodule FleetLM.Storage.Model.Cursor do
   @type t :: %__MODULE__{}
 
   schema "cursors" do
-    belongs_to :session, FleetLM.Storage.Model.Session, type: :string
+    belongs_to :session, Fleetlm.Storage.Model.Session, type: :string
     field :participant_id, :string
     field :last_seq, :integer
 
@@ -34,7 +34,7 @@ defmodule FleetLM.Storage.Model.Cursor do
 
   defp ensure_id(changeset) do
     case get_field(changeset, :id) do
-      nil -> put_change(changeset, :id, Ulid.generate())
+      nil -> put_change(changeset, :id, Uniq.UUID.uuid7(:slug))
       _ -> changeset
     end
   end

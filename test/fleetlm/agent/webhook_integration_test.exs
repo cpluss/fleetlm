@@ -3,7 +3,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
 
   alias Fleetlm.Agent
   alias Fleetlm.Runtime.Router
-  alias FleetLM.Storage.API, as: StorageAPI
+  alias Fleetlm.Storage, as: StorageAPI
 
   require ExUnit.CaptureLog
 

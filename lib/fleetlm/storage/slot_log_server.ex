@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.SlotLogServer do
+defmodule Fleetlm.Storage.SlotLogServer do
   @moduledoc """
   Storage is sharded into slots, each slot is owned by a single process. The slots
   store messages for multiple sessions before they're persisted to the database asynchronously
@@ -17,12 +17,12 @@ defmodule FleetLM.Storage.SlotLogServer do
   use GenServer
   require Logger
 
-  alias FleetLM.Storage.{DiskLog, Entry}
-  alias FleetLM.Storage.Model.Message
+  alias Fleetlm.Storage.{DiskLog, Entry}
+  alias Fleetlm.Storage.Model.Message
   alias Fleetlm.Repo
 
-  @default_task_supervisor FleetLM.Storage.SlotLogTaskSupervisor
-  @default_registry FleetLM.Storage.Registry
+  @default_task_supervisor Fleetlm.Storage.SlotLogTaskSupervisor
+  @default_registry Fleetlm.Storage.Registry
 
   @default_flush_interval_ms 300
   @flush_timeout Application.compile_env(:fleetlm, :slot_flush_timeout, 10_000)

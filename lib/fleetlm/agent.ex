@@ -6,58 +6,12 @@ defmodule Fleetlm.Agent do
   and return responses synchronously.
   """
 
-  use Ecto.Schema
-  import Ecto.Changeset
   import Ecto.Query
 
   alias Fleetlm.Repo
-  alias Fleetlm.Agent.DeliveryLog
+  alias Fleetlm.Agent.{Schema, DeliveryLog}
 
-  @primary_key {:id, :string, autogenerate: false}
-  @foreign_key_type :string
-
-  @type t :: %__MODULE__{}
-
-  schema "agents" do
-    field :name, :string
-    field :origin_url, :string
-    field :webhook_path, :string, default: "/webhook"
-
-    # Message history configuration
-    field :message_history_mode, :string, default: "tail"
-    field :message_history_limit, :integer, default: 50
-
-    # HTTP configuration
-    field :timeout_ms, :integer, default: 30_000
-    field :headers, :map, default: %{}
-    field :status, :string, default: "enabled"
-
-    timestamps()
-  end
-
-  @doc """
-  Changeset for creating/updating agents.
-  """
-  def changeset(agent, attrs) do
-    agent
-    |> cast(attrs, [
-      :id,
-      :name,
-      :origin_url,
-      :webhook_path,
-      :message_history_mode,
-      :message_history_limit,
-      :timeout_ms,
-      :headers,
-      :status
-    ])
-    |> validate_required([:id, :name, :origin_url, :webhook_path])
-    |> validate_inclusion(:message_history_mode, ["tail", "entire", "last"])
-    |> validate_inclusion(:status, ["enabled", "disabled"])
-    |> validate_number(:timeout_ms, greater_than: 0)
-    |> validate_number(:message_history_limit, greater_than: 0)
-    |> unique_constraint(:id, name: :agents_pkey)
-  end
+  @type t :: Schema.t()
 
   ## Public API
 
@@ -66,8 +20,8 @@ defmodule Fleetlm.Agent do
   """
   @spec create(map()) :: {:ok, t()} | {:error, Ecto.Changeset.t()}
   def create(attrs) do
-    %__MODULE__{}
-    |> changeset(attrs)
+    %Schema{}
+    |> Schema.changeset(attrs)
     |> Repo.insert()
   end
 
@@ -76,7 +30,7 @@ defmodule Fleetlm.Agent do
   """
   @spec get(String.t()) :: {:ok, t()} | {:error, :not_found}
   def get(id) when is_binary(id) do
-    case Repo.get(__MODULE__, id) do
+    case Repo.get(Schema, id) do
       nil -> {:error, :not_found}
       agent -> {:ok, agent}
     end
@@ -87,7 +41,7 @@ defmodule Fleetlm.Agent do
   """
   @spec get!(String.t()) :: t()
   def get!(id) when is_binary(id) do
-    Repo.get!(__MODULE__, id)
+    Repo.get!(Schema, id)
   end
 
   @doc """
@@ -98,7 +52,7 @@ defmodule Fleetlm.Agent do
   """
   @spec list(keyword()) :: [t()]
   def list(opts \\ []) do
-    query = from(a in __MODULE__, order_by: [asc: a.name])
+    query = from(a in Schema, order_by: [asc: a.name])
 
     query =
       case Keyword.get(opts, :status) do
@@ -117,7 +71,7 @@ defmodule Fleetlm.Agent do
     case get(id) do
       {:ok, agent} ->
         agent
-        |> changeset(attrs)
+        |> Schema.changeset(attrs)
         |> Repo.update()
 
       {:error, :not_found} = error ->
@@ -134,7 +88,7 @@ defmodule Fleetlm.Agent do
     case get(id) do
       {:ok, agent} ->
         agent
-        |> changeset(%{status: "disabled"})
+        |> Schema.changeset(%{status: "disabled"})
         |> Repo.update()
 
       {:error, :not_found} = error ->

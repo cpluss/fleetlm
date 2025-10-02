@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.APITest do
+defmodule Fleetlm.Storage.APITest do
   use Fleetlm.TestCase
 
   test "get_messages returns entries from disk log before they are persisted" do
@@ -35,7 +35,7 @@ defmodule FleetLM.Storage.APITest do
     on_exit(fn -> :telemetry.detach(handler_id) end)
 
     message = %Message{
-      id: Ulid.generate(),
+      id: Uniq.UUID.uuid7(:slug),
       session_id: session_id,
       sender_id: "sender",
       recipient_id: "recipient",
@@ -62,7 +62,7 @@ defmodule FleetLM.Storage.APITest do
     slot = :erlang.phash2(session_id, 64)
 
     persisted = %Message{
-      id: Ulid.generate(),
+      id: Uniq.UUID.uuid7(:slug),
       session_id: session_id,
       sender_id: "sender",
       recipient_id: "recipient",

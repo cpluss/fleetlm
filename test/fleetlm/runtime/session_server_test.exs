@@ -14,7 +14,7 @@ defmodule Fleetlm.Runtime.SessionServerTest do
       assert Process.alive?(pid)
 
       # Verify session is marked active
-      reloaded = Repo.get(FleetLM.Storage.Model.Session, session.id)
+      reloaded = Repo.get(Fleetlm.Storage.Model.Session, session.id)
       assert reloaded.status == "active"
 
       # Stop gracefully and wait for cleanup

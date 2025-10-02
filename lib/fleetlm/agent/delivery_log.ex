@@ -10,8 +10,6 @@ defmodule Fleetlm.Agent.DeliveryLog do
   use Ecto.Schema
   import Ecto.Changeset
 
-  alias Ulid
-
   @primary_key {:id, :string, autogenerate: false}
   schema "agent_delivery_logs" do
     field :session_id, :string
@@ -38,7 +36,7 @@ defmodule Fleetlm.Agent.DeliveryLog do
 
   defp put_default_id(changeset) do
     case get_field(changeset, :id) do
-      nil -> put_change(changeset, :id, Ulid.generate())
+      nil -> put_change(changeset, :id, Uniq.UUID.uuid7(:slug))
       _ -> changeset
     end
   end

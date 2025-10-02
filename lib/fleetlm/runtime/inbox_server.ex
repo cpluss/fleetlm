@@ -22,7 +22,7 @@ defmodule Fleetlm.Runtime.InboxServer do
   use GenServer, restart: :transient
   require Logger
 
-  alias FleetLM.Storage.API, as: StorageAPI
+  alias Fleetlm.Storage
 
   @inactivity_timeout :timer.minutes(15)
   # 1 second
@@ -82,7 +82,7 @@ defmodule Fleetlm.Runtime.InboxServer do
     Process.flag(:trap_exit, true)
 
     # Load all user sessions (DB query on init only)
-    {:ok, sessions_list} = StorageAPI.get_sessions_for_user(user_id)
+    {:ok, sessions_list} = Storage.get_sessions_for_user(user_id)
 
     # Subscribe to user's inbox notification topic
     Phoenix.PubSub.subscribe(@pubsub, "user:#{user_id}:inbox")

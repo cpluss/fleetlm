@@ -2,7 +2,7 @@ defmodule FleetlmWeb.SessionChannelTest do
   use Fleetlm.TestCase, mode: :channel
 
   alias Fleetlm.Runtime.{Router, SessionSupervisor}
-  alias FleetLM.Storage.API, as: StorageAPI
+  alias Fleetlm.Storage, as: StorageAPI
   alias FleetlmWeb.SessionChannel
 
   setup do

@@ -2,7 +2,7 @@ defmodule FleetlmWeb.SessionController do
   use FleetlmWeb, :controller
 
   alias Fleetlm.Runtime.Router
-  alias FleetLM.Storage.API, as: StorageAPI
+  alias Fleetlm.Storage
 
   action_fallback FleetlmWeb.FallbackController
 
@@ -12,10 +12,10 @@ defmodule FleetlmWeb.SessionController do
     query =
       case Map.get(params, "user_id") do
         nil ->
-          FleetLM.Storage.Model.Session
+          Fleetlm.Storage.Model.Session
 
         user_id when is_binary(user_id) ->
-          from(s in FleetLM.Storage.Model.Session, where: s.user_id == ^user_id)
+          from(s in Fleetlm.Storage.Model.Session, where: s.user_id == ^user_id)
       end
 
     sessions =
@@ -28,7 +28,7 @@ defmodule FleetlmWeb.SessionController do
   end
 
   def show(conn, %{"id" => session_id}) do
-    case StorageAPI.get_session(session_id) do
+    case Storage.get_session(session_id) do
       {:ok, session} ->
         json(conn, %{session: render_session(session)})
 
@@ -43,7 +43,7 @@ defmodule FleetlmWeb.SessionController do
   def create(conn, %{"sender_id" => sender_id, "recipient_id" => recipient_id} = params) do
     metadata = Map.get(params, "metadata", %{})
 
-    case StorageAPI.create_session(sender_id, recipient_id, metadata) do
+    case Storage.create_session(sender_id, recipient_id, metadata) do
       {:ok, session} ->
         conn
         |> put_status(:created)
@@ -60,7 +60,7 @@ defmodule FleetlmWeb.SessionController do
   def create(conn, %{"initiator_id" => initiator_id, "peer_id" => peer_id} = params) do
     metadata = Map.get(params, "metadata", %{})
 
-    case StorageAPI.create_session(initiator_id, peer_id, metadata) do
+    case Storage.create_session(initiator_id, peer_id, metadata) do
       {:ok, session} ->
         conn
         |> put_status(:created)
@@ -78,7 +78,7 @@ defmodule FleetlmWeb.SessionController do
     limit = parse_int(params["limit"], 50)
 
     # Get first participant from session to use for join (required for authorization)
-    case Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session_id) do
+    case Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id) do
       nil ->
         conn
         |> put_status(:not_found)
@@ -160,8 +160,8 @@ defmodule FleetlmWeb.SessionController do
   def mark_read(conn, %{"session_id" => session_id} = params) do
     with {:ok, participant_id} <- require_param(params, "participant_id"),
          last_seq <- parse_int(params["last_seq"], 0),
-         {:ok, _cursor} <- StorageAPI.update_cursor(session_id, participant_id, last_seq) do
-      session = Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session_id)
+         {:ok, _cursor} <- Storage.update_cursor(session_id, participant_id, last_seq) do
+      session = Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id)
 
       if session do
         json(conn, %{session: render_session(session)})
@@ -179,7 +179,7 @@ defmodule FleetlmWeb.SessionController do
   end
 
   def delete(conn, %{"session_id" => session_id}) do
-    case StorageAPI.archive_session(session_id) do
+    case Storage.archive_session(session_id) do
       {:ok, _session} ->
         send_resp(conn, :no_content, "")
 

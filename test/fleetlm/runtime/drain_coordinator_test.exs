@@ -48,8 +48,8 @@ defmodule Fleetlm.Runtime.DrainCoordinatorTest do
       Process.sleep(100)
 
       # Verify sessions are marked inactive in DB
-      session1_reloaded = Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session1.id)
-      session2_reloaded = Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session2.id)
+      session1_reloaded = Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session1.id)
+      session2_reloaded = Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session2.id)
 
       assert session1_reloaded.status == "inactive"
       assert session2_reloaded.status == "inactive"
@@ -88,7 +88,7 @@ defmodule Fleetlm.Runtime.DrainCoordinatorTest do
       assert result == :ok or match?({:error, {:partial_drain, _, _}}, result)
 
       # Session should be marked inactive (or DB access failed gracefully)
-      session_reloaded = Fleetlm.Repo.get(FleetLM.Storage.Model.Session, session.id)
+      session_reloaded = Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session.id)
 
       # Either inactive or we couldn't update due to ownership issues
       assert session_reloaded.status in ["inactive", "active"]

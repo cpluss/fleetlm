@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.Supervisor do
+defmodule Fleetlm.Storage.Supervisor do
   @moduledoc """
   Root supervisor for storage slots.
 
@@ -11,11 +11,11 @@ defmodule FleetLM.Storage.Supervisor do
 
   use Supervisor
 
-  alias FleetLM.Storage.SlotLogServer
+  alias Fleetlm.Storage.SlotLogServer
 
-  @registry FleetLM.Storage.Registry
-  @task_supervisor FleetLM.Storage.SlotLogTaskSupervisor
-  @slot_supervisor FleetLM.Storage.SlotSupervisor
+  @registry Fleetlm.Storage.Registry
+  @task_supervisor Fleetlm.Storage.SlotLogTaskSupervisor
+  @slot_supervisor Fleetlm.Storage.SlotSupervisor
 
   def start_link(init_arg) do
     Supervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -26,7 +26,7 @@ defmodule FleetLM.Storage.Supervisor do
     children = [
       {Registry, keys: :unique, name: @registry},
       {Task.Supervisor, name: @task_supervisor},
-      {FleetLM.Storage.SlotSupervisor, []}
+      {Fleetlm.Storage.SlotSupervisor, []}
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)
@@ -109,7 +109,7 @@ defmodule FleetLM.Storage.Supervisor do
   end
 end
 
-defmodule FleetLM.Storage.SlotSupervisor do
+defmodule Fleetlm.Storage.SlotSupervisor do
   @moduledoc false
 
   use DynamicSupervisor

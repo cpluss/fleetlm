@@ -1,4 +1,4 @@
-defmodule FleetLM.Storage.Model.Message do
+defmodule Fleetlm.Storage.Model.Message do
   @moduledoc """
   Model for the chat message.
   """
@@ -11,7 +11,7 @@ defmodule FleetLM.Storage.Model.Message do
   @type t :: %__MODULE__{}
 
   schema "messages" do
-    belongs_to :session, FleetLM.Storage.Model.Session, type: :string
+    belongs_to :session, Fleetlm.Storage.Model.Session, type: :string
 
     # We hardcode senders & recipients because we don't control participation
     # by default, it's up to the upstream application to manage.
@@ -48,7 +48,7 @@ defmodule FleetLM.Storage.Model.Message do
 
   defp ensure_id(changeset) do
     case get_field(changeset, :id) do
-      nil -> put_change(changeset, :id, Ulid.generate())
+      nil -> put_change(changeset, :id, Uniq.UUID.uuid7(:slug))
       _ -> changeset
     end
   end

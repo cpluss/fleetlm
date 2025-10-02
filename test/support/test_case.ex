@@ -25,7 +25,7 @@ defmodule Fleetlm.TestCase do
   ## Slot Log Isolation
 
   Each test gets its own temporary slot log directory. SlotLogServers are started
-  lazily via `FleetLM.Storage.Supervisor.ensure_started/1`, sharing the same
+  lazily via `Fleetlm.Storage.Supervisor.ensure_started/1`, sharing the same
   supervision pattern we use for sessions and inboxes. Tests flush and stop
   active slot servers during teardown to maintain isolation.
   """
@@ -38,10 +38,10 @@ defmodule Fleetlm.TestCase do
 
     quote do
       alias Fleetlm.Repo
-      alias FleetLM.Storage.API, as: StorageAPI
-      alias FleetLM.Storage.API, as: API
-      alias FleetLM.Storage.{SlotLogServer, Entry, DiskLog}
-      alias FleetLM.Storage.Model.{Session, Message, Cursor}
+      alias Fleetlm.Storage, as: StorageAPI
+      alias Fleetlm.Storage, as: API
+      alias Fleetlm.Storage.{SlotLogServer, Entry, DiskLog}
+      alias Fleetlm.Storage.Model.{Session, Message, Cursor}
 
       import Fleetlm.TestCase
 
@@ -87,7 +87,7 @@ defmodule Fleetlm.TestCase do
   Create a test session in the database.
   """
   def create_test_session(user_id \\ "alice", agent_id \\ "agent:bob", metadata \\ %{}) do
-    {:ok, session} = FleetLM.Storage.API.create_session(user_id, agent_id, metadata)
+    {:ok, session} = Fleetlm.Storage.create_session(user_id, agent_id, metadata)
     session
   end
 
@@ -95,7 +95,7 @@ defmodule Fleetlm.TestCase do
   Build an Entry struct for testing (does not persist).
   """
   def build_entry(slot, session_id, seq, opts \\ []) do
-    message_id = Keyword.get(opts, :message_id, Ulid.generate())
+    message_id = Keyword.get(opts, :message_id, Uniq.UUID.uuid7(:slug))
     sender_id = Keyword.get(opts, :sender_id, "sender-#{seq}")
     recipient_id = Keyword.get(opts, :recipient_id, "recipient-#{seq}")
     kind = Keyword.get(opts, :kind, "text")
@@ -103,7 +103,7 @@ defmodule Fleetlm.TestCase do
     metadata = Keyword.get(opts, :metadata, %{})
     idempotency_key = Keyword.get(opts, :idempotency_key, "idem-#{seq}")
 
-    message = %FleetLM.Storage.Model.Message{
+    message = %Fleetlm.Storage.Model.Message{
       id: message_id,
       session_id: session_id,
       sender_id: sender_id,
@@ -116,7 +116,7 @@ defmodule Fleetlm.TestCase do
       inserted_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
     }
 
-    FleetLM.Storage.Entry.from_message(slot, seq, idempotency_key, message)
+    Fleetlm.Storage.Entry.from_message(slot, seq, idempotency_key, message)
   end
 
   @doc """
@@ -124,7 +124,7 @@ defmodule Fleetlm.TestCase do
   Returns :ok on success, raises on timeout.
   """
   def wait_for_flush(slot, timeout \\ 2_000) do
-    FleetLM.Storage.SlotLogServer.notify_next_flush(slot)
+    Fleetlm.Storage.SlotLogServer.notify_next_flush(slot)
 
     receive do
       :flushed -> :ok
@@ -151,7 +151,7 @@ defmodule Fleetlm.TestCase do
   supervision tree as the runtime.
   """
   def ensure_slot_server(slot) do
-    FleetLM.Storage.Supervisor.ensure_started(slot)
+    Fleetlm.Storage.Supervisor.ensure_started(slot)
   end
 
   @doc """
@@ -272,9 +272,9 @@ defmodule Fleetlm.TestCase do
   end
 
   defp cleanup_slot_logs(temp_dir) do
-    FleetLM.Storage.Supervisor.active_slots()
+    Fleetlm.Storage.Supervisor.active_slots()
     |> Enum.each(fn slot ->
-      case FleetLM.Storage.Supervisor.flush_slot(slot) do
+      case Fleetlm.Storage.Supervisor.flush_slot(slot) do
         {:error, reason} ->
           Logger.warning("Failed to flush slot #{slot} during test cleanup: #{inspect(reason)}")
 
@@ -282,7 +282,7 @@ defmodule Fleetlm.TestCase do
           :ok
       end
 
-      case FleetLM.Storage.Supervisor.stop_slot(slot) do
+      case Fleetlm.Storage.Supervisor.stop_slot(slot) do
         {:error, reason} ->
           Logger.warning("Failed to stop slot #{slot} during test cleanup: #{inspect(reason)}")
 
