@@ -18,7 +18,6 @@ defmodule FleetlmWeb.SessionChannel do
       {:ok, session} ->
         case Router.join(session_id, participant_id, last_seq: 0, limit: 100) do
           {:ok, result} ->
-            Phoenix.PubSub.subscribe(Fleetlm.PubSub, "session:" <> session_id)
             response = %{session_id: session_id, messages: result.messages}
             {:ok, response, assign(socket, :session, session)}
 

@@ -180,11 +180,13 @@ defmodule FleetlmWeb.SessionController do
   defp render_session(%{metadata: metadata} = session) do
     %{
       id: session.id,
-      # Map new field names to old API for backward compatibility
-      initiator_id: session.sender_id,
-      peer_id: session.recipient_id,
-      sender_id: session.sender_id,
-      recipient_id: session.recipient_id,
+      # Map user_id/agent_id to API field names for backward compatibility
+      initiator_id: session.user_id,
+      peer_id: session.agent_id,
+      sender_id: session.user_id,
+      recipient_id: session.agent_id,
+      user_id: session.user_id,
+      agent_id: session.agent_id,
       status: session.status,
       metadata: metadata,
       inserted_at: encode_datetime(session.inserted_at),
