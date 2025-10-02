@@ -130,10 +130,20 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
     Enum.each(tasks, &Task.shutdown(&1, :brutal_kill))
 
     elapsed = System.monotonic_time(:millisecond) - start_time
+    attempted = length(active_sessions)
 
     Logger.debug(
       "DrainCoordinator: Completed drain in #{elapsed}ms - " <>
         "#{successes} succeeded, #{failures} failed/timed out"
+    )
+
+    # Emit telemetry - CRITICAL for data loss tracking
+    Fleetlm.Observability.Telemetry.emit_session_drain(
+      :shutdown,
+      attempted,
+      successes,
+      failures,
+      elapsed
     )
 
     # Give a brief grace period for final cleanup

@@ -49,12 +49,27 @@ defmodule FleetLM.Storage.DiskLog do
           "Disk log for slot #{slot} was corrupted, recovered #{recovered} entries, lost #{bad_bytes} bytes"
         )
 
+        Fleetlm.Observability.Telemetry.emit_storage_recovery(
+          slot,
+          :corruption,
+          recovered,
+          bad_bytes
+        )
+
         {:ok, handle}
 
       {:error, {:not_a_log_file, _path}} ->
         # File is completely corrupted beyond repair - delete and recreate
         Logger.warning(
           "Disk log for slot #{slot} is not a valid log file, recreating from scratch"
+        )
+
+        # Critical: complete data loss for this slot
+        Fleetlm.Observability.Telemetry.emit_storage_recovery(
+          slot,
+          :not_a_log_file,
+          0,
+          0
         )
 
         File.rm(path)
@@ -65,8 +80,19 @@ defmodule FleetLM.Storage.DiskLog do
                {:repair, false},
                {:type, :halt}
              ]) do
-          {:ok, handle} -> {:ok, handle}
-          {:error, _} = error -> error
+          {:ok, handle} ->
+            {:ok, handle}
+
+          {:error, _} = error ->
+            # Repair failed - slot is dead
+            Fleetlm.Observability.Telemetry.emit_storage_recovery(
+              slot,
+              :repair_failed,
+              0,
+              0
+            )
+
+            error
         end
 
       {:error, _} = error ->

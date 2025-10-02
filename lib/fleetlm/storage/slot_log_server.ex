@@ -112,11 +112,33 @@ defmodule FleetLM.Storage.SlotLogServer do
 
   @impl true
   def handle_call({:append, entry}, _from, state) do
+    start = System.monotonic_time()
+
     case DiskLog.append(state.log, entry) do
       :ok ->
+        duration_us =
+          System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+
+        Fleetlm.Observability.Telemetry.emit_storage_append(
+          entry.session_id,
+          state.slot,
+          :ok,
+          duration_us
+        )
+
         {:reply, :ok, %{state | dirty: true}}
 
       {:error, _} = error ->
+        duration_us =
+          System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+
+        Fleetlm.Observability.Telemetry.emit_storage_append(
+          entry.session_id,
+          state.slot,
+          :error,
+          duration_us
+        )
+
         {:reply, error, state}
     end
   end

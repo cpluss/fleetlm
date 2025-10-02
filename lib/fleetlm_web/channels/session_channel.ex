@@ -86,7 +86,14 @@ defmodule FleetlmWeb.SessionChannel do
 
   # Catch-all for malformed messages
   @impl true
-  def handle_in("send", payload, socket) do
+  def handle_in("send", payload, %{assigns: %{session: session}} = socket) do
+    # Emit telemetry - CRITICAL data integrity tracking
+    Fleetlm.Observability.Telemetry.emit_agent_validation_error(
+      session.agent_id,
+      session.id,
+      :invalid_message_format
+    )
+
     {:reply,
      {:error,
       %{

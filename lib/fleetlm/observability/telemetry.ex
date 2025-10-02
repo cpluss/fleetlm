@@ -28,6 +28,14 @@ defmodule Fleetlm.Observability.Telemetry do
 
   @storage_read_event [:fleetlm, :storage, :read]
   @storage_flush_event [:fleetlm, :storage, :flush]
+  @storage_recovery_event [:fleetlm, :storage, :recovery]
+  @storage_append_event [:fleetlm, :storage, :append]
+
+  @agent_webhook_event [:fleetlm, :agent, :webhook, :dispatch]
+  @agent_parse_error_event [:fleetlm, :agent, :parse_error]
+  @agent_validation_error_event [:fleetlm, :agent, :validation_error]
+
+  @session_drain_event [:fleetlm, :session, :drain]
 
   @spec measure_session_append(String.t(), %{optional(atom()) => term()}, (-> {term(), map()})) ::
           term()
@@ -224,6 +232,121 @@ defmodule Fleetlm.Observability.Telemetry do
 
     :telemetry.execute(@storage_flush_event, measurements, metadata)
   end
+
+  @doc """
+  Emit storage recovery telemetry - CRITICAL for data loss detection.
+  """
+  @spec emit_storage_recovery(
+          non_neg_integer(),
+          atom(),
+          non_neg_integer(),
+          non_neg_integer()
+        ) :: :ok
+  def emit_storage_recovery(slot, recovery_type, recovered_entries, lost_bytes)
+      when is_integer(slot) and recovery_type in [:corruption, :not_a_log_file, :repair_failed] and
+             is_integer(recovered_entries) and is_integer(lost_bytes) do
+    measurements = %{recovered_entries: recovered_entries, lost_bytes: lost_bytes}
+
+    metadata = %{
+      slot: slot,
+      type: recovery_type
+    }
+
+    :telemetry.execute(@storage_recovery_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit storage append telemetry.
+  """
+  @spec emit_storage_append(String.t(), non_neg_integer(), atom(), integer()) :: :ok
+  def emit_storage_append(session_id, slot, result, duration_us)
+      when is_binary(session_id) and is_integer(slot) and result in [:ok, :error] and
+             is_integer(duration_us) do
+    measurements = %{duration: duration_us, count: 1}
+    metadata = %{session_id: session_id, slot: slot, result: result}
+
+    :telemetry.execute(@storage_append_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit session drain telemetry - CRITICAL for graceful shutdown tracking.
+  """
+  @spec emit_session_drain(atom(), non_neg_integer(), non_neg_integer(), non_neg_integer(), integer()) ::
+          :ok
+  def emit_session_drain(reason, attempted, succeeded, failed, duration_ms)
+      when reason in [:rebalance, :shutdown, :sigterm] and is_integer(attempted) and
+             is_integer(succeeded) and is_integer(failed) and is_integer(duration_ms) do
+    measurements = %{
+      duration: duration_ms,
+      sessions_attempted: attempted,
+      sessions_succeeded: succeeded,
+      sessions_failed: failed
+    }
+
+    metadata = %{reason: reason, node: Node.self()}
+
+    :telemetry.execute(@session_drain_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit agent webhook dispatch telemetry - tracks every webhook call.
+  """
+  @spec emit_agent_webhook(String.t(), String.t(), atom(), integer(), keyword()) :: :ok
+  def emit_agent_webhook(agent_id, session_id, result, duration_us, opts \\ [])
+      when is_binary(agent_id) and is_binary(session_id) and result in [:ok, :error] and
+             is_integer(duration_us) do
+    error_type = Keyword.get(opts, :error_type)
+    status_code = Keyword.get(opts, :status_code)
+    message_count = Keyword.get(opts, :message_count, 0)
+
+    measurements = %{duration: duration_us, message_count: message_count}
+
+    metadata =
+      %{agent_id: agent_id, session_id: session_id, result: result}
+      |> maybe_put(:error_type, error_type)
+      |> maybe_put(:status_code, status_code)
+
+    :telemetry.execute(@agent_webhook_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit agent parse error telemetry - CRITICAL protocol violation tracking.
+  """
+  @spec emit_agent_parse_error(String.t(), String.t(), atom(), String.t()) :: :ok
+  def emit_agent_parse_error(agent_id, session_id, error_type, line)
+      when is_binary(agent_id) and is_binary(session_id) and is_atom(error_type) and
+             is_binary(line) do
+    measurements = %{count: 1}
+
+    metadata = %{
+      agent_id: agent_id,
+      session_id: session_id,
+      error_type: error_type,
+      line: String.slice(line, 0, 200)
+    }
+
+    :telemetry.execute(@agent_parse_error_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit agent validation error telemetry - edge validation failures.
+  """
+  @spec emit_agent_validation_error(String.t(), String.t(), atom()) :: :ok
+  def emit_agent_validation_error(agent_id, session_id, validation_error)
+      when is_binary(agent_id) and is_binary(session_id) and is_atom(validation_error) do
+    measurements = %{count: 1}
+
+    metadata = %{
+      agent_id: agent_id,
+      session_id: session_id,
+      validation: validation_error
+    }
+
+    :telemetry.execute(@agent_validation_error_event, measurements, metadata)
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp normalize_role(%{role: role}) when is_binary(role) or is_atom(role), do: to_string(role)
   defp normalize_role(%{"role" => role}) when is_binary(role), do: role

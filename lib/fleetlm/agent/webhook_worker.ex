@@ -147,6 +147,14 @@ defmodule Fleetlm.Agent.WebhookWorker do
             line: line
           )
 
+          # Emit telemetry - CRITICAL protocol violation
+          Fleetlm.Observability.Telemetry.emit_agent_parse_error(
+            agent_id,
+            session_id,
+            :missing_fields,
+            line
+          )
+
           {:error, :invalid_message_format}
 
         {:error, reason} ->
@@ -154,6 +162,14 @@ defmodule Fleetlm.Agent.WebhookWorker do
             session_id: session_id,
             agent_id: agent_id,
             line: line
+          )
+
+          # Emit telemetry - CRITICAL protocol violation
+          Fleetlm.Observability.Telemetry.emit_agent_parse_error(
+            agent_id,
+            session_id,
+            :invalid_json,
+            line
           )
 
           {:error, {:json_decode_failed, reason}}
@@ -336,12 +352,23 @@ defmodule Fleetlm.Agent.WebhookWorker do
 
   defp succeed_job(state, ref, job) do
     duration = System.monotonic_time(:millisecond) - job.started_at
+    duration_us = duration * 1000
 
     Logger.debug("Agent webhook success",
       session_id: job.session_id,
       agent_id: job.agent_id,
       messages: job.message_count,
       duration_ms: duration
+    )
+
+    # Emit telemetry
+    Fleetlm.Observability.Telemetry.emit_agent_webhook(
+      job.agent_id,
+      job.session_id,
+      :ok,
+      duration_us,
+      message_count: job.message_count,
+      status_code: 200
     )
 
     log_success(job.agent_id, job.session_id, duration)
@@ -352,11 +379,24 @@ defmodule Fleetlm.Agent.WebhookWorker do
 
   defp fail_job(state, ref, job, reason) do
     duration = System.monotonic_time(:millisecond) - job.started_at
+    duration_us = duration * 1000
 
     Logger.warning("Agent webhook failed: #{inspect(reason)}",
       session_id: job.session_id,
       agent_id: job.agent_id,
       duration_ms: duration
+    )
+
+    # Emit telemetry - CRITICAL for agent reliability tracking
+    error_type = classify_error(reason)
+
+    Fleetlm.Observability.Telemetry.emit_agent_webhook(
+      job.agent_id,
+      job.session_id,
+      :error,
+      duration_us,
+      error_type: error_type,
+      message_count: 0
     )
 
     log_failure(job.agent_id, job.session_id, reason, duration)
@@ -366,6 +406,11 @@ defmodule Fleetlm.Agent.WebhookWorker do
     stats = increment_stats(state.stats, :failures)
     %{state | stats: stats, jobs: Map.delete(state.jobs, ref)}
   end
+
+  defp classify_error({:request_failed, %Req.TransportError{}}), do: :connection
+  defp classify_error({:request_failed, %Req.HTTPError{}}), do: :connection
+  defp classify_error({:http_error, _}), do: :http_error
+  defp classify_error(_), do: :unknown
 
   defp increment_stats(stats, key) do
     Map.update(stats, key, 1, &(&1 + 1))
