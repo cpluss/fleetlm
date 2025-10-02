@@ -16,6 +16,7 @@ RUN apt-get update && \
       build-essential \
       curl \
       git \
+      openssl \
       ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
