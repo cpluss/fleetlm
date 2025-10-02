@@ -284,14 +284,49 @@ defmodule FleetLM.Storage.SlotLogServer do
   end
 
   defp flush_to_database(slot, log) do
-    with :ok <- DiskLog.sync(log),
-         {:ok, entries} <- DiskLog.read_all(log) do
-      persist_entries(slot, log, entries)
+    start = System.monotonic_time()
+
+    try do
+      result =
+        with :ok <- DiskLog.sync(log),
+             {:ok, entries} <- DiskLog.read_all(log) do
+          persist_entries(slot, log, entries)
+        end
+
+      duration_us =
+        System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+
+      case result do
+        {:ok, {:persisted, count}} ->
+          Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :ok, count, duration_us)
+          result
+
+        {:ok, :noop} ->
+          Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :ok, 0, duration_us)
+          result
+
+        {:error, reason} = error ->
+          Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :error, 0, duration_us)
+          Logger.error("Flush failed for slot #{slot}: #{inspect(reason)}")
+          error
+      end
+    rescue
+      error ->
+        duration_us =
+          System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+
+        Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :error, 0, duration_us)
+        Logger.error("Flush failed for slot #{slot}: #{inspect(error)}")
+        {:error, error}
+    catch
+      kind, reason ->
+        duration_us =
+          System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+
+        Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :error, 0, duration_us)
+        Logger.error("Flush failed for slot #{slot}: #{inspect({kind, reason})}")
+        {:error, {kind, reason}}
     end
-  rescue
-    error -> {:error, error}
-  catch
-    kind, reason -> {:error, {kind, reason}}
   end
 
   defp persist_entries(_slot, _log, []), do: {:ok, :noop}
@@ -327,9 +362,8 @@ defmodule FleetLM.Storage.SlotLogServer do
     kind, reason -> {:error, {kind, reason}}
   end
 
-  defp log_flush_error(slot, reason) do
-    unless Application.get_env(:fleetlm, :suppress_slot_flush_errors, false) do
-      Logger.error("Flush failed for slot #{slot}: #{inspect(reason)}")
-    end
+  defp log_flush_error(_slot, _reason) do
+    # Errors are now handled via telemetry in flush_to_database
+    :ok
   end
 end

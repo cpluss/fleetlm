@@ -136,6 +136,7 @@ defmodule FleetLM.Storage.API do
   @spec get_messages(String.t(), non_neg_integer(), pos_integer()) ::
           {:ok, [Message.t()]}
   def get_messages(session_id, after_seq, limit) do
+    start = System.monotonic_time()
     slot = storage_slot_for_session(session_id)
     :ok = ensure_slot_server_started(slot)
 
@@ -157,27 +158,12 @@ defmodule FleetLM.Storage.API do
     # return them directly without hitting the database.
     case length(tail) >= limit do
       true ->
-        require Logger
-
-        Logger.debug("Serving #{length(tail)} messages from disk log for session #{session_id}",
-          session_id: session_id,
-          after_seq: after_seq,
-          limit: limit,
-          tail_count: length(tail)
-        )
-
-        {:ok, Enum.take(tail, limit)}
+        result = Enum.take(tail, limit)
+        duration_us = System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+        Fleetlm.Observability.Telemetry.emit_storage_read(session_id, slot, :disk_log, length(result), duration_us)
+        {:ok, result}
 
       false ->
-        require Logger
-
-        Logger.debug(
-          "Reading from database for session #{session_id} (tail: #{length(tail)}, limit: #{limit})",
-          session_id: session_id,
-          after_seq: after_seq,
-          limit: limit,
-          tail_count: length(tail)
-        )
         entry_seqs = tail |> Enum.map(& &1.seq) |> MapSet.new()
         remaining = max(limit - length(tail), 0)
         # Over-fetch a bit to safely account for any overlap with slot entries
@@ -195,6 +181,9 @@ defmodule FleetLM.Storage.API do
           (db_messages ++ tail)
           |> Enum.sort_by(& &1.seq)
           |> Enum.take(limit)
+
+        duration_us = System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+        Fleetlm.Observability.Telemetry.emit_storage_read(session_id, slot, :database, length(messages), duration_us)
 
         {:ok, messages}
     end

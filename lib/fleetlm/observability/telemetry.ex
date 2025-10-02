@@ -26,6 +26,9 @@ defmodule Fleetlm.Observability.Telemetry do
   @cache_events [:fleetlm, :cache]
   @pubsub_broadcast_event [:fleetlm, :pubsub, :broadcast]
 
+  @storage_read_event [:fleetlm, :storage, :read]
+  @storage_flush_event [:fleetlm, :storage, :flush]
+
   @spec measure_session_append(String.t(), %{optional(atom()) => term()}, (-> {term(), map()})) ::
           term()
   def measure_session_append(session_id, metadata \\ %{}, fun) when is_function(fun, 0) do
@@ -188,6 +191,38 @@ defmodule Fleetlm.Observability.Telemetry do
     metadata = %{topic: topic, event: event}
 
     :telemetry.execute(@pubsub_broadcast_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit storage read telemetry - tracks whether messages came from disk log or database.
+  """
+  @spec emit_storage_read(String.t(), non_neg_integer(), atom(), non_neg_integer(), integer()) ::
+          :ok
+  def emit_storage_read(session_id, slot, source, message_count, duration_us)
+      when is_binary(session_id) and is_integer(slot) and source in [:disk_log, :database] and
+             is_integer(message_count) and is_integer(duration_us) do
+    measurements = %{duration: duration_us, count: message_count}
+
+    metadata = %{
+      session_id: session_id,
+      slot: slot,
+      source: source
+    }
+
+    :telemetry.execute(@storage_read_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit storage flush telemetry.
+  """
+  @spec emit_storage_flush(non_neg_integer(), atom(), non_neg_integer(), integer()) :: :ok
+  def emit_storage_flush(slot, result, message_count, duration_us)
+      when is_integer(slot) and result in [:ok, :error] and is_integer(message_count) and
+             is_integer(duration_us) do
+    measurements = %{duration: duration_us, count: message_count}
+    metadata = %{slot: slot, result: result}
+
+    :telemetry.execute(@storage_flush_event, measurements, metadata)
   end
 
   defp normalize_role(%{role: role}) when is_binary(role) or is_atom(role), do: to_string(role)
