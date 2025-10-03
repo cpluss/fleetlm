@@ -9,7 +9,7 @@ defmodule Fleetlm.Agent do
   import Ecto.Query
 
   alias Fleetlm.Repo
-  alias Fleetlm.Agent.{Schema, DeliveryLog}
+  alias Fleetlm.Agent.Schema
 
   @type t :: Schema.t()
 
@@ -105,31 +105,5 @@ defmodule Fleetlm.Agent do
       {:ok, %{status: "enabled"}} -> true
       _ -> false
     end
-  end
-
-  ## Delivery Logs
-
-  @doc """
-  Log a webhook delivery attempt.
-  """
-  @spec log_delivery(map()) :: {:ok, DeliveryLog.t()} | {:error, Ecto.Changeset.t()}
-  def log_delivery(attrs) do
-    %DeliveryLog{}
-    |> DeliveryLog.changeset(attrs)
-    |> Repo.insert()
-  end
-
-  @doc """
-  List delivery logs for an agent.
-  """
-  @spec list_delivery_logs(String.t(), keyword()) :: [DeliveryLog.t()]
-  def list_delivery_logs(agent_id, opts \\ []) do
-    limit = Keyword.get(opts, :limit, 50)
-
-    DeliveryLog
-    |> where(agent_id: ^agent_id)
-    |> order_by([d], desc: d.inserted_at)
-    |> limit(^limit)
-    |> Repo.all()
   end
 end

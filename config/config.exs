@@ -27,15 +27,6 @@ config :fleetlm, FleetlmWeb.Endpoint,
   ],
   pubsub_server: Fleetlm.PubSub
 
-# Configures the mailer
-#
-# By default it uses the "Local" adapter which stores the emails
-# locally. You can see the emails in your browser, at "/dev/mailbox".
-#
-# For production it's recommended to configure a different adapter
-# at the `config/runtime.exs`.
-config :fleetlm, Fleetlm.Mailer, adapter: Swoosh.Adapters.Local
-
 # Configures Elixir's Logger
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
@@ -43,9 +34,6 @@ config :logger, :default_formatter,
 
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
-
-# Disable default OpenTelemetry exporters; Prometheus metrics are exposed via PromEx.
-config :opentelemetry, :processors, []
 
 config :libcluster, topologies: []
 

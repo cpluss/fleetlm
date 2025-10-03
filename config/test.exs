@@ -22,12 +22,6 @@ config :fleetlm, FleetlmWeb.Endpoint,
   secret_key_base: "j00A2bogYM9pz50icwpf23zy58245sY8GUZ67/P1CqXOIxD0kbwNBPR4vjbfl82k",
   server: false
 
-# In test we don't send emails
-config :fleetlm, Fleetlm.Mailer, adapter: Swoosh.Adapters.Test
-
-# Disable swoosh api client as it is only required for production adapters
-config :swoosh, :api_client, false
-
 # Print only warnings and errors during test
 config :logger, level: :warning
 

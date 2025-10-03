@@ -206,23 +206,12 @@ defmodule Fleetlm.Agent.WebhookWorker do
     Map.merge(base, agent.headers)
   end
 
-  defp log_success(agent_id, session_id, duration) do
-    Agent.log_delivery(%{
-      agent_id: agent_id,
-      session_id: session_id,
-      status: "success",
-      latency_ms: duration
-    })
-  end
-
   defp log_failure(agent_id, session_id, reason, duration) do
-    Agent.log_delivery(%{
-      agent_id: agent_id,
+    Logger.error("Agent webhook failed: #{inspect(reason)}",
       session_id: session_id,
-      status: "failed",
-      error: inspect(reason),
-      latency_ms: duration
-    })
+      agent_id: agent_id,
+      duration_ms: duration
+    )
   end
 
   defp begin_dispatch(session_id, agent_id, started_at) do
@@ -370,8 +359,6 @@ defmodule Fleetlm.Agent.WebhookWorker do
       message_count: job.message_count,
       status_code: 200
     )
-
-    log_success(job.agent_id, job.session_id, duration)
 
     stats = increment_stats(state.stats, :successes)
     %{state | stats: stats, jobs: Map.delete(state.jobs, ref)}

@@ -45,23 +45,15 @@ defmodule Fleetlm.MixProject do
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
-      {:swoosh, "~> 1.16"},
       {:req, "~> 0.5"},
-      {:gun, "~> 2.1"},
       {:cachex, "~> 3.6"},
       {:prom_ex, "~> 1.11"},
       {:libcluster, "~> 3.3"},
-      {:gettext, "~> 0.26"},
       {:jason, "~> 1.2"},
       {:bandit, "~> 1.5"},
-      {:websockex, "~> 0.4"},
       {:phoenix_pubsub_redis, "~> 3.0"},
       {:redix, "~> 1.5"},
-      {:opentelemetry_api, "~> 1.3"},
-      {:opentelemetry, "~> 1.3"},
-      {:opentelemetry_exporter, "~> 1.7"},
-      {:uniq, "~> 0.6"},
-      {:benchee, "~> 1.3", only: [:dev, :test]}
+      {:uniq, "~> 0.6"}
     ]
   end
 
