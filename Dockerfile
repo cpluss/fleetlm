@@ -1,12 +1,10 @@
-# syntax=docker/dockerfile:1
-
-########################################
-# Build image                                                               #
-########################################
-ARG ELIXIR_VERSION=1.15.7
+ARG ELIXIR_VERSION=1.18.4
+ARG OTP_VERSION=28.0
 ARG DEBIAN_VERSION=bookworm-slim
 
-FROM elixir:${ELIXIR_VERSION}-slim AS build
+# -------
+# BUILD
+FROM elixir:${ELIXIR_VERSION} AS build
 
 ENV LANG=C.UTF-8 \
     MIX_ENV=prod
@@ -33,16 +31,13 @@ RUN mix deps.get --only ${MIX_ENV} && \
 
 COPY priv priv
 COPY lib lib
-COPY assets assets
 
-# Compile application to ensure colocated hooks are generated before bundling assets
 RUN mix compile
-RUN mix assets.deploy
 RUN mix release
 
-########################################
-# Runtime image                                                             #
-########################################
+# -------
+# RUNTIME
+
 FROM debian:${DEBIAN_VERSION} AS app
 
 ENV LANG=C.UTF-8 \
