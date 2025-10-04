@@ -30,6 +30,10 @@ defmodule Fleetlm.Storage.SlotLogServer do
   @default_retention_bytes 128 * 1024 * 1024
   @default_retention_target 0.75
 
+  # PostgreSQL has a parameter limit of ~65535. With 10 fields per message,
+  # we can safely insert ~6500 messages. Use 5000 for safety margin.
+  @insert_batch_size 5000
+
   @type state :: %{
           slot: non_neg_integer(),
           log: DiskLog.handle(),
@@ -449,18 +453,33 @@ defmodule Fleetlm.Storage.SlotLogServer do
             }
           end)
 
-        case Repo.insert_all(Message, messages, on_conflict: :nothing) do
-          {count, _} when is_integer(count) ->
-            {:ok, %{count: count, flushed_count: total_entries}}
-
-          other ->
-            {:error, {slot, other}}
-        end
+        batch_insert_messages(slot, messages, total_entries)
     end
   rescue
     error -> {:error, error}
   catch
     kind, reason -> {:error, {kind, reason}}
+  end
+
+  defp batch_insert_messages(slot, messages, total_entries) do
+    messages
+    |> Enum.chunk_every(@insert_batch_size)
+    |> Enum.reduce_while({:ok, 0}, fn batch, {:ok, acc_count} ->
+      case Repo.insert_all(Message, batch, on_conflict: :nothing) do
+        {count, _} when is_integer(count) ->
+          {:cont, {:ok, acc_count + count}}
+
+        other ->
+          {:halt, {:error, {slot, other}}}
+      end
+    end)
+    |> case do
+      {:ok, total_count} ->
+        {:ok, %{count: total_count, flushed_count: total_entries}}
+
+      {:error, _} = error ->
+        error
+    end
   end
 
   defp maybe_compact_log(%{retention_bytes: :infinity} = state), do: state
