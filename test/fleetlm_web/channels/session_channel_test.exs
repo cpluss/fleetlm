@@ -26,7 +26,7 @@ defmodule FleetlmWeb.SessionChannelTest do
         %{}
       )
 
-    {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"participant_id" => "user:alice"})
+    {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"user_id" => "user:alice"})
 
     session_id = session.id
 
@@ -40,7 +40,7 @@ defmodule FleetlmWeb.SessionChannelTest do
   end
 
   test "only participants may join", %{session: session} do
-    {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"participant_id" => "user:mallory"})
+    {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"user_id" => "user:mallory"})
 
     assert {:error, %{reason: "unauthorized"}} =
              subscribe_and_join(socket, SessionChannel, "session:" <> session.id)

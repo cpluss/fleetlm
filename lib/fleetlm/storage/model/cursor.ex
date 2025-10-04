@@ -1,6 +1,6 @@
 defmodule Fleetlm.Storage.Model.Cursor do
   @moduledoc """
-  Maintaining read cursors for participants on a given session. Separate
+  Maintaining read cursors for users on a given session. Separate
   table in order to avoid hammering the session table with what could be
   quite frequent reads & updates.
   """
@@ -13,7 +13,7 @@ defmodule Fleetlm.Storage.Model.Cursor do
 
   schema "cursors" do
     belongs_to :session, Fleetlm.Storage.Model.Session, type: :string
-    field :participant_id, :string
+    field :user_id, :string, source: :participant_id
     field :last_seq, :integer
 
     # Sharding for convenience for future distribution if needed
@@ -23,7 +23,7 @@ defmodule Fleetlm.Storage.Model.Cursor do
     timestamps()
   end
 
-  @required_fields ~w(session_id participant_id last_seq shard_key)a
+  @required_fields ~w(session_id user_id last_seq shard_key)a
 
   def changeset(cursor, attrs) do
     cursor

@@ -52,15 +52,15 @@ defmodule Fleetlm.Storage do
   end
 
   @doc """
-  Get all sessions this participant is involved in (either as user or agent).
+  Get all sessions this identity is involved in (either as user or agent).
   """
-  @spec get_sessions_for_participant(String.t()) :: {:ok, [Session.t()]}
-  def get_sessions_for_participant(participant_id) do
+  @spec get_sessions_for_identity(String.t()) :: {:ok, [Session.t()]}
+  def get_sessions_for_identity(identity_id) do
     sessions =
       Session
       |> where(
         [s],
-        (s.user_id == ^participant_id or s.agent_id == ^participant_id) and
+        (s.user_id == ^identity_id or s.agent_id == ^identity_id) and
           s.status != "archived"
       )
       |> Repo.all()
@@ -236,18 +236,18 @@ defmodule Fleetlm.Storage do
   end
 
   @doc """
-  Update read cursor for a participant on a session.
+  Update read cursor for a user on a session.
 
   Hits database - not for hot-path.
   """
   @spec update_cursor(String.t(), String.t(), non_neg_integer()) ::
           {:ok, Cursor.t()} | {:error, Ecto.Changeset.t()} | no_return
-  def update_cursor(session_id, participant_id, last_seq) do
+  def update_cursor(session_id, user_id, last_seq) do
     shard_key = storage_slot_for_session(session_id)
 
     attrs = %{
       session_id: session_id,
-      participant_id: participant_id,
+      user_id: user_id,
       last_seq: last_seq,
       shard_key: shard_key
     }
@@ -256,7 +256,7 @@ defmodule Fleetlm.Storage do
     |> Cursor.changeset(attrs)
     |> Repo.insert(
       on_conflict: {:replace, [:last_seq, :updated_at]},
-      conflict_target: [:session_id, :participant_id]
+      conflict_target: [:session_id, :user_id]
     )
   end
 

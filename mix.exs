@@ -45,6 +45,7 @@ defmodule Fleetlm.MixProject do
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
+      {:phoenix_live_view, "~> 1.0"},
       {:req, "~> 0.5"},
       {:cachex, "~> 3.6"},
       {:prom_ex, "~> 1.11"},

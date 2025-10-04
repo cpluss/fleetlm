@@ -118,12 +118,12 @@ defmodule Fleetlm.Storage.IntegrationTest do
       assert session2.id in session_ids
     end
 
-    test "get_sessions_for_participant" do
+    test "get_sessions_for_identity" do
       session1 = create_test_session("alice", "bob")
       session2 = create_test_session("charlie", "alice")
       _session3 = create_test_session("bob", "charlie")
 
-      {:ok, sessions} = API.get_sessions_for_participant("alice")
+      {:ok, sessions} = API.get_sessions_for_identity("alice")
       session_ids = Enum.map(sessions, & &1.id) |> Enum.sort()
 
       assert length(sessions) == 2
@@ -150,7 +150,7 @@ defmodule Fleetlm.Storage.IntegrationTest do
 
       {:ok, cursor} = API.update_cursor(session.id, "alice", 5)
       assert cursor.session_id == session.id
-      assert cursor.participant_id == "alice"
+      assert cursor.user_id == "alice"
       assert cursor.last_seq == 5
 
       # Updating again should upsert

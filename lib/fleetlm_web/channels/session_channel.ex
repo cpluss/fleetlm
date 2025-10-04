@@ -11,12 +11,14 @@ defmodule FleetlmWeb.SessionChannel do
   @impl true
   def join(
         "session:" <> session_id,
-        _params,
-        %{assigns: %{participant_id: participant_id}} = socket
+        params,
+        %{assigns: %{user_id: user_id}} = socket
       ) do
-    case authorize(session_id, participant_id) do
+    last_seq = parse_last_seq(Map.get(params, "last_seq"))
+
+    case authorize(session_id, user_id) do
       {:ok, session} ->
-        case Router.join(session_id, participant_id, last_seq: 0, limit: 100) do
+        case Router.join(session_id, user_id, last_seq: last_seq, limit: 100) do
           {:ok, result} ->
             response = %{session_id: session_id, messages: result.messages}
             {:ok, response, assign(socket, :session, session)}
@@ -56,10 +58,10 @@ defmodule FleetlmWeb.SessionChannel do
             "metadata" => metadata
           }
         },
-        %{assigns: %{session: session, participant_id: participant_id}} = socket
+        %{assigns: %{session: session, user_id: user_id}} = socket
       )
       when is_binary(kind) and is_map(message_content) and is_map(metadata) do
-    do_send_message(socket, session, participant_id, kind, message_content, metadata)
+    do_send_message(socket, session, user_id, kind, message_content, metadata)
   end
 
   # Message with content and kind only (metadata defaults to %{})
@@ -67,10 +69,10 @@ defmodule FleetlmWeb.SessionChannel do
   def handle_in(
         "send",
         %{"content" => %{"kind" => kind, "content" => message_content}},
-        %{assigns: %{session: session, participant_id: participant_id}} = socket
+        %{assigns: %{session: session, user_id: user_id}} = socket
       )
       when is_binary(kind) and is_map(message_content) do
-    do_send_message(socket, session, participant_id, kind, message_content, %{})
+    do_send_message(socket, session, user_id, kind, message_content, %{})
   end
 
   # Message with only content (kind defaults to "text", metadata to %{})
@@ -78,10 +80,10 @@ defmodule FleetlmWeb.SessionChannel do
   def handle_in(
         "send",
         %{"content" => %{"content" => message_content}},
-        %{assigns: %{session: session, participant_id: participant_id}} = socket
+        %{assigns: %{session: session, user_id: user_id}} = socket
       )
       when is_map(message_content) do
-    do_send_message(socket, session, participant_id, "text", message_content, %{})
+    do_send_message(socket, session, user_id, "text", message_content, %{})
   end
 
   # Catch-all for malformed messages
@@ -103,8 +105,8 @@ defmodule FleetlmWeb.SessionChannel do
       }}, socket}
   end
 
-  defp do_send_message(socket, session, participant_id, kind, content, metadata) do
-    case Router.append_message(session.id, participant_id, kind, content, metadata) do
+  defp do_send_message(socket, session, user_id, kind, content, metadata) do
+    case Router.append_message(session.id, user_id, kind, content, metadata) do
       {:ok, message} ->
         {:reply, {:ok, %{seq: message.seq}}, socket}
 
@@ -121,17 +123,29 @@ defmodule FleetlmWeb.SessionChannel do
     end
   end
 
-  defp authorize(session_id, participant_id) do
+  defp authorize(session_id, user_id) do
     case Fleetlm.Repo.get(Session, session_id) do
       nil ->
         {:error, :not_found}
 
-      %Session{user_id: user_id, agent_id: agent_id} = session
-      when participant_id in [user_id, agent_id] ->
+      %Session{user_id: session_user_id, agent_id: agent_id} = session
+      when user_id in [session_user_id, agent_id] ->
         {:ok, session}
 
       %Session{} ->
         {:error, :unauthorized}
+    end
+  end
+
+  defp parse_last_seq(nil), do: 0
+
+  defp parse_last_seq(value) do
+    value
+    |> to_string()
+    |> Integer.parse()
+    |> case do
+      {int, _} when int >= 0 -> int
+      _ -> 0
     end
   end
 end

@@ -158,9 +158,9 @@ defmodule FleetlmWeb.SessionController do
   end
 
   def mark_read(conn, %{"session_id" => session_id} = params) do
-    with {:ok, participant_id} <- require_param(params, "participant_id"),
+    with {:ok, user_id} <- require_param(params, "user_id"),
          last_seq <- parse_int(params["last_seq"], 0),
-         {:ok, _cursor} <- Storage.update_cursor(session_id, participant_id, last_seq) do
+         {:ok, _cursor} <- Storage.update_cursor(session_id, user_id, last_seq) do
       session = Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id)
 
       if session do
