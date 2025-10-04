@@ -6,7 +6,7 @@ import { Socket } from "phoenix";
 
 const API_URL = process.env.API_URL || "http://localhost:4000";
 const WS_URL = process.env.WS_URL || "ws://localhost:4000/socket";
-const PARTICIPANT_ID = process.env.PARTICIPANT_ID || "chat-demo-client";
+const USER_ID = process.env.USER_ID || process.env.PARTICIPANT_ID || "chat-demo-client";
 const AGENT_ID = process.env.AGENT_ID || "demo-agent";
 
 interface Message {
@@ -44,7 +44,7 @@ const App = () => {
   const loadSessions = async () => {
     try {
       const response = await fetch(
-        `${API_URL}/api/sessions?user_id=${PARTICIPANT_ID}`
+        `${API_URL}/api/sessions?user_id=${USER_ID}`
       );
 
       if (!response.ok) {
@@ -72,7 +72,7 @@ const App = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sender_id: PARTICIPANT_ID,
+          sender_id: USER_ID,
           recipient_id: AGENT_ID,
           metadata: {},
         }),
@@ -97,7 +97,7 @@ const App = () => {
     setView("chat");
 
     const socket = new Socket(WS_URL, {
-      params: { participant_id: PARTICIPANT_ID },
+      params: { user_id: USER_ID },
     });
 
     socket.connect();
@@ -164,7 +164,7 @@ const App = () => {
     return (
       <Box flexDirection="column">
         <Text>Select Session</Text>
-        <Text>User: {PARTICIPANT_ID} | Agent: {AGENT_ID}</Text>
+        <Text>User: {USER_ID} | Agent: {AGENT_ID}</Text>
         <Text> </Text>
 
         {error && <Text color="red">{error}</Text>}
@@ -199,7 +199,7 @@ const App = () => {
           <Text>No messages</Text>
         ) : (
           messages.map((msg, index) => {
-            const isUser = msg.sender_id === PARTICIPANT_ID;
+            const isUser = msg.sender_id === USER_ID;
             const content =
               typeof msg.content === "object" && msg.content.text
                 ? msg.content.text

@@ -23,18 +23,18 @@ interface JoinResponse {
 
 const WS_URL = process.env.WS_URL || "ws://localhost:4000/socket";
 const SESSION_ID = process.env.SESSION_ID || "01JGXAMPLE123456789";
-const PARTICIPANT_ID = process.env.PARTICIPANT_ID || "alice";
+const USER_ID = process.env.USER_ID || process.env.PARTICIPANT_ID || "alice";
 
 console.log("FleetLM Chat Client");
 console.log("====================");
 console.log(`WebSocket URL: ${WS_URL}`);
 console.log(`Session ID: ${SESSION_ID}`);
-console.log(`Participant ID: ${PARTICIPANT_ID}`);
+console.log(`User ID: ${USER_ID}`);
 console.log("");
 
 // Connect to Phoenix WebSocket
 const socket = new Socket(WS_URL, {
-  params: { participant_id: PARTICIPANT_ID },
+  params: { user_id: USER_ID },
 });
 
 socket.connect();
@@ -80,7 +80,7 @@ channel.on("backpressure", (payload: any) => {
 });
 
 function displayMessage(msg: Message) {
-  const sender = msg.sender_id === PARTICIPANT_ID ? "You" : msg.sender_id;
+  const sender = msg.sender_id === USER_ID ? "You" : msg.sender_id;
 
   if (msg.kind === "text" && typeof msg.content === "object" && msg.content.text) {
     console.log(`${sender}: ${msg.content.text}`);

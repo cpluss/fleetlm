@@ -99,7 +99,7 @@ Features:
 
 **Environment Variables** (optional):
 ```bash
-PARTICIPANT_ID=alice \
+USER_ID=alice \
 AGENT_ID=demo-agent \
 API_URL=http://localhost:4000 \
 WS_URL=ws://localhost:4000/socket \
@@ -111,7 +111,7 @@ npm run client
 ### Session Selection
 ```
 Select Session
-Participant: alice | Agent: demo-agent
+User: alice | Agent: demo-agent
 
 No sessions
 
@@ -185,7 +185,7 @@ The demo agent understands:
 
 - `WS_URL` - WebSocket URL (default: `ws://localhost:4000/socket`)
 - `SESSION_ID` - Session ID (default: `01JGXAMPLE123456789`)
-- `PARTICIPANT_ID` - Participant ID (default: `alice`)
+- `USER_ID` - User identifier (default: `alice`)
 
 ### Agent
 
@@ -219,5 +219,5 @@ curl -X POST http://localhost:4000/api/sessions \
 Then use the returned session ID with the client:
 
 ```bash
-SESSION_ID=<new-session-id> PARTICIPANT_ID=bob npm run client
+SESSION_ID=<new-session-id> USER_ID=bob npm run client
 ```
