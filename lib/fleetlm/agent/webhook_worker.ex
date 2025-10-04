@@ -35,15 +35,16 @@ defmodule Fleetlm.Agent.WebhookWorker do
   end
 
   @impl true
-  def handle_cast({:dispatch, session_id, agent_id}, state) do
+  def handle_cast({:dispatch, session_id, agent_id, user_id}, state) do
     Logger.info("Dispatching agent webhook",
       session_id: session_id,
-      agent_id: agent_id
+      agent_id: agent_id,
+      user_id: user_id
     )
 
     start_time = System.monotonic_time(:millisecond)
 
-    case begin_dispatch(session_id, agent_id, start_time) do
+    case begin_dispatch(session_id, agent_id, user_id, start_time) do
       {:ok, job} ->
         stats = increment_stats(state.stats, :dispatches)
         jobs = Map.put(state.jobs, job.ref, job)
@@ -55,6 +56,7 @@ defmodule Fleetlm.Agent.WebhookWorker do
         Logger.warning("Agent webhook failed: #{inspect(reason)}",
           session_id: session_id,
           agent_id: agent_id,
+          user_id: user_id,
           duration_ms: duration
         )
 
@@ -177,11 +179,11 @@ defmodule Fleetlm.Agent.WebhookWorker do
     end
   end
 
-  defp build_payload(session, messages) do
+  defp build_payload(session_id, agent_id, user_id, messages) do
     %{
-      session_id: session.id,
-      agent_id: session.agent_id,
-      user_id: session.user_id,
+      session_id: session_id,
+      agent_id: agent_id,
+      user_id: user_id,
       messages: Enum.map(messages, &format_message/1)
     }
   end
@@ -214,12 +216,11 @@ defmodule Fleetlm.Agent.WebhookWorker do
     )
   end
 
-  defp begin_dispatch(session_id, agent_id, started_at) do
-    with {:ok, agent} <- Agent.get(agent_id),
+  defp begin_dispatch(session_id, agent_id, user_id, started_at) do
+    with {:ok, agent} <- Fleetlm.Agent.Cache.get(agent_id),
          :ok <- check_agent_enabled(agent),
-         {:ok, session} <- Storage.get_session(session_id),
          {:ok, messages} <- fetch_message_history(session_id, agent),
-         {:ok, response} <- start_async_request(agent, session, messages) do
+         {:ok, response} <- start_async_request(agent, session_id, agent_id, user_id, messages) do
       async = response.body
 
       job = %{
@@ -238,8 +239,8 @@ defmodule Fleetlm.Agent.WebhookWorker do
     end
   end
 
-  defp start_async_request(agent, session, messages) do
-    payload = build_payload(session, messages)
+  defp start_async_request(agent, session_id, agent_id, user_id, messages) do
+    payload = build_payload(session_id, agent_id, user_id, messages)
     url = agent.origin_url <> agent.webhook_path
     headers = build_headers_map(agent)
     body = Jason.encode!(payload)
@@ -263,8 +264,8 @@ defmodule Fleetlm.Agent.WebhookWorker do
     case Req.request(Req.new(req_opts)) do
       {:ok, %Req.Response{status: status} = response} when status in 200..299 ->
         Logger.info("Agent webhook request started",
-          session_id: session.id,
-          agent_id: agent.id,
+          session_id: session_id,
+          agent_id: agent_id,
           status: status,
           async: match?(%Req.Response.Async{}, response.body)
         )

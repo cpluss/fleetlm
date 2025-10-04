@@ -24,6 +24,8 @@ defmodule Fleetlm.Agent.Supervisor do
     ]
 
     children = [
+      # Agent config cache (ETS) - must start before workers
+      Fleetlm.Agent.Cache,
       :poolboy.child_spec(:agent_webhook_pool, poolboy_config)
     ]
 

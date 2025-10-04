@@ -412,7 +412,7 @@ defmodule Fleetlm.Runtime.SessionServer do
 
   # Dispatch webhook to agent asynchronously
   defp dispatch_agent(state) do
-    Fleetlm.Agent.Dispatcher.dispatch_async(state.session_id, state.agent_id)
+    Fleetlm.Agent.Dispatcher.dispatch_async(state.session_id, state.agent_id, state.user_id)
   end
 
   defp schedule_inactivity_check do

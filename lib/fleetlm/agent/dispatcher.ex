@@ -11,14 +11,16 @@ defmodule Fleetlm.Agent.Dispatcher do
   @doc """
   Dispatch webhook asynchronously via poolboy.
   Returns immediately - worker handles all the work.
+
+  Accepts user_id to avoid DB lookup for session data on hot path.
   """
-  @spec dispatch_async(String.t(), String.t()) :: :ok
-  def dispatch_async(session_id, agent_id) do
+  @spec dispatch_async(String.t(), String.t(), String.t()) :: :ok
+  def dispatch_async(session_id, agent_id, user_id) do
     if Application.get_env(:fleetlm, :disable_agent_webhooks, false) do
       :ok
     else
       :poolboy.transaction(@pool_name, fn worker ->
-        GenServer.cast(worker, {:dispatch, session_id, agent_id})
+        GenServer.cast(worker, {:dispatch, session_id, agent_id, user_id})
       end)
 
       :ok

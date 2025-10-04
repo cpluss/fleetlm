@@ -65,14 +65,22 @@ defmodule Fleetlm.Agent do
 
   @doc """
   Update an agent.
+  Invalidates cache after successful update.
   """
   @spec update(String.t(), map()) :: {:ok, t()} | {:error, Ecto.Changeset.t() | :not_found}
   def update(id, attrs) do
     case get(id) do
       {:ok, agent} ->
-        agent
-        |> Schema.changeset(attrs)
-        |> Repo.update()
+        case agent
+             |> Schema.changeset(attrs)
+             |> Repo.update() do
+          {:ok, _updated_agent} = result ->
+            Fleetlm.Agent.Cache.invalidate(id)
+            result
+
+          error ->
+            error
+        end
 
       {:error, :not_found} = error ->
         error
@@ -82,14 +90,22 @@ defmodule Fleetlm.Agent do
   @doc """
   Delete (disable) an agent.
   Soft delete by setting status to "disabled".
+  Invalidates cache after successful update.
   """
   @spec delete(String.t()) :: {:ok, t()} | {:error, :not_found}
   def delete(id) do
     case get(id) do
       {:ok, agent} ->
-        agent
-        |> Schema.changeset(%{status: "disabled"})
-        |> Repo.update()
+        case agent
+             |> Schema.changeset(%{status: "disabled"})
+             |> Repo.update() do
+          {:ok, _updated_agent} = result ->
+            Fleetlm.Agent.Cache.invalidate(id)
+            result
+
+          error ->
+            error
+        end
 
       {:error, :not_found} = error ->
         error
