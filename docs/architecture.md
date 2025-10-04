@@ -1,7 +1,6 @@
 ---
 title: Architecture
-slug: /architecture
-sidebar_position: 2
+sidebar_position: 5
 ---
 
 # FleetLM Architecture
@@ -25,12 +24,12 @@ We split traffic into two components that runs on each cluster node:
 
 Client communication is split into two paths
 
-- **Inbox**: maintains a holistic view of all sessions for a participant. It subscribes to metadata and publishes deltas of what has happened on regular intervals. It allows a participant to have multiple sessions active and not get overwhelmed with their raw data. *We maintain one inbox per participant*.
-- **Session**: a dedicated path for each session. It subscribes to raw data on a particular session, and allows the client to send messages on the same path. This will firehose all messages as they’re published back to the client subscribed to this session. *We maintain multiple sessions per participant*.
+- **Inbox**: maintains a holistic view of all sessions for a user. It subscribes to metadata and publishes deltas of what has happened on regular intervals. It allows a user to have multiple sessions active without being overwhelmed with raw message streams. *We maintain one inbox per user*.
+- **Session**: a dedicated path for each session. It subscribes to raw data on that session, and allows the client to send messages on the same path. This will firehose all messages as they’re published back to the client subscribed to this session. *A user may be in many sessions simultaneously*.
 
 This allows us to split traffic and avoid oversubscribing to data we don't need from a client perspective. For example if a client is juggling 10 sessions that each have 10 messages/s there is no need to receive all of those messages, and thus only subscribe to the currently "active" session in the client UI rather than all at once. The inbox ensures the client can keep track of sessions in need of replay when the end-user navigates to another session for example.
 
-The core idea is that a participant has one inbox, and can join/leave sessions as necessary. On joining a session the client sends the last sequence number (message # seq) on that session which allows us to replay messages that the client missed since the last time for it to catch up.
+The core idea is that each user has one inbox stream and can join/leave sessions as necessary. On joining a session the client sends the last sequence number (message `seq`) it has seen; FleetLM replays anything newer so the user is caught up.
 
 Session delivery is at-least-once with sequence numbers. On reconnect the client sends `last_seq` and we replay from the local log until caught up. ACKs are implicit via advancing `last_seq`.
 
