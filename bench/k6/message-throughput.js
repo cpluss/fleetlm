@@ -1,18 +1,32 @@
 /**
  * FleetLM Message Throughput Benchmark
  *
- * Tests message processing capacity with rapid-fire messages.
+ * Finds the ACTUAL sustainable message throughput using flow control.
+ * Each VU sends a message, waits for ack, then sends the next (pipelined with configurable depth).
+ *
+ * Architecture:
+ * - Sessions are pre-created during setup (one per VU)
+ * - VUs ramp up gradually to find capacity under increasing load
+ * - Each VU uses flow control: send → wait for ack → send next
+ * - Configurable pipeline depth to allow N in-flight messages
+ * - Measures SUSTAINABLE throughput, not just flooding
  *
  * Metrics:
- * - Messages per second (total and per session)
- * - Message append latency (client → server → broadcast)
- * - Agent webhook latency
- * - Backpressure behavior
+ * - messages_sent: Total messages sent by all VUs
+ * - acks_received: Server acks received (successful appends)
+ * - messages_received: Message broadcasts from agent
+ * - backpressure_events: Times server pushed back
+ * - Success rate: Should be ~100% with proper flow control
  *
  * Usage:
+ *   # Default: 10 VUs with pipeline depth of 5
  *   k6 run bench/k6/message-throughput.js
- *   k6 run -e VUS=10 -e SEND_INTERVAL=100 bench/k6/message-throughput.js
- *   k6 run -e VUS=20 -e DURATION=5m bench/k6/message-throughput.js
+ *   
+ *   # More aggressive: higher pipeline depth
+ *   k6 run -e PIPELINE_DEPTH=10 -e MAX_VUS=20 bench/k6/message-throughput.js
+ *   
+ *   # Conservative: pipeline depth of 1 (strict send/ack)
+ *   k6 run -e PIPELINE_DEPTH=1 bench/k6/message-throughput.js
  */
 
 import ws from 'k6/ws';
@@ -25,24 +39,37 @@ import * as lib from './lib.js';
 // ============================================================================
 
 const messagesSent = new Counter('messages_sent');
+const acksReceived = new Counter('acks_received');
 const messagesReceived = new Counter('messages_received');
-const appendLatency = new Trend('append_latency_ms', true);
 const backpressureEvents = new Counter('backpressure_events');
-const messageFailures = new Counter('message_failures');
-const messageSuccessRate = new Rate('message_success_rate');
 
 // ============================================================================
 // Test Configuration
 // ============================================================================
 
+const maxVUs = Number(__ENV.MAX_VUS || 10);
+const rampDuration = __ENV.RAMP_DURATION || '30s';
+const steadyDuration = __ENV.STEADY_DURATION || '1m';
+const rampDownDuration = __ENV.RAMP_DOWN_DURATION || '10s';
+
 export const options = {
-  vus: Number(__ENV.VUS || 10),
-  duration: __ENV.DURATION || '1m',
   setupTimeout: '60s',
+  teardownTimeout: '60s',
+  scenarios: {
+    throughput: {
+      executor: 'ramping-vus',
+      startVUs: 0,
+      stages: [
+        { duration: rampDuration, target: maxVUs },    // Ramp up
+        { duration: steadyDuration, target: maxVUs },  // Steady state
+        { duration: rampDownDuration, target: 0 },     // Ramp down
+      ],
+      gracefulRampDown: '5s',
+    },
+  },
   thresholds: {
-    append_latency_ms: ['p(95)<500', 'p(99)<1000'],
-    message_success_rate: ['rate>0.95'],
-    backpressure_events: ['count<100'],
+    // No hard thresholds - this is a load test to find breaking points
+    // Manually compare messages_sent vs acks_received to see success rate
   },
 };
 
@@ -51,18 +78,48 @@ export const options = {
 // ============================================================================
 
 export function setup() {
+  const pipelineDepth = Number(__ENV.PIPELINE_DEPTH || 5);
+  
   console.log('Setting up message throughput benchmark...');
   console.log(`Run ID: ${lib.config.runId}`);
-  console.log(`VUs: ${options.vus}`);
-  console.log(`Duration: ${options.duration}`);
-  console.log(`Send interval: ${__ENV.SEND_INTERVAL || 1000}ms`);
+  console.log(`Max VUs: ${maxVUs}`);
+  console.log(`Pipeline depth: ${pipelineDepth} (max in-flight per VU)`);
+  console.log(`Ramp: ${rampDuration} → Steady: ${steadyDuration} → Down: ${rampDownDuration}`);
+  console.log(`Peak capacity: ${maxVUs} VUs × ${pipelineDepth} msgs = ${maxVUs * pipelineDepth} concurrent messages`);
 
   // Ensure echo agent exists
-  lib.setupEchoAgent();
+  const agent = lib.setupEchoAgent();
+  const agentId = agent.id;
+
+  // Pre-create sessions for each VU to avoid session creation overhead in main test
+  console.log(`Pre-creating ${maxVUs} sessions...`);
+  const sessions = {};
+  
+  for (let vuId = 1; vuId <= maxVUs; vuId++) {
+    const userId = lib.generateParticipantId('user', vuId);
+    try {
+      const session = lib.createSession(userId, agentId, { 
+        vu: vuId, 
+        type: 'throughput',
+        run_id: lib.config.runId 
+      });
+      sessions[vuId] = {
+        sessionId: session.id,
+        userId: userId,
+      };
+    } catch (e) {
+      console.error(`Failed to create session for VU${vuId}: ${e.message}`);
+      throw e;
+    }
+  }
+
+  console.log(`Setup complete: ${maxVUs} sessions ready`);
 
   return {
-    agentId: lib.config.agentId,
+    agentId: agentId,
     runId: lib.config.runId,
+    sessions: sessions,
+    pipelineDepth: pipelineDepth,
   };
 }
 
@@ -72,26 +129,21 @@ export function setup() {
 
 export default function (data) {
   const vuId = __VU;
-  const agentId = data.agentId;
-  const userId = lib.generateParticipantId('user', vuId);
-  const sendInterval = Number(__ENV.SEND_INTERVAL || 1000); // milliseconds
+  const pipelineDepth = data.pipelineDepth;
 
-  // Create session
-  let session;
-  try {
-    session = lib.createSession(userId, agentId, { vu: vuId, type: 'throughput' });
-  } catch (e) {
-    messageFailures.add(1);
-    console.error(`VU${vuId}: Failed to create session: ${e.message}`);
+  // Retrieve pre-created session for this VU
+  const sessionData = data.sessions[vuId];
+  if (!sessionData) {
+    console.error(`VU${vuId}: No session found in setup data`);
     return;
   }
 
-  const sessionId = session.id;
+  const sessionId = sessionData.sessionId;
+  const userId = sessionData.userId;
   const wsUrl = lib.buildWsUrl(userId);
   const topic = lib.sessionTopic(sessionId);
 
-  // Track in-flight messages for latency measurement
-  const inFlight = new Map();
+  console.log(`VU${vuId}: Starting with pipeline depth ${pipelineDepth} on session ${sessionId}`);
 
   ws.connect(
     wsUrl,
@@ -102,6 +154,9 @@ export default function (data) {
       let joined = false;
       let messageSeq = 0;
       const joinRef = 1;
+      
+      // Track pending acks for flow control
+      const pendingRefs = new Set();
 
       socket.on('open', () => {
         // Join the session channel
@@ -110,104 +165,96 @@ export default function (data) {
         // Set timeout for join
         socket.setTimeout(() => {
           if (!joined) {
-            messageFailures.add(1);
-            messageSuccessRate.add(false);
+            console.error(`VU${vuId}: Failed to join after 10s`);
             socket.close();
           }
-        }, 10000 / 1000);
+        }, 10000);
+      });
 
-        socket.on('message', (raw) => {
-          const frame = lib.decode(raw);
-          if (!frame) return;
+      socket.on('message', (raw) => {
+        const frame = lib.decode(raw);
+        if (!frame) return;
 
-          // Handle join reply
-          if (lib.isJoinReply(frame, joinRef, topic)) {
-            joined = true;
-            return;
-          }
+        const [, refMsg, topicMsg, eventMsg, payload] = frame;
 
-          // Handle message events
-          if (lib.isMessageEvent(frame, topic)) {
-            messagesReceived.add(1);
+        // Handle join reply
+        if (lib.isJoinReply(frame, joinRef, topic)) {
+          joined = true;
+          console.log(`VU${vuId}: Joined - pipeline depth ${pipelineDepth}`);
+          return;
+        }
 
-            const [, , , , payload] = frame;
-            const content = payload?.content || {};
-            const clientRef = content?.client_ref;
+        // Check if it's an error response
+        if (eventMsg === 'phx_reply' && topicMsg === topic && payload?.status === 'error') {
+          console.error(`VU${vuId}: Server error:`, JSON.stringify(payload?.response || payload));
+          socket.close();
+          return;
+        }
 
-            // Calculate latency if we have the client_ref
-            if (clientRef && inFlight.has(clientRef)) {
-              const sentAt = inFlight.get(clientRef);
-              appendLatency.add(lib.nowMs() - sentAt);
-              inFlight.delete(clientRef);
-              messageSuccessRate.add(true);
-            }
-          }
+        // Handle acks - remove from pending to allow next message
+        if (eventMsg === 'phx_reply' && topicMsg === topic && payload?.status === 'ok') {
+          pendingRefs.delete(refMsg);
+          acksReceived.add(1);
+        }
 
-          // Handle backpressure
-          if (Array.isArray(frame) && frame[3] === 'backpressure') {
-            backpressureEvents.add(1);
-            const [, , , , payload] = frame;
-            console.log(`VU${vuId}: Backpressure - ${payload?.reason}`);
-          }
-        });
+        // Count message broadcasts
+        if (lib.isMessageEvent(frame, topic)) {
+          messagesReceived.add(1);
+        }
+
+        // Handle backpressure
+        if (eventMsg === 'backpressure') {
+          backpressureEvents.add(1);
+          console.warn(`VU${vuId}: Backpressure - ${payload?.reason}`);
+        }
       });
 
       socket.on('error', (e) => {
-        messageFailures.add(1);
-        messageSuccessRate.add(false);
+        console.error(`VU${vuId}: WebSocket error:`, e);
       });
 
-      // Send messages at configured interval
+      socket.on('close', () => {
+        if (joined && messageSeq > 0) {
+          console.log(`VU${vuId}: Done - sent ${messageSeq} messages, ${pendingRefs.size} pending`);
+        }
+      });
+
+      // Send messages with flow control - tight loop checking pipeline capacity
       socket.setInterval(() => {
         if (!joined) return;
 
-        const clientRef = `${userId}-${vuId}-${messageSeq}-${lib.nowMs()}`;
-        const ref = joinRef + messageSeq + 1;
-        const text = `throughput test message ${messageSeq} from VU${vuId}`;
+        // Send as many as we can without exceeding pipeline depth
+        while (pendingRefs.size < pipelineDepth) {
+          messageSeq++;
+          const ref = joinRef + messageSeq;
+          const text = `msg ${messageSeq}`;
 
-        const msg = [
-          null,
-          `${ref}`,
-          topic,
-          'send',
-          {
-            content: {
-              kind: 'text',
+          const msg = [
+            null,
+            `${ref}`,
+            topic,
+            'send',
+            {
               content: {
-                text,
-                client_ref: clientRef,
-              },
-              metadata: {
-                bench: true,
-                vu: vuId,
-                seq: messageSeq,
+                kind: 'text',
+                content: { text },
+                metadata: {
+                  bench: true,
+                  vu: vuId,
+                  seq: messageSeq,
+                },
               },
             },
-          },
-        ];
+          ];
 
-        inFlight.set(clientRef, lib.nowMs());
-        socket.send(lib.encode(msg));
-        messagesSent.add(1);
-        messageSeq++;
-      }, sendInterval / 1000);
-
-      // Clean up stale in-flight messages
-      socket.setInterval(() => {
-        if (!joined) return;
-
-        // If too many in-flight, something is wrong
-        if (inFlight.size > 100) {
-          messageFailures.add(inFlight.size);
-          inFlight.clear();
+          pendingRefs.add(`${ref}`);
+          socket.send(lib.encode(msg));
+          messagesSent.add(1);
         }
-      }, 5000 / 1000);
+      }, 1); // Check every 1ms - very tight loop
 
-      // Keep connection alive for test duration
-      const runtimeMs = Number(__ENV.RUNTIME_MS || 60000);
-      socket.setTimeout(() => {
-        socket.close();
-      }, runtimeMs / 1000);
+      // Note: Connection stays open until VU is ramped down by k6
+      // Success rate = acks_received / messages_sent (should be ~100%)
     }
   );
 }
@@ -217,6 +264,20 @@ export default function (data) {
 // ============================================================================
 
 export function teardown(data) {
-  console.log('Message throughput benchmark complete');
-  console.log(`Run ID: ${data.runId}`);
+  // Clean up sessions
+  if (data.sessions) {
+    const sessionCount = Object.keys(data.sessions).length;
+    console.log(`Cleaning up ${sessionCount} sessions...`);
+    for (const vuId in data.sessions) {
+      const sessionId = data.sessions[vuId].sessionId;
+      lib.deleteSession(sessionId);
+    }
+  }
+  
+  console.log(`\nLoad test complete (Run ID: ${data.runId})`);
+  console.log('Review metrics above:');
+  console.log('  - messages_sent: Total messages sent');
+  console.log('  - acks_received: Acks from server');
+  console.log('  - messages_received: Message broadcasts');
+  console.log('  - Success rate = acks_received / messages_sent');
 }

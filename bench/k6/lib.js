@@ -120,11 +120,11 @@ export function createSession(userId, agentId, metadata = {}) {
 // ============================================================================
 
 /**
- * Build WebSocket URL with participant authentication.
+ * Build WebSocket URL with user authentication.
  */
-export function buildWsUrl(participantId) {
-  const encoded = encodeURIComponent(participantId);
-  return `${config.wsUrl}?participant_id=${encoded}&vsn=2.0.0`;
+export function buildWsUrl(userId) {
+  const encoded = encodeURIComponent(userId);
+  return `${config.wsUrl}?user_id=${encoded}&vsn=2.0.0`;
 }
 
 /**
