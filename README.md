@@ -1,4 +1,4 @@
-# FleetLM - Open Source Engine for Stateless Agents
+# FleetLM
 
 [![Tests](https://github.com/cpluss/fleetlm/actions/workflows/test.yml/badge.svg)](https://github.com/cpluss/fleetlm/actions/workflows/test.yml)
 [![Docker Build](https://github.com/cpluss/fleetlm/actions/workflows/docker-build.yml/badge.svg)](https://github.com/cpluss/fleetlm/actions/workflows/docker-build.yml)
@@ -6,32 +6,58 @@
 [![Elixir](https://img.shields.io/badge/Elixir-1.15.7-purple.svg)](https://elixir-lang.org/)
 [![Phoenix](https://img.shields.io/badge/Phoenix-1.8.1-red.svg)](https://phoenixframework.org/)
 
-Write stateless agents. We handle the rest.
 
-FleetLM is the conversation layer between your users and your agents. Your agent is a HTTP endpoint - FleetLM provides WebSockets, message persistence, ordering, and replay so you never build chat infrastructure yourself.
+**Write stateless agents. We handle the rest.**
 
-## How it works
+FleetLM is a conversation engine for stateless AI agents. Point at your HTTP endpoint, it provides WebSockets, message persistence, ordering, and replay. Agentic chat infrastructure that scales.
 
-1. **You register your agents** and include a webhook URL (self-host today, managed registration lands in v0.3).
-2. **Users create sessions and send messages** through FleetLM webSocket channels.
-3. **FleetLM delivers webhooks** (coming soon) or PubSub events with the full conversation context so your stateless service can decide the next action.
+Built on Elixir/OTP for fault isolation and horizontal scaling.
 
-## Quick start (5 minutes)
+## How It Works
+
+1. **Register your agent** with a webhook URL
+2. **Users connect via WebSocket** and send messages
+3. **FleetLM delivers webhooks** with conversation context
+4. **Your agent responds** (JSONL streaming supported)
+5. **Messages persist** and replay on reconnect
+
+## Quick Start
 
 ```bash
-$ git clone https://github.com/cpluss/fleetlm
-$ cd fleetlm && docker compose up --build
-$ curl http://localhost:4000/health || curl http://localhost:8080/health
+# Checkout the repository
+$> git clone https://github.com/cpluss/fleetlm
+$> cd fleetlm
+
+# Start postgres + fleetlm
+$> docker compose up --build
+```
+
+Server runs at `http://localhost:4000` with WebSocket endpoint at `ws://localhost:4000/socket`.
+
+**Next steps:**
+- [Register an agent](docs/quickstart.md#2-register-an-agent)
+- [Send your first message](docs/quickstart.md#4-send-a-message)
+
+## Development
+
+- [Read the architecture](docs/architecture.md)
+- Local setup without Docker:
+
+```bash
+mix setup          # Install deps, create DB, run migrations
+mix phx.server     # Start server on :4000
+mix test           # Run test suite
+mix precommit      # Format, compile (warnings-as-errors), test
 ```
 
 ## Contributing
 
-We love contributions. Before opening a pull request:
+Before opening a PR:
 
-1. Run `mix precommit` (compile with warnings-as-errors, format, and test).
-2. Document behaviour or add tests where it adds clarity.
-3. Share the validation steps you ran.
+1. Run `mix precommit` (compile, format, test)
+2. Add tests for new behavior
+3. Update docs if you change runtime or message flow
 
 ## License
 
-FleetLM is released under the [Apache 2.0 License](LICENSE).
+Apache 2.0 - see [LICENSE](LICENSE)

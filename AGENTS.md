@@ -54,4 +54,3 @@ FleetLM is a clustered Phoenix application that delivers real-time conversations
 - Pattern-match inputs, return errors for invalid shapes.
 - Update/invalidate caches when side effects change underlying data.
 - Document new runtime behaviours in `docs/` if you alter process lifecycles or message flow.
-- Keep CLIs and docs in sync: if a new task is required, add it here and mention it in CLAUDE.md for parity.

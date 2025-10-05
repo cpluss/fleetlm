@@ -51,12 +51,14 @@ Your webhook will receive the session id, agent id, user id, and the most recent
 curl -X POST http://localhost:4000/api/sessions \
   -H "Content-Type: application/json" \
   -d '{
-    "sender_id": "alice",
-    "recipient_id": "demo-agent"
+    "session": {
+      "user_id": "alice",
+      "agent_id": "demo-agent"
+    }
   }'
 ```
 
-Save the `session.id` from the response. All future REST and WebSocket calls reference it.
+Save the `id` from the response. All future REST and WebSocket calls reference it.
 
 ## 4. Send a message
 

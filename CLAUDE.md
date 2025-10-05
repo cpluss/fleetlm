@@ -11,11 +11,12 @@ Guidance for Claude Code when collaborating on FleetLM.
 
 ## Architecture Cheat Sheet
 
-- **Edge nodes** accept HTTP/WebSocket traffic. WebSocket sessions live under `FleetlmWeb.SessionChannel`; inbox summaries stream through `Fleetlm.Runtime.InboxServer`.
-- **Owner nodes** host session processes (`Fleetlm.Runtime.SessionServer`). Each session GenServer owns the canonical append-only log, backed by a local disk log that drains to Postgres/S3 on a timer.
-- **Sharding** uses a hash ring (`Fleetlm.Runtime.HashRing`) so every session resolves to a single owner. Ring changes drain in-flight sessions before handoff.
-- **Agents** are external systems reached via the `Fleetlm.Agent.Engine`. Session servers just enqueue work in ETS; the engine batches rapid messages, runs one webhook per session at a time, and streams responses back into the session.
-- **Inbox model**: one inbox per participant, many sessions per participant. Runtime keeps inbox snapshots in Cachex and relies on sequence numbers for replay.
+- **Edge nodes** accept HTTP/WebSocket traffic via `FleetlmWeb.SessionChannel`. Inbox summaries stream through `Fleetlm.Runtime.InboxServer`.
+- **Owner nodes** host `Fleetlm.Runtime.SessionServer` processes. Each SessionServer writes to a WAL-based commit log (`Fleetlm.Storage.SlotLogServer`) that flushes to Postgres every 300ms (configurable).
+- **Sharding** uses `Fleetlm.Runtime.HashRing` (consistent hashing) + `SessionTracker` (Phoenix.Tracker CRDT) for distributed session routing. Ring changes mark sessions as `:draining`, block new appends, flush to DB, then handoff to new owner.
+- **Agents** are external HTTP endpoints. `Fleetlm.Agent.Engine` polls an ETS queue (`:agent_dispatch_queue`) every 50ms, spawns supervised tasks for webhooks, and streams JSONL responses back into sessions.
+- **Inbox model**: one inbox per user, many sessions per user. Runtime keeps inbox snapshots in Cachex, relies on sequence numbers for replay.
+- **Supervision**: `Runtime.Supervisor` uses `:one_for_one` strategy. SessionServer crashes restart individually (`:transient`), SlotLogServer crashes are isolated per slot (`:permanent`). No cascading failures.
 
 ## Working Standards
 
@@ -29,7 +30,9 @@ Guidance for Claude Code when collaborating on FleetLM.
 
 - Conversations are always human ↔ agent. UI and APIs assume exactly one agent per session.
 - Messages are at-least-once; clients resend `last_seq` on reconnect and expect replay. Keep sequence handling intact when modifying routers or runtime.
-- Session and inbox processes are transient: they boot lazily, drain cleanly, and can be rebuilt from storage. Code must tolerate restarts without data loss.
+- Session and inbox processes are transient: they boot lazily, drain cleanly, and rebuild from WAL cursors + Postgres on restart. Code must tolerate restarts without data loss.
+- **WAL storage**: Messages append to disk (`Fleetlm.Storage.CommitLog`) in 128MB segments. Cursors track `{segment, offset}` flush positions. Invalid cursors default to `{0, 0}` with a warning—no crashes.
+- **Background flush**: SlotLogServer streams WAL segments to Postgres in 4MB chunks via supervised tasks. Batches up to 5000 messages/insert (Postgres param limit).
 - LiveView templates begin with `<Layouts.app ...>`; forms use `<.form>`/`<.input>` combos, icons use `<.icon>`.
 - Tailwind v4 is the styling backbone. Maintain the stock import stanza and craft micro-interactions via utility classes.
 
@@ -43,6 +46,10 @@ Guidance for Claude Code when collaborating on FleetLM.
 
 1. All new/modified modules follow the fail-loud, pattern-matching style.
 2. Telemetry tags remain explicit; no new "unknown" defaults unless product requirements demand it.
-3. Tests cover new code paths, especially LiveView/Channel interactions and agent webhooks.
+3. Tests cover new code paths, especially LiveView/Channel interactions, agent webhooks, and WAL/cursor recovery.
 4. Run `mix precommit` and address every warning, formatter diff, and test failure.
-5. Document runtime changes (process lifecycles, sharding, agent flows) in `docs/` if behaviour shifts meaningfully.
+5. Document runtime changes (process lifecycles, sharding, agent flows, storage) in `docs/` if behaviour shifts meaningfully.
+
+## Hot Path Design
+
+Keep the critical path flat: append to WAL, fsync in batches (512KB/25ms), publish immediately. Background tasks flush to Postgres without blocking the write path.
