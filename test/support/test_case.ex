@@ -40,7 +40,7 @@ defmodule Fleetlm.TestCase do
       alias Fleetlm.Repo
       alias Fleetlm.Storage, as: StorageAPI
       alias Fleetlm.Storage, as: API
-      alias Fleetlm.Storage.{SlotLogServer, Entry, DiskLog}
+      alias Fleetlm.Storage.{SlotLogServer, Entry, CommitLog}
       alias Fleetlm.Storage.Model.{Session, Message, Cursor}
 
       import Fleetlm.TestCase

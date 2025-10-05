@@ -4,20 +4,16 @@ defmodule Fleetlm.Storage.SlotLogServer do
   store messages for multiple sessions before they're persisted to the database asynchronously
   in background batches.
 
-  - appends are fast and don't block
-  - flushes happen off the GenServer mailbox via a supervised task so heavy
-    database work never blocks incoming appends
-  - callers can synchronously wait for a flush when needed (eg. tests, drains)
-
-  Messages in flight are written to disk to keep memory flat during spikes. If a flush
-  crashes we keep the slot marked dirty and try again on the next interval to avoid
-  silently dropping data.
+  Messages are appended to an on-disk commit log so the write path stays flat
+  under load. Flushes stream the WAL into Postgres in batches without loading
+  all entries in memory, and completed segments are dropped once persisted.
   """
 
   use GenServer
   require Logger
 
-  alias Fleetlm.Storage.{DiskLog, Entry}
+  alias Fleetlm.Storage.{CommitLog, Entry}
+  alias Fleetlm.Storage.CommitLog.Cursor
   alias Fleetlm.Storage.Model.Message
   alias Fleetlm.Repo
 
@@ -27,8 +23,13 @@ defmodule Fleetlm.Storage.SlotLogServer do
   @default_flush_interval_ms 300
   @flush_timeout Application.compile_env(:fleetlm, :slot_flush_timeout, 10_000)
 
-  @default_retention_bytes 128 * 1024 * 1024
-  @default_retention_target 0.75
+  @default_sync_bytes Application.compile_env(:fleetlm, :slot_log_sync_bytes, 512 * 1024)
+  @default_sync_interval_ms Application.compile_env(:fleetlm, :slot_log_sync_interval_ms, 25)
+  @default_flush_chunk_bytes Application.compile_env(
+                               :fleetlm,
+                               :slot_log_flush_chunk_bytes,
+                               4 * 1024 * 1024
+                             )
 
   # PostgreSQL has a parameter limit of ~65535. With 10 fields per message,
   # we can safely insert ~6500 messages. Use 5000 for safety margin.
@@ -36,15 +37,16 @@ defmodule Fleetlm.Storage.SlotLogServer do
 
   @type state :: %{
           slot: non_neg_integer(),
-          log: DiskLog.handle(),
+          log: CommitLog.t(),
           dirty: boolean(),
           notify_next_flush: [pid()],
           task_supervisor: Supervisor.name(),
           pending_flush: Task.t() | nil,
           registry: atom() | :global,
-          flushed_count: non_neg_integer(),
-          retention_bytes: pos_integer() | :infinity,
-          retention_target: float()
+          flushed_cursor: Cursor.t(),
+          sync_bytes_threshold: pos_integer(),
+          sync_interval_ms: pos_integer(),
+          flush_chunk_bytes: pos_integer()
         }
 
   ## Public API
@@ -60,7 +62,7 @@ defmodule Fleetlm.Storage.SlotLogServer do
   end
 
   @doc """
-  Append an entry to the slot's disk_log. Fast operation - just writes to buffer.
+  Append an entry to the slot's commit log.
   """
   @spec append(non_neg_integer(), Entry.t()) :: :ok | {:error, term()}
   def append(slot, %Entry{} = entry) do
@@ -68,7 +70,8 @@ defmodule Fleetlm.Storage.SlotLogServer do
   end
 
   @doc """
-  Read entries from the slot's disk_log.
+  Read entries for a session from the slot's commit log.
+  Returns only in-flight (unflushed) entries.
   """
   @spec read(non_neg_integer(), String.t(), non_neg_integer()) ::
           {:ok, [Entry.t()]} | {:error, term()}
@@ -77,11 +80,12 @@ defmodule Fleetlm.Storage.SlotLogServer do
   end
 
   @doc """
-  Get the disk_log handle for direct access (if needed).
+  Return the current flushed cursor and pending entries. Primarily for tests.
   """
-  @spec get_log_handle(non_neg_integer()) :: {:ok, DiskLog.handle()}
-  def get_log_handle(slot) do
-    GenServer.call(via(slot), :get_log_handle)
+  @spec snapshot(non_neg_integer()) ::
+          {:ok, %{flushed_cursor: Cursor.t(), pending_entries: [Entry.t()]}} | {:error, term()}
+  def snapshot(slot) do
+    GenServer.call(via(slot), :snapshot)
   end
 
   @doc """
@@ -105,43 +109,12 @@ defmodule Fleetlm.Storage.SlotLogServer do
 
   @impl true
   def init({slot, task_supervisor, registry}) do
-    {:ok, log} = DiskLog.open(slot)
-    {retention_bytes, retention_target} = retention_config()
+    {:ok, log} = CommitLog.open(slot)
+    {:ok, flushed_cursor} = CommitLog.load_cursor(slot)
 
-    {dirty?, flushed_count} =
-      case DiskLog.read_all(log) do
-        {:ok, entries} ->
-          entry_count = length(entries)
-
-          case DiskLog.load_cursor(slot) do
-            {:ok, cursor} ->
-              clamped = min(entry_count, cursor)
-
-              if cursor > entry_count do
-                Logger.warning(
-                  "Slot #{slot} cursor #{cursor} exceeds entry count #{entry_count}; clamping to #{clamped}"
-                )
-              end
-
-              {entry_count > clamped, clamped}
-
-            {:error, reason} ->
-              Logger.warning(
-                "Slot #{slot} failed to load cursor: #{inspect(reason)}. " <>
-                  "Defaulting flushed count to 0."
-              )
-
-              {entry_count > 0, 0}
-          end
-
-        {:error, reason} ->
-          Logger.warning(
-            "Slot #{slot} failed to read existing log on init: #{inspect(reason)}. " <>
-              "Marking dirty to trigger recovery flush."
-          )
-
-          {true, 0}
-      end
+    tip = CommitLog.tip(log)
+    flushed_cursor = clamp_cursor(flushed_cursor, tip)
+    dirty? = cursor_before?(flushed_cursor, tip)
 
     schedule_flush()
 
@@ -154,9 +127,10 @@ defmodule Fleetlm.Storage.SlotLogServer do
        dirty: dirty?,
        notify_next_flush: [],
        pending_flush: nil,
-       flushed_count: flushed_count,
-       retention_bytes: retention_bytes,
-       retention_target: retention_target
+       flushed_cursor: flushed_cursor,
+       sync_bytes_threshold: sync_bytes_threshold(),
+       sync_interval_ms: sync_interval_ms(),
+       flush_chunk_bytes: flush_chunk_bytes()
      }}
   end
 
@@ -164,8 +138,10 @@ defmodule Fleetlm.Storage.SlotLogServer do
   def handle_call({:append, entry}, _from, state) do
     start = System.monotonic_time()
 
-    case DiskLog.append(state.log, entry) do
-      :ok ->
+    case CommitLog.append(state.log, entry) do
+      {:ok, log} ->
+        log = maybe_sync(log, state.sync_bytes_threshold, state.sync_interval_ms)
+
         duration_us =
           System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
 
@@ -176,9 +152,9 @@ defmodule Fleetlm.Storage.SlotLogServer do
           duration_us
         )
 
-        {:reply, :ok, %{state | dirty: true}}
+        {:reply, :ok, %{state | log: log, dirty: true}}
 
-      {:error, _} = error ->
+      {:error, reason} ->
         duration_us =
           System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
 
@@ -189,25 +165,67 @@ defmodule Fleetlm.Storage.SlotLogServer do
           duration_us
         )
 
-        {:reply, error, state}
+        {:reply, {:error, reason}, state}
     end
   end
 
   @impl true
   def handle_call({:read, session_id, after_seq}, _from, state) do
-    case DiskLog.read_all(state.log) do
-      {:ok, entries} ->
-        filtered =
-          entries
-          |> Enum.filter(fn entry ->
-            entry.session_id == session_id and entry.seq > after_seq
-          end)
-          |> Enum.sort_by(& &1.seq)
+    # Sync before reading to ensure buffered writes are visible
+    {:ok, log} = CommitLog.sync(state.log)
+    target = CommitLog.tip(log)
 
-        {:reply, {:ok, filtered}, state}
+    initial_acc = []
 
-      {:error, _} = error ->
-        {:reply, error, state}
+    case CommitLog.fold(
+           state.slot,
+           state.flushed_cursor,
+           target,
+           [chunk_bytes: state.flush_chunk_bytes],
+           initial_acc,
+           fn batch, acc ->
+             filtered =
+               batch
+               |> Enum.filter(fn entry ->
+                 entry.session_id == session_id and entry.seq > after_seq
+               end)
+
+             {:cont, prepend_batch(filtered, acc)}
+           end
+         ) do
+      {:ok, {_cursor, entries_rev}} ->
+        {:reply, {:ok, Enum.reverse(entries_rev)}, %{state | log: log}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, %{state | log: log}}
+    end
+  end
+
+  def handle_call(:snapshot, _from, state) do
+    # Sync before reading to ensure buffered writes are visible
+    {:ok, log} = CommitLog.sync(state.log)
+    target = CommitLog.tip(log)
+
+    case CommitLog.fold(
+           state.slot,
+           state.flushed_cursor,
+           target,
+           [chunk_bytes: state.flush_chunk_bytes],
+           [],
+           fn batch, acc ->
+             {:cont, prepend_batch(batch, acc)}
+           end
+         ) do
+      {:ok, {_cursor, entries_rev}} ->
+        {:reply,
+         {:ok,
+          %{
+            flushed_cursor: state.flushed_cursor,
+            pending_entries: Enum.reverse(entries_rev)
+          }}, %{state | log: log}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, %{state | log: log}}
     end
   end
 
@@ -228,14 +246,44 @@ defmodule Fleetlm.Storage.SlotLogServer do
   end
 
   def handle_call(:flush_now, _from, %{dirty: true, pending_flush: nil} = state) do
-    result = flush_to_database(state.slot, state.log, state.flushed_count)
-    {reply, next_state} = handle_flush_completion(result, %{state | dirty: true})
-    {:reply, reply, next_state}
-  end
+    case CommitLog.sync(state.log) do
+      {:ok, log} ->
+        target = CommitLog.tip(log)
 
-  @impl true
-  def handle_call(:get_log_handle, _from, state) do
-    {:reply, {:ok, state.log}, state}
+        if cursor_before?(state.flushed_cursor, target) do
+          case flush_to_database(
+                 state.slot,
+                 state.flushed_cursor,
+                 target,
+                 state.flush_chunk_bytes
+               ) do
+            {:ok, info} ->
+              {:ok, log} = CommitLog.drop_completed_segments(log, info.flushed_cursor)
+              persist_cursor(state.slot, info.flushed_cursor)
+
+              dirty? = cursor_before?(info.flushed_cursor, CommitLog.tip(log))
+
+              new_state =
+                state
+                |> Map.put(:log, log)
+                |> Map.put(:flushed_cursor, info.flushed_cursor)
+                |> Map.put(:dirty, dirty?)
+                |> Map.put(:notify_next_flush, [])
+
+              Enum.each(state.notify_next_flush, &send(&1, :flushed))
+
+              {:reply, :ok, new_state}
+
+            {:error, reason} ->
+              {:reply, {:error, reason}, %{state | log: log}}
+          end
+        else
+          {:reply, :already_clean, %{state | log: log, dirty: false}}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
@@ -276,40 +324,56 @@ defmodule Fleetlm.Storage.SlotLogServer do
           state
       end
 
-    if state.dirty do
-      case flush_to_database(state.slot, state.log, state.flushed_count) do
-        {:ok, info} ->
-          Enum.each(state.notify_next_flush, &send(&1, :flushed))
+    state =
+      if state.dirty do
+        case CommitLog.sync(state.log) do
+          {:ok, log} ->
+            target = CommitLog.tip(log)
 
-          updated =
+            if cursor_before?(state.flushed_cursor, target) do
+              case flush_to_database(
+                     state.slot,
+                     state.flushed_cursor,
+                     target,
+                     state.flush_chunk_bytes
+                   ) do
+                {:ok, info} ->
+                  {:ok, log} = CommitLog.drop_completed_segments(log, info.flushed_cursor)
+                  persist_cursor(state.slot, info.flushed_cursor)
+
+                  %{
+                    state
+                    | log: log,
+                      flushed_cursor: info.flushed_cursor,
+                      dirty: cursor_before?(info.flushed_cursor, CommitLog.tip(log)),
+                      notify_next_flush: []
+                  }
+
+                {:error, _reason} ->
+                  %{state | log: log}
+              end
+            else
+              %{state | log: log, dirty: false}
+            end
+
+          {:error, _reason} ->
             state
-            |> Map.put(:notify_next_flush, [])
-            |> Map.put(:dirty, false)
-            |> Map.put(:flushed_count, info.flushed_count)
-            |> maybe_compact_log()
-
-          _ = persist_cursor_state(updated)
-
-        {:error, reason} ->
-          Logger.error("Failed to flush slot #{state.slot} during terminate: #{inspect(reason)}")
+        end
+      else
+        state
       end
-    end
 
-    DiskLog.close(state.log)
+    CommitLog.close(state.log)
     :ok
   end
 
   ## Internal helpers
 
-  defp via(slot) do
-    via(slot, @default_registry)
-  end
-
-  defp via(slot, :global), do: {:global, {:fleetlm_slot_log_server, slot}}
-
   defp via(slot, registry) when is_atom(registry) do
     {:via, Registry, {registry, slot}}
   end
+
+  defp via(slot), do: via(slot, @default_registry)
 
   defp schedule_flush do
     interval =
@@ -319,22 +383,40 @@ defmodule Fleetlm.Storage.SlotLogServer do
   end
 
   defp maybe_start_async_flush(%{dirty: true, pending_flush: nil} = state) do
-    case start_async_flush(state) do
-      {:ok, task} ->
-        %{state | dirty: false, pending_flush: task}
+    case CommitLog.sync(state.log) do
+      {:ok, log} ->
+        target = CommitLog.tip(log)
+
+        if cursor_before?(state.flushed_cursor, target) do
+          case start_async_flush(state, target) do
+            {:ok, task} ->
+              %{state | log: log, pending_flush: task}
+
+            {:error, reason} ->
+              Logger.error("Slot #{state.slot} failed to start async flush: #{inspect(reason)}")
+              %{state | log: log, dirty: true}
+          end
+        else
+          %{state | log: log, dirty: false}
+        end
 
       {:error, reason} ->
-        Logger.error("Failed to start flush task for slot #{state.slot}: #{inspect(reason)}")
-        %{state | dirty: true}
+        Logger.error("Slot #{state.slot} failed to sync before flush: #{inspect(reason)}")
+        state
     end
   end
 
   defp maybe_start_async_flush(state), do: state
 
-  defp start_async_flush(state) do
+  defp start_async_flush(state, target_cursor) do
     task =
       Task.Supervisor.async_nolink(state.task_supervisor, fn ->
-        flush_to_database(state.slot, state.log, state.flushed_count)
+        flush_to_database(
+          state.slot,
+          state.flushed_cursor,
+          target_cursor,
+          state.flush_chunk_bytes
+        )
       end)
 
     {:ok, task}
@@ -355,72 +437,105 @@ defmodule Fleetlm.Storage.SlotLogServer do
   defp handle_flush_completion({:ok, info}, state) do
     Enum.each(state.notify_next_flush, &send(&1, :flushed))
 
-    state_after_flush =
-      state
-      |> Map.put(:notify_next_flush, [])
-      |> Map.put(:dirty, false)
-      |> Map.put(:flushed_count, info.flushed_count)
+    {:ok, log} = CommitLog.drop_completed_segments(state.log, info.flushed_cursor)
+    persist_cursor(state.slot, info.flushed_cursor)
+
+    dirty? = cursor_before?(info.flushed_cursor, CommitLog.tip(log))
 
     new_state =
-      state_after_flush
-      |> maybe_compact_log()
-      |> persist_cursor_state()
+      state
+      |> Map.put(:notify_next_flush, [])
+      |> Map.put(:dirty, dirty?)
+      |> Map.put(:flushed_cursor, info.flushed_cursor)
+      |> Map.put(:log, log)
 
     {:ok, new_state}
   end
 
   defp handle_flush_completion({:error, reason}, state) do
-    log_flush_error(state.slot, reason)
+    Logger.error("Flush failed for slot #{state.slot}: #{inspect(reason)}")
     {{:error, reason}, %{state | dirty: true}}
   end
 
-  defp flush_to_database(slot, log, flushed_count) do
-    start = System.monotonic_time()
+  defp maybe_sync(log, bytes_threshold, interval_ms) do
+    if CommitLog.needs_sync?(log, bytes_threshold, interval_ms) do
+      case CommitLog.sync(log) do
+        {:ok, synced} -> synced
+        {:error, _reason} -> log
+      end
+    else
+      log
+    end
+  end
+
+  defp prepend_batch([], acc), do: acc
+
+  defp prepend_batch(batch, acc) do
+    Enum.reduce(batch, acc, fn entry, acc -> [entry | acc] end)
+  end
+
+  defp flush_to_database(_slot, %Cursor{} = start, %Cursor{} = target, _chunk)
+       when start == target do
+    {:ok, %{persisted_count: 0, total_entries: 0, flushed_cursor: target}}
+  end
+
+  defp flush_to_database(slot, %Cursor{} = start_cursor, %Cursor{} = target_cursor, chunk_bytes) do
+    start_time = System.monotonic_time()
 
     try do
-      result =
-        with :ok <- DiskLog.sync(log),
-             {:ok, entries} <- DiskLog.read_all(log),
-             {:ok, persist_info} <- persist_new_entries(slot, entries, flushed_count) do
-          {:ok,
-           %{
-             persisted_count: persist_info.count,
-             total_entries: length(entries),
-             flushed_count: persist_info.flushed_count
-           }}
-        end
+      initial_acc = %{persisted: 0, total: 0, error: nil}
 
-      duration_us =
-        System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+      result =
+        CommitLog.fold(
+          slot,
+          start_cursor,
+          target_cursor,
+          [chunk_bytes: chunk_bytes],
+          initial_acc,
+          fn batch, %{error: nil} = acc ->
+            case persist_batch(batch) do
+              {:ok, inserted} ->
+                {:cont,
+                 %{acc | persisted: acc.persisted + inserted, total: acc.total + length(batch)}}
+
+              {:error, reason} ->
+                {:halt, %{acc | error: reason}}
+            end
+          end
+        )
+
+      duration_us = microseconds_since(start_time)
 
       case result do
-        {:ok, info} ->
-          Fleetlm.Observability.Telemetry.emit_storage_flush(
-            slot,
-            :ok,
-            info.persisted_count,
-            duration_us
-          )
+        {:ok, {cursor, %{error: nil, persisted: persisted, total: total}}} ->
+          Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :ok, persisted, duration_us)
 
-          {:ok, info}
+          {:ok,
+           %{
+             persisted_count: persisted,
+             total_entries: total,
+             flushed_cursor: cursor,
+             duration_us: duration_us
+           }}
 
-        {:error, reason} = error ->
+        {:ok, {_cursor, %{error: reason}}} ->
           Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :error, 0, duration_us)
-          Logger.error("Flush failed for slot #{slot}: #{inspect(reason)}")
-          error
+          {:error, reason}
+
+        {:error, reason} ->
+          Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :error, 0, duration_us)
+          {:error, reason}
       end
     rescue
       error ->
-        duration_us =
-          System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+        duration_us = microseconds_since(start_time)
 
         Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :error, 0, duration_us)
         Logger.error("Flush failed for slot #{slot}: #{inspect(error)}")
         {:error, error}
     catch
       kind, reason ->
-        duration_us =
-          System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+        duration_us = microseconds_since(start_time)
 
         Fleetlm.Observability.Telemetry.emit_storage_flush(slot, :error, 0, duration_us)
         Logger.error("Flush failed for slot #{slot}: #{inspect({kind, reason})}")
@@ -428,223 +543,82 @@ defmodule Fleetlm.Storage.SlotLogServer do
     end
   end
 
-  defp persist_new_entries(slot, entries, flushed_count) do
-    total_entries = length(entries)
-    to_persist = Enum.drop(entries, flushed_count)
-
-    case to_persist do
-      [] ->
-        {:ok, %{count: 0, flushed_count: total_entries}}
-
-      _ ->
-        messages =
-          Enum.map(to_persist, fn entry ->
-            %{
-              id: entry.payload.id,
-              session_id: entry.payload.session_id,
-              sender_id: entry.payload.sender_id,
-              recipient_id: entry.payload.recipient_id,
-              seq: entry.payload.seq,
-              kind: entry.payload.kind,
-              content: entry.payload.content,
-              metadata: entry.payload.metadata,
-              shard_key: entry.payload.shard_key,
-              inserted_at: entry.payload.inserted_at
-            }
-          end)
-
-        batch_insert_messages(slot, messages, total_entries)
-    end
-  rescue
-    error -> {:error, error}
-  catch
-    kind, reason -> {:error, {kind, reason}}
-  end
-
-  defp batch_insert_messages(slot, messages, total_entries) do
-    messages
+  defp persist_batch(entries) do
+    entries
+    |> Enum.map(&entry_to_message_map/1)
     |> Enum.chunk_every(@insert_batch_size)
-    |> Enum.reduce_while({:ok, 0}, fn batch, {:ok, acc_count} ->
+    |> Enum.reduce_while({:ok, 0}, fn batch, {:ok, acc} ->
       case Repo.insert_all(Message, batch, on_conflict: :nothing) do
         {count, _} when is_integer(count) ->
-          {:cont, {:ok, acc_count + count}}
+          {:cont, {:ok, acc + count}}
 
         other ->
-          {:halt, {:error, {slot, other}}}
+          {:halt, {:error, other}}
       end
     end)
     |> case do
-      {:ok, total_count} ->
-        {:ok, %{count: total_count, flushed_count: total_entries}}
-
-      {:error, _} = error ->
-        error
+      {:ok, inserted} -> {:ok, inserted}
+      {:error, reason} -> {:error, reason}
     end
   end
 
-  defp maybe_compact_log(%{retention_bytes: :infinity} = state), do: state
-
-  defp maybe_compact_log(%{retention_bytes: bytes} = state) when bytes <= 0, do: state
-
-  defp maybe_compact_log(%{flushed_count: 0} = state), do: state
-
-  defp maybe_compact_log(state) do
-    with {:ok, entries} <- DiskLog.read_all(state.log) do
-      {entries_with_bytes, total_bytes} = entries_with_sizes(entries)
-
-      if total_bytes <= state.retention_bytes do
-        state
-      else
-        target_bytes = retention_target_bytes(state.retention_bytes, state.retention_target)
-
-        {kept_entries, dropped_count, dropped_bytes} =
-          drop_persisted(entries_with_bytes, state.flushed_count, target_bytes)
-
-        cond do
-          dropped_count == 0 ->
-            state
-
-          true ->
-            case DiskLog.rewrite(state.log, kept_entries) do
-              :ok ->
-                Logger.debug(
-                  "Compacted slot #{state.slot} log: dropped #{dropped_count} entries (#{dropped_bytes} bytes)"
-                )
-
-                new_flushed_count =
-                  state.flushed_count
-                  |> Kernel.-(dropped_count)
-                  |> max(0)
-                  |> min(length(kept_entries))
-
-                %{state | flushed_count: new_flushed_count}
-
-              {:error, reason} ->
-                Logger.error(
-                  "Failed to rewrite slot #{state.slot} log during compaction: #{inspect(reason)}"
-                )
-
-                state
-            end
-        end
-      end
-    else
-      {:error, reason} ->
-        Logger.error("Failed to read slot #{state.slot} log for compaction: #{inspect(reason)}")
-        state
-    end
+  defp entry_to_message_map(entry) do
+    %{
+      id: entry.payload.id,
+      session_id: entry.payload.session_id,
+      sender_id: entry.payload.sender_id,
+      recipient_id: entry.payload.recipient_id,
+      seq: entry.payload.seq,
+      kind: entry.payload.kind,
+      content: entry.payload.content,
+      metadata: entry.payload.metadata,
+      shard_key: entry.payload.shard_key,
+      inserted_at: entry.payload.inserted_at
+    }
   end
 
-  defp persist_cursor_state(state) do
-    case DiskLog.persist_cursor(state.slot, state.flushed_count) do
-      :ok ->
-        state
-
-      {:error, reason} ->
-        Logger.error("Failed to persist cursor for slot #{state.slot}: #{inspect(reason)}")
-        state
-    end
-  end
-
-  defp drop_persisted(entries_with_sizes, flushed_count, target_bytes) do
-    initial_bytes = total_bytes(entries_with_sizes)
-
-    {kept_rev, dropped_count, dropped_bytes, _current_bytes, _index} =
-      Enum.reduce(entries_with_sizes, {[], 0, 0, initial_bytes, 0}, fn {entry, size},
-                                                                       {acc, drop_count,
-                                                                        drop_bytes, current_bytes,
-                                                                        index} ->
-        cond do
-          index < flushed_count and current_bytes > target_bytes ->
-            {acc, drop_count + 1, drop_bytes + size, current_bytes - size, index + 1}
-
-          true ->
-            {[entry | acc], drop_count, drop_bytes, current_bytes, index + 1}
-        end
-      end)
-
-    {Enum.reverse(kept_rev), dropped_count, dropped_bytes}
-  end
-
-  defp total_bytes(entries_with_sizes) do
-    Enum.reduce(entries_with_sizes, 0, fn {_entry, size}, acc -> acc + size end)
-  end
-
-  defp entries_with_sizes(entries) do
-    Enum.map_reduce(entries, 0, fn entry, acc ->
-      size = :erlang.external_size(entry)
-      {{entry, size}, acc + size}
-    end)
-  end
-
-  defp retention_target_bytes(:infinity, _target), do: :infinity
-
-  defp retention_target_bytes(bytes, target) do
-    ratio = clamp_retention_target(target)
-
-    candidate =
-      bytes
-      |> Kernel.*(ratio)
-      |> Float.floor()
-      |> trunc()
-
+  defp cursor_before?(%Cursor{segment: a_seg, offset: a_off}, %Cursor{
+         segment: b_seg,
+         offset: b_off
+       }) do
     cond do
-      candidate <= 0 -> bytes
-      candidate > bytes -> bytes
-      true -> candidate
+      a_seg < b_seg -> true
+      a_seg > b_seg -> false
+      true -> a_off < b_off
     end
   end
 
-  defp retention_config do
-    bytes =
-      case Application.get_env(:fleetlm, :slot_log_max_bytes) do
-        :infinity ->
-          :infinity
-
-        nil ->
-          @default_retention_bytes
-
-        value when is_integer(value) and value > 0 ->
-          value
-
-        other ->
-          Logger.warning(
-            "Invalid :slot_log_max_bytes configuration #{inspect(other)}; falling back to #{@default_retention_bytes}"
-          )
-
-          @default_retention_bytes
-      end
-
-    target =
-      case Application.get_env(:fleetlm, :slot_log_compact_target) do
-        nil ->
-          @default_retention_target
-
-        value when is_integer(value) ->
-          clamp_retention_target(value / 1)
-
-        value when is_float(value) ->
-          clamp_retention_target(value)
-
-        other ->
-          Logger.warning(
-            "Invalid :slot_log_compact_target configuration #{inspect(other)}; falling back to #{@default_retention_target}"
-          )
-
-          @default_retention_target
-      end
-
-    {bytes, target}
+  defp clamp_cursor(%Cursor{} = cursor, %Cursor{} = tip) do
+    if cursor_before?(tip, cursor) do
+      tip
+    else
+      cursor
+    end
   end
 
-  defp clamp_retention_target(value) when is_number(value) do
-    value
-    |> max(0.0)
-    |> min(1.0)
+  defp microseconds_since(start_time) do
+    System.convert_time_unit(System.monotonic_time() - start_time, :native, :microsecond)
   end
 
-  defp log_flush_error(_slot, _reason) do
-    # Errors are now handled via telemetry in flush_to_database
-    :ok
+  defp persist_cursor(slot, %Cursor{} = cursor) do
+    case CommitLog.persist_cursor(slot, cursor) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("Failed to persist cursor for slot #{slot}: #{inspect(reason)}")
+    end
+  end
+
+  defp sync_bytes_threshold do
+    Application.get_env(:fleetlm, :slot_log_sync_bytes, @default_sync_bytes)
+  end
+
+  defp sync_interval_ms do
+    Application.get_env(:fleetlm, :slot_log_sync_interval_ms, @default_sync_interval_ms)
+  end
+
+  defp flush_chunk_bytes do
+    Application.get_env(:fleetlm, :slot_log_flush_chunk_bytes, @default_flush_chunk_bytes)
   end
 end
