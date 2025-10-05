@@ -211,9 +211,9 @@ defmodule Fleetlm.Runtime.SessionServer do
           {:message_notification, notification}
         )
 
-        # Dispatch to agent with debouncing if sender is user and agent exists
-        if sender_id == state.user_id and state.agent_id do
-          dispatch_agent_debounced(state, next_seq)
+        # Dispatch to agent if sender is user and agent exists (and not same id)
+        if sender_id == state.user_id and state.agent_id != nil and sender_id != state.agent_id do
+          Fleetlm.Agent.Engine.enqueue(state.session_id, state.agent_id, state.user_id, next_seq)
         end
 
         # Reset inactivity timer
@@ -411,24 +411,6 @@ defmodule Fleetlm.Runtime.SessionServer do
     next = :ets.next(table, key)
     :ets.delete(table, key)
     delete_n_entries(next, table, n - 1)
-  end
-
-  # Dispatch webhook to agent with debouncing
-  defp dispatch_agent_debounced(state, seq) do
-    # Get debounce window from agent config (cached) or use default
-    window_ms =
-      case Fleetlm.Agent.Cache.get(state.agent_id) do
-        {:ok, agent} -> agent.debounce_window_ms
-        {:error, _} -> Application.get_env(:fleetlm, :agent_debounce_window_ms, 500)
-      end
-
-    Fleetlm.Agent.Debouncer.schedule(
-      state.session_id,
-      state.agent_id,
-      state.user_id,
-      seq,
-      window_ms
-    )
   end
 
   defp schedule_inactivity_check do

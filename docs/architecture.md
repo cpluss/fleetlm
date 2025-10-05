@@ -5,7 +5,7 @@ sidebar_position: 5
 
 # FleetLM Architecture
 
-FleetLM is designed to run as a single container without too many moving components by leaning heavily on a clustered architecture. 
+FleetLM is designed to run as a single container without too many moving components by leaning heavily on a clustered architecture.
 
 This incurs extra network traffic cost but gives us horizontal scalability and a reduced database engagement on the hot-path. It's ultimately faster to distribute session traffic across nodes and maintain a lightweight append-only log that is flushed every 200–300ms than it is to hit a central point of failure (the database) on each message.
 
@@ -25,7 +25,7 @@ We split traffic into two components that runs on each cluster node:
 Client communication is split into two paths
 
 - **Inbox**: maintains a holistic view of all sessions for a user. It subscribes to metadata and publishes deltas of what has happened on regular intervals. It allows a user to have multiple sessions active without being overwhelmed with raw message streams. *We maintain one inbox per user*.
-- **Session**: a dedicated path for each session. It subscribes to raw data on that session, and allows the client to send messages on the same path. This will firehose all messages as they’re published back to the client subscribed to this session. *A user may be in many sessions simultaneously*.
+- **Session**: a dedicated path for each session. It subscribes to raw data on that session, and allows the client to send messages on the same path. This will firehose all messages as they're published back to the client subscribed to this session. *A user may be in many sessions simultaneously*.
 
 This allows us to split traffic and avoid oversubscribing to data we don't need from a client perspective. For example if a client is juggling 10 sessions that each have 10 messages/s there is no need to receive all of those messages, and thus only subscribe to the currently "active" session in the client UI rather than all at once. The inbox ensures the client can keep track of sessions in need of replay when the end-user navigates to another session for example.
 
@@ -40,7 +40,7 @@ FleetLM runs on a two-stage storage in order to avoid database churn & complexit
 1. **Disk Append-only Log** persists messages in flight before they're published. We assume a singular upstream writer (session) and the disk log becomes our "source of truth" for total order across the entire cluster. We keep the log around and compact it regularly as time goes on to avoid its size growing too large. *This storage layer is our sourc of truth*.
 2. **Off-Cluster persistence** ensures that in cases of disk failure we can recover. We regularly move messages from the disk log off into a persistent storage backend (S3/postgres, up to us). This makes the database load predictable and we can bulk transactions. *This storage will always lag behind, by default*.
 
-Commit point: a message is considered committed when appended and fsync’d to the disk log; we then publish. Off-cluster persistence is intentionally behind (target lag in seconds), making DB load predictable and batched.
+Commit point: a message is considered committed when appended and fsync'd to the disk log; we then publish. Off-cluster persistence is intentionally behind (target lag in seconds), making DB load predictable and batched.
 
 > Traditional & naive design usually makes a 3rd-party storage the source of truth for messages (e.g. postgres). To get these storages to work effectively under load one usually has to tune them and avoid pitfalls, in addition to building the storage model on top. It's easy to mess that up, and to introduce complexity that later on becomes a mess to untangle and migrate away from.
 
@@ -54,52 +54,25 @@ The storage model we chose (append-only log) requires us to send all traffic tha
 
 ## Agent Dispatcher
 
-To decouple agent management from the overall messaging infrastructure we've got a dispatcher that handles webhook delivery to agents. The dispatcher uses an event-driven debouncing mechanism to batch rapid message bursts and reduce outbound webhook load.
+Agents are served by a single per-node dispatch engine. Session servers never talk directly to the engine; they simply place lightweight entries into ETS when a user sends a message. The engine polls the queue at a fixed cadence, spawns supervised tasks for webhook dispatch, and retries with exponential backoff on failure.
 
-### Debouncing Architecture
+### Dispatch Pipeline
 
-Instead of dispatching a webhook for every message, FleetLM batches messages using a timer-based debouncer:
+1. **Enqueue:** `SessionServer` calls `Agent.Engine.enqueue/4`. The call upserts a single ETS table (`:agent_dispatch_queue`) with the schema:
+   ```
+   {key, user_id, last_sent, target_seq, due_at, first_seq, enqueued_at, attempts, status}
+   ```
+   Multiple user messages collapse into a single queue row by updating `target_seq` and `due_at`. Dispatch status (`:pending`, `:inflight`, `nil`) is tracked directly in ETS.
 
-1. **On message arrival:** SessionServer schedules work via `Agent.Debouncer` with a configurable window (default 500ms)
-2. **On rapid messages:** Each new message cancels and reschedules the timer (classic debounce pattern)
-3. **On timer fire:** Debouncer dispatches to the agent webhook pool with all accumulated messages
-4. **ETS deduplication:** Per-session entries in ETS ensure only one pending dispatch per session
+2. **Scheduler tick:** `Agent.Engine` wakes every `agent_dispatch_tick_ms` (default 50ms) and selects due sessions where `due_at <= now` and `status != :inflight`. At most one dispatch runs per session at a time.
 
-**Flow Example:**
-```
-User sends 5 messages in 2 seconds (debounce_window_ms: 500):
-├─ Msg 1 → schedule timer (500ms)
-├─ Msg 2 → cancel timer, reschedule (500ms)
-├─ Msg 3 → cancel timer, reschedule (500ms)
-├─ Msg 4 → cancel timer, reschedule (500ms)
-├─ Msg 5 → cancel timer, reschedule (500ms)
-└─ Timer fires → webhook with 5 batched messages
-```
+3. **Async dispatch:** Each session spawns a supervised task under `Agent.Engine.TaskSupervisor`. The task builds the payload, performs the webhook via Finch (HTTP/2 connection pool), streams JSONL responses, and appends agent messages via `Router`. On success it updates `last_sent` and clears dispatch fields. On failure it requeues with exponential backoff capped at `agent_dispatch_retry_backoff_max_ms`.
 
-### Webhook Worker Pool
+4. **Back-pressure:** When tasks are saturated, sessions remain in the queue. New messages keep extending `target_seq`. No payloads are held in memory, and telemetry tracks queue length for saturation monitoring.
 
-Agent webhooks are delivered via a poolboy-managed worker pool (`Agent.WebhookWorker`):
-- Pooled HTTP/2 clients (Req + Finch) handle concurrent agent requests
-- Streaming JSONL response parsing appends agent messages as they arrive
-- Telemetry tracks webhook latency, batch sizes, and end-to-end message timing
+### Observability
 
-### Telemetry Metrics
-
-The agent dispatcher emits three key metrics:
-
-1. **Messages/second** (`[:fleetlm, :message, :throughput]`)
-   - Tracks message append rate across all sessions
-   - Holistic system throughput
-
-2. **Time-to-webhook** (`[:fleetlm, :agent, :debounce]`)
-   - Measures debounce delay (user message → webhook dispatch)
-   - Includes batch size (how many messages accumulated)
-
-3. **End-to-end latency** (`[:fleetlm, :agent, :e2e_latency]`)
-   - From first user message → agent response complete
-   - Critical for user-perceived responsiveness
-
-* **
+The engine emits telemetry for queue length, retries, and dispatch completion (queue wait + webhook duration). Webhook-level metrics track HTTP status, parse errors, and end-to-end latency.
 
 ## Why Elixir?
 

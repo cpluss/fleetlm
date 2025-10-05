@@ -53,7 +53,7 @@ defmodule Fleetlm.Agent.Cache do
   """
   @spec clear_all() :: :ok
   def clear_all do
-    GenServer.cast(__MODULE__, :clear_all)
+    GenServer.call(__MODULE__, :clear_all)
   end
 
   ## GenServer Implementation
@@ -66,16 +66,16 @@ defmodule Fleetlm.Agent.Cache do
   end
 
   @impl true
-  def handle_cast({:invalidate, agent_id}, state) do
-    :ets.delete(@table, agent_id)
-    Logger.debug("Agent cache invalidated for #{agent_id}")
-    {:noreply, state}
+  def handle_call(:clear_all, _from, state) do
+    :ets.delete_all_objects(@table)
+    Logger.info("Agent cache cleared")
+    {:reply, :ok, state}
   end
 
   @impl true
-  def handle_cast(:clear_all, state) do
-    :ets.delete_all_objects(@table)
-    Logger.info("Agent cache cleared")
+  def handle_cast({:invalidate, agent_id}, state) do
+    :ets.delete(@table, agent_id)
+    Logger.debug("Agent cache invalidated for #{agent_id}")
     {:noreply, state}
   end
 

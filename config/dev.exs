@@ -67,6 +67,8 @@ config :fleetlm, :pubsub_adapter, :local
 # Slower flush interval in dev to keep messages in disk log longer for testing hot path
 config :fleetlm, :storage_flush_interval_ms, 500
 
-# Increase webhook worker pool for benchmarking (default is 10)
-# For load testing: set to 50-100+ to handle high throughput
-config :fleetlm, :agent_webhook_pool_size, 50
+# Tune agent dispatch engine for development benchmarks
+config :fleetlm,
+  agent_dispatch_max_concurrency: 50,
+  agent_dispatch_tick_ms: 25,
+  agent_debounce_window_ms: 250

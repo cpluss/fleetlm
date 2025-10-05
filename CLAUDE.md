@@ -14,7 +14,7 @@ Guidance for Claude Code when collaborating on FleetLM.
 - **Edge nodes** accept HTTP/WebSocket traffic. WebSocket sessions live under `FleetlmWeb.SessionChannel`; inbox summaries stream through `Fleetlm.Runtime.InboxServer`.
 - **Owner nodes** host session processes (`Fleetlm.Runtime.SessionServer`). Each session GenServer owns the canonical append-only log, backed by a local disk log that drains to Postgres/S3 on a timer.
 - **Sharding** uses a hash ring (`Fleetlm.Runtime.HashRing`) so every session resolves to a single owner. Ring changes drain in-flight sessions before handoff.
-- **Agents** are external systems reached via pooled webhooks. `Fleetlm.Agent.Debouncer` batches rapid messages using timers; `Fleetlm.Agent.WebhookWorker` handles delivery. Telemetry tracks throughput, debounce delay, and end-to-end latency.
+- **Agents** are external systems reached via the `Fleetlm.Agent.Engine`. Session servers just enqueue work in ETS; the engine batches rapid messages, runs one webhook per session at a time, and streams responses back into the session.
 - **Inbox model**: one inbox per participant, many sessions per participant. Runtime keeps inbox snapshots in Cachex and relies on sequence numbers for replay.
 
 ## Working Standards
@@ -22,7 +22,7 @@ Guidance for Claude Code when collaborating on FleetLM.
 - Pattern-match required input (controller params, channel payloads, webhook data); return descriptive errors when the shape is wrong. Do not mask missing keys with `Map.get(..., default)`.
 - Make telemetry strict. Add clauses like `defp message_tags(%{role: role})` and treat everything else as the fallback path that highlights anomalies.
 - When serialising structs/maps, destructure once and build the response. Avoid peppering `Map.get` across atom/string variants—normalise at the boundary.
-- Use `Req` for outbound HTTP. Provide timeouts and error handling that surfaces failures to logs + telemetry.
+- Use the shared agent engine for outbound HTTP. It uses Finch with HTTP/2 connection pooling—avoid reintroducing ad-hoc HTTP clients on the hot path.
 - Lint, format, and test locally. Every PR should pass `mix precommit`.
 
 ## Domain Assumptions & Conventions

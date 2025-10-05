@@ -46,7 +46,6 @@ defmodule Fleetlm.MixProject do
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
       {:phoenix_live_view, "~> 1.0"},
-      {:req, "~> 0.5"},
       {:cachex, "~> 3.6"},
       {:prom_ex, "~> 1.11"},
       {:libcluster, "~> 3.3"},
@@ -54,7 +53,9 @@ defmodule Fleetlm.MixProject do
       {:bandit, "~> 1.5"},
       {:phoenix_pubsub_redis, "~> 3.0"},
       {:redix, "~> 1.5"},
-      {:uniq, "~> 0.6"}
+      {:uniq, "~> 0.6"},
+      {:finch, "~> 0.19"},
+      {:bypass, "~> 2.1", only: :test}
     ]
   end
 

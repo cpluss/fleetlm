@@ -18,9 +18,7 @@ defmodule Fleetlm.Application do
         pubsub_spec(),
         dns_cluster_spec(),
         Fleetlm.Runtime.Supervisor,
-        # Finch HTTP/2 client for agent webhooks
-        finch_spec(),
-        # Agent webhook delivery pool
+        # Agent dispatch engine
         Fleetlm.Agent.Supervisor
       ]
       |> Enum.concat(cluster_children(topologies))
@@ -75,25 +73,5 @@ defmodule Fleetlm.Application do
     else
       nil
     end
-  end
-
-  defp finch_spec do
-    {
-      Finch,
-      # Global HTTP/1 settings for broad compatibility
-      name: Fleetlm.Finch,
-      pools: %{
-        # Default pool for all hosts - small, ephemeral connections
-        :default => [
-          protocols: [:http1],
-          size: 2,
-          count: 1,
-          pool_max_idle_time: 30_000
-        ]
-      },
-      connect_options: [
-        timeout: 5_000
-      ]
-    }
   end
 end

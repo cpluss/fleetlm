@@ -2,8 +2,8 @@ defmodule Fleetlm.Agent.Supervisor do
   @moduledoc """
   Supervisor for the agent webhook delivery system.
 
-  Starts a poolboy pool of WebhookWorker processes that handle
-  asynchronous HTTP POSTs to agent endpoints.
+  Boots the shared task supervisor and dispatch engine that manage agent
+  webhook delivery.
   """
 
   use Supervisor
@@ -14,21 +14,17 @@ defmodule Fleetlm.Agent.Supervisor do
 
   @impl true
   def init(_opts) do
-    pool_size = Application.get_env(:fleetlm, :agent_webhook_pool_size, 10)
-
-    poolboy_config = [
-      name: {:local, :agent_webhook_pool},
-      worker_module: Fleetlm.Agent.WebhookWorker,
-      size: pool_size,
-      max_overflow: div(pool_size, 2)
-    ]
-
     children = [
       # Agent config cache (ETS) - must start before workers
       Fleetlm.Agent.Cache,
-      # Agent debouncer - handles batching of rapid messages
-      Fleetlm.Agent.Debouncer,
-      :poolboy.child_spec(:agent_webhook_pool, poolboy_config)
+      # HTTP client pool for agent webhooks
+      {Finch,
+       name: Fleetlm.Agent.HTTP,
+       pools: %{
+         :default => [size: 100, count: 1]
+       }},
+      {Task.Supervisor, name: Fleetlm.Agent.Engine.TaskSupervisor},
+      Fleetlm.Agent.Engine
     ]
 
     Supervisor.init(children, strategy: :one_for_one)

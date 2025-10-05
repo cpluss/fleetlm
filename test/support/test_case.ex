@@ -243,19 +243,38 @@ defmodule Fleetlm.TestCase do
     previous = %{
       slot_log_dir: Application.get_env(:fleetlm, :slot_log_dir),
       skip_terminate_db_ops: Application.get_env(:fleetlm, :skip_terminate_db_ops),
-      disable_agent_webhooks: Application.get_env(:fleetlm, :disable_agent_webhooks)
+      disable_agent_webhooks: Application.get_env(:fleetlm, :disable_agent_webhooks),
+      agent_dispatch_tick_ms: Application.get_env(:fleetlm, :agent_dispatch_tick_ms),
+      agent_dispatch_max_concurrency:
+        Application.get_env(:fleetlm, :agent_dispatch_max_concurrency),
+      agent_debounce_window_ms: Application.get_env(:fleetlm, :agent_debounce_window_ms)
     }
 
     Application.put_env(:fleetlm, :slot_log_dir, temp_dir)
     Application.put_env(:fleetlm, :skip_terminate_db_ops, true)
     Application.put_env(:fleetlm, :disable_agent_webhooks, true)
+    Application.put_env(:fleetlm, :agent_dispatch_tick_ms, 10)
+    Application.put_env(:fleetlm, :agent_dispatch_max_concurrency, 1_000)
+    Application.put_env(:fleetlm, :agent_debounce_window_ms, 0)
 
     previous
   end
 
   defp cleanup_runtime_processes do
     Fleetlm.Runtime.TestHelper.reset()
+    cleanup_agent_tasks()
     Process.sleep(25)
+  end
+
+  defp cleanup_agent_tasks do
+    # Terminate all agent dispatch tasks
+    Task.Supervisor.children(Fleetlm.Agent.Engine.TaskSupervisor)
+    |> Enum.each(&Task.Supervisor.terminate_child(Fleetlm.Agent.Engine.TaskSupervisor, &1))
+
+    # Clear the agent dispatch queue
+    if :ets.whereis(:agent_dispatch_queue) != :undefined do
+      :ets.delete_all_objects(:agent_dispatch_queue)
+    end
   end
 
   defp try_eventually(fun, interval, deadline) do
