@@ -53,3 +53,6 @@ docs-site/.docusaurus
 docs-site/build
 
 examples/*/node_modules
+
+# osx ..
+.DS_Store
