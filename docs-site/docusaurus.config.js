@@ -18,6 +18,9 @@ const config = {
     defaultLocale: "en",
     locales: ["en"]
   },
+  markdown: {
+    mermaid: true,
+  },
   themeConfig: {
     announcementBar: {
       id: "wip-banner",
@@ -28,6 +31,7 @@ const config = {
       isCloseable: false
     }
   },
+  themes: ["@docusaurus/theme-mermaid"],
   presets: [
     [
       "@docusaurus/preset-classic",

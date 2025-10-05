@@ -6,6 +6,8 @@ sidebar_position: 1
 
 # FleetLM
 
+![](./img/high-level-clustered.png)
+
 FleetLM is production-ready infrastructure for human ↔ agent conversations. Drop it in front of any HTTP-compatible agent and you immediately get:
 
 - **Framework freedom** – agents are plain webhooks, so keep your stack (FastAPI, Express, Go, etc.).

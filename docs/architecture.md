@@ -33,6 +33,39 @@ The core idea is that each user has one inbox stream and can join/leave sessions
 
 Session delivery is at-least-once with sequence numbers. On reconnect the client sends `last_seq` and we replay from the local log until caught up. ACKs are implicit via advancing `last_seq`.
 
+### Message Flow
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant SessionChannel
+    participant Router
+    participant SessionServer
+    participant SlotLogServer
+    participant AgentEngine
+    participant Agent
+
+    Client->>SessionChannel: send message
+    SessionChannel->>Router: append_message()
+    Router->>SessionServer: append_message()
+    SessionServer->>SlotLogServer: append(entry)
+    SlotLogServer->>SlotLogServer: write to WAL + fsync
+    SlotLogServer-->>SessionServer: ok
+    SessionServer->>AgentEngine: enqueue dispatch
+    SessionServer-->>Router: {ok, message}
+    Router-->>SessionChannel: {ok, seq}
+    SessionChannel-->>Client: ack {seq: N}
+
+    Note over AgentEngine: Tick (50ms)
+    AgentEngine->>Agent: POST /webhook
+    Agent-->>AgentEngine: JSONL stream
+    AgentEngine->>Router: append agent responses
+    Router->>SessionServer: append_message()
+    SessionServer->>SlotLogServer: append(entries)
+    SessionServer->>SessionChannel: broadcast messages
+    SessionChannel->>Client: push agent responses
+```
+
 ## Storage
 
 FleetLM uses a two-stage write-ahead log (WAL) architecture for flat memory usage under load.
@@ -66,6 +99,7 @@ The WAL architecture requires single-writer semantics per session. We distribute
 
 ### Session Distribution
 
+**Key behaviors:**
 - **Hash ring** maps each session to an owner node deterministically
 - **Sticky routing** keeps active sessions on their current node (ignores hash ring)
 - **SessionTracker** (Phoenix.Tracker CRDT) provides cluster-wide session → node mapping
