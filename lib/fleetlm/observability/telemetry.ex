@@ -34,8 +34,12 @@ defmodule Fleetlm.Observability.Telemetry do
   @agent_webhook_event [:fleetlm, :agent, :webhook, :dispatch]
   @agent_parse_error_event [:fleetlm, :agent, :parse_error]
   @agent_validation_error_event [:fleetlm, :agent, :validation_error]
+  @agent_debounce_event [:fleetlm, :agent, :debounce]
+  @agent_e2e_latency_event [:fleetlm, :agent, :e2e_latency]
 
   @session_drain_event [:fleetlm, :session, :drain]
+
+  @message_throughput_event [:fleetlm, :message, :throughput]
 
   @spec measure_session_append(String.t(), %{optional(atom()) => term()}, (-> {term(), map()})) ::
           term()
@@ -349,6 +353,57 @@ defmodule Fleetlm.Observability.Telemetry do
     }
 
     :telemetry.execute(@agent_validation_error_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit agent debounce telemetry - tracks time-to-webhook and batch size.
+  """
+  @spec emit_agent_debounce(String.t(), String.t(), integer(), non_neg_integer(), integer()) ::
+          :ok
+  def emit_agent_debounce(agent_id, session_id, debounce_delay_us, batched_messages, window_ms)
+      when is_binary(agent_id) and is_binary(session_id) and is_integer(debounce_delay_us) and
+             is_integer(batched_messages) and is_integer(window_ms) do
+    measurements = %{
+      delay: debounce_delay_us,
+      batched_messages: batched_messages
+    }
+
+    metadata = %{
+      agent_id: agent_id,
+      session_id: session_id,
+      window_ms: window_ms
+    }
+
+    :telemetry.execute(@agent_debounce_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit end-to-end agent latency telemetry - from message sent to agent response received.
+  """
+  @spec emit_agent_e2e_latency(String.t(), String.t(), integer(), non_neg_integer()) :: :ok
+  def emit_agent_e2e_latency(agent_id, session_id, latency_us, message_count)
+      when is_binary(agent_id) and is_binary(session_id) and is_integer(latency_us) and
+             is_integer(message_count) do
+    measurements = %{
+      duration: latency_us,
+      message_count: message_count
+    }
+
+    metadata = %{
+      agent_id: agent_id,
+      session_id: session_id
+    }
+
+    :telemetry.execute(@agent_e2e_latency_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit message throughput telemetry - messages/second across all sessions.
+  """
+  @spec emit_message_throughput() :: :ok
+  def emit_message_throughput do
+    measurements = %{count: 1}
+    :telemetry.execute(@message_throughput_event, measurements, %{})
   end
 
   defp maybe_put(map, _key, nil), do: map

@@ -14,9 +14,9 @@ defmodule Fleetlm.Agent.WebhookWorker do
   use GenServer
   require Logger
 
-  alias Fleetlm.Agent
   alias Fleetlm.Runtime.Router
   alias Fleetlm.Storage
+  alias Fleetlm.Observability.Telemetry
 
   # 10 minutes for long-running agent requests
   @receive_timeout 10 * 60 * 1000
@@ -223,6 +223,13 @@ defmodule Fleetlm.Agent.WebhookWorker do
          {:ok, response} <- start_async_request(agent, session_id, agent_id, user_id, messages) do
       async = response.body
 
+      # Find first user message timestamp for end-to-end latency tracking
+      first_user_message_at =
+        messages
+        |> Enum.filter(&(&1.sender_id == user_id))
+        |> Enum.map(& &1.inserted_at)
+        |> List.first()
+
       job = %{
         ref: async.ref,
         session_id: session_id,
@@ -230,7 +237,8 @@ defmodule Fleetlm.Agent.WebhookWorker do
         response: response,
         buffer: "",
         message_count: 0,
-        started_at: started_at
+        started_at: started_at,
+        first_user_message_at: first_user_message_at
       }
 
       {:ok, job}
@@ -351,8 +359,8 @@ defmodule Fleetlm.Agent.WebhookWorker do
       duration_ms: duration
     )
 
-    # Emit telemetry
-    Fleetlm.Observability.Telemetry.emit_agent_webhook(
+    # Emit webhook telemetry
+    Telemetry.emit_agent_webhook(
       job.agent_id,
       job.session_id,
       :ok,
@@ -360,6 +368,18 @@ defmodule Fleetlm.Agent.WebhookWorker do
       message_count: job.message_count,
       status_code: 200
     )
+
+    # Emit end-to-end latency telemetry if we have first message timestamp
+    if job.first_user_message_at do
+      e2e_latency_us = calculate_e2e_latency(job.first_user_message_at)
+
+      Telemetry.emit_agent_e2e_latency(
+        job.agent_id,
+        job.session_id,
+        e2e_latency_us,
+        job.message_count
+      )
+    end
 
     stats = increment_stats(state.stats, :successes)
     %{state | stats: stats, jobs: Map.delete(state.jobs, ref)}
@@ -403,4 +423,17 @@ defmodule Fleetlm.Agent.WebhookWorker do
   defp increment_stats(stats, key) do
     Map.update(stats, key, 1, &(&1 + 1))
   end
+
+  defp calculate_e2e_latency(%NaiveDateTime{} = first_message_at) do
+    # Convert NaiveDateTime to microseconds since epoch
+    first_message_us =
+      first_message_at
+      |> DateTime.from_naive!("Etc/UTC")
+      |> DateTime.to_unix(:microsecond)
+
+    now_us = System.os_time(:microsecond)
+    now_us - first_message_us
+  end
+
+  defp calculate_e2e_latency(_), do: 0
 end

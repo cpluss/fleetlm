@@ -22,7 +22,7 @@ FleetLM is a clustered Phoenix application that delivers real-time conversations
 - Human → agent conversations only; there is no agent → agent or group routing.
 - Every participant owns a single inbox process; sessions stream independently and are joined on demand with a `last_seq`.
 - Messages are ULID-indexed, append-only, and replayable. Runtime caches (Session tail, Inbox snapshot) are transient and rebuildable.
-- Agents integrate through pooled webhooks; we optimise for webhook retries and telemetry around delivery.
+- Agents integrate through debounced webhooks; rapid messages are batched using timers (default 500ms). We track webhook latency, batch efficiency, and end-to-end message timing via telemetry.
 
 ## Phoenix & LiveView Summary
 

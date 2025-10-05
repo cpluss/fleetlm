@@ -28,6 +28,9 @@ defmodule Fleetlm.Agent.Schema do
     field :headers, :map, default: %{}
     field :status, :string, default: "enabled"
 
+    # Debouncing configuration
+    field :debounce_window_ms, :integer, default: 500
+
     timestamps()
   end
 
@@ -45,13 +48,15 @@ defmodule Fleetlm.Agent.Schema do
       :message_history_limit,
       :timeout_ms,
       :headers,
-      :status
+      :status,
+      :debounce_window_ms
     ])
     |> validate_required([:id, :name, :origin_url, :webhook_path])
     |> validate_inclusion(:message_history_mode, ["tail", "entire", "last"])
     |> validate_inclusion(:status, ["enabled", "disabled"])
     |> validate_number(:timeout_ms, greater_than: 0)
     |> validate_number(:message_history_limit, greater_than: 0)
+    |> validate_number(:debounce_window_ms, greater_than_or_equal_to: 0)
     |> unique_constraint(:id, name: :agents_pkey)
   end
 end

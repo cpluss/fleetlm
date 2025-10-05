@@ -54,7 +54,50 @@ The storage model we chose (append-only log) requires us to send all traffic tha
 
 ## Agent Dispatcher
 
-To decouple agent management from the overall messaging infrastructure we've got a dispatcher local to every node which acts as an outgoing pool & server for each agent session. Its primary responsibility is to interact with downstream agents, and to proxy messages from an SSE/webhook connection back to the session. Each agent dispatcher runs local to its own session, since we can fan-out to agents quicker that way.
+To decouple agent management from the overall messaging infrastructure we've got a dispatcher that handles webhook delivery to agents. The dispatcher uses an event-driven debouncing mechanism to batch rapid message bursts and reduce outbound webhook load.
+
+### Debouncing Architecture
+
+Instead of dispatching a webhook for every message, FleetLM batches messages using a timer-based debouncer:
+
+1. **On message arrival:** SessionServer schedules work via `Agent.Debouncer` with a configurable window (default 500ms)
+2. **On rapid messages:** Each new message cancels and reschedules the timer (classic debounce pattern)
+3. **On timer fire:** Debouncer dispatches to the agent webhook pool with all accumulated messages
+4. **ETS deduplication:** Per-session entries in ETS ensure only one pending dispatch per session
+
+**Flow Example:**
+```
+User sends 5 messages in 2 seconds (debounce_window_ms: 500):
+├─ Msg 1 → schedule timer (500ms)
+├─ Msg 2 → cancel timer, reschedule (500ms)
+├─ Msg 3 → cancel timer, reschedule (500ms)
+├─ Msg 4 → cancel timer, reschedule (500ms)
+├─ Msg 5 → cancel timer, reschedule (500ms)
+└─ Timer fires → webhook with 5 batched messages
+```
+
+### Webhook Worker Pool
+
+Agent webhooks are delivered via a poolboy-managed worker pool (`Agent.WebhookWorker`):
+- Pooled HTTP/2 clients (Req + Finch) handle concurrent agent requests
+- Streaming JSONL response parsing appends agent messages as they arrive
+- Telemetry tracks webhook latency, batch sizes, and end-to-end message timing
+
+### Telemetry Metrics
+
+The agent dispatcher emits three key metrics:
+
+1. **Messages/second** (`[:fleetlm, :message, :throughput]`)
+   - Tracks message append rate across all sessions
+   - Holistic system throughput
+
+2. **Time-to-webhook** (`[:fleetlm, :agent, :debounce]`)
+   - Measures debounce delay (user message → webhook dispatch)
+   - Includes batch size (how many messages accumulated)
+
+3. **End-to-end latency** (`[:fleetlm, :agent, :e2e_latency]`)
+   - From first user message → agent response complete
+   - Critical for user-perceived responsiveness
 
 * **
 

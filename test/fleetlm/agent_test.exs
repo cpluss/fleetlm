@@ -39,6 +39,7 @@ defmodule Fleetlm.AgentTest do
       assert agent.message_history_limit == 50
       assert agent.timeout_ms == 30_000
       assert agent.status == "enabled"
+      assert agent.debounce_window_ms == 500
     end
 
     test "requires id, name, and origin_url" do
@@ -238,13 +239,60 @@ defmodule Fleetlm.AgentTest do
     end
   end
 
+  describe "debounce_window_ms" do
+    test "accepts custom debounce window" do
+      attrs = %{
+        id: "fast-agent",
+        name: "Fast Agent",
+        origin_url: "http://localhost:3000",
+        debounce_window_ms: 100
+      }
+
+      assert {:ok, agent} = Agent.create(attrs)
+      assert agent.debounce_window_ms == 100
+    end
+
+    test "allows zero debounce (immediate dispatch)" do
+      attrs = %{
+        id: "instant-agent",
+        name: "Instant Agent",
+        origin_url: "http://localhost:3000",
+        debounce_window_ms: 0
+      }
+
+      assert {:ok, agent} = Agent.create(attrs)
+      assert agent.debounce_window_ms == 0
+    end
+
+    test "rejects negative debounce window" do
+      attrs = %{
+        id: "invalid-agent",
+        name: "Invalid Agent",
+        origin_url: "http://localhost:3000",
+        debounce_window_ms: -100
+      }
+
+      assert {:error, changeset} = Agent.create(attrs)
+      assert "must be greater than or equal to 0" in errors_on(changeset).debounce_window_ms
+    end
+
+    test "can update debounce window" do
+      agent = create_agent("test-agent")
+      assert agent.debounce_window_ms == 500
+
+      assert {:ok, updated} = Agent.update(agent.id, %{debounce_window_ms: 1000})
+      assert updated.debounce_window_ms == 1000
+    end
+  end
+
   # Test helpers
 
   defp create_agent(id, attrs \\ %{}) do
     default_attrs = %{
       id: id,
       name: "Test Agent #{id}",
-      origin_url: "http://localhost:3000"
+      origin_url: "http://localhost:3000",
+      debounce_window_ms: 500
     }
 
     {:ok, agent} = Agent.create(Map.merge(default_attrs, attrs))

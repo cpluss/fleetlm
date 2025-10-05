@@ -14,7 +14,7 @@ Guidance for Claude Code when collaborating on FleetLM.
 - **Edge nodes** accept HTTP/WebSocket traffic. WebSocket sessions live under `FleetlmWeb.SessionChannel`; inbox summaries stream through `Fleetlm.Runtime.InboxServer`.
 - **Owner nodes** host session processes (`Fleetlm.Runtime.SessionServer`). Each session GenServer owns the canonical append-only log, backed by a local disk log that drains to Postgres/S3 on a timer.
 - **Sharding** uses a hash ring (`Fleetlm.Runtime.HashRing`) so every session resolves to a single owner. Ring changes drain in-flight sessions before handoff.
-- **Agents** are external systems reached via pooled webhooks. `Fleetlm.Agent.WebhookManager` fans out deliveries; telemetry and retries are mandatory.
+- **Agents** are external systems reached via pooled webhooks. `Fleetlm.Agent.Debouncer` batches rapid messages using timers; `Fleetlm.Agent.WebhookWorker` handles delivery. Telemetry tracks throughput, debounce delay, and end-to-end latency.
 - **Inbox model**: one inbox per participant, many sessions per participant. Runtime keeps inbox snapshots in Cachex and relies on sequence numbers for replay.
 
 ## Working Standards

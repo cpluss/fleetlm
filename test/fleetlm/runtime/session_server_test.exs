@@ -206,6 +206,42 @@ defmodule Fleetlm.Runtime.SessionServerTest do
     end
   end
 
+  describe "telemetry" do
+    setup %{session: session} do
+      {:ok, pid} = SessionServer.start_link(session.id)
+
+      on_exit(fn ->
+        if Process.alive?(pid) do
+          Process.exit(pid, :kill)
+          Process.sleep(10)
+        end
+      end)
+
+      %{pid: pid}
+    end
+
+    test "emits message throughput telemetry on append", %{session: session} do
+      handler_id = "test-throughput-#{:erlang.unique_integer()}"
+      test_pid = self()
+
+      :telemetry.attach(
+        handler_id,
+        [:fleetlm, :message, :throughput],
+        fn _event, measurements, _metadata, _config ->
+          send(test_pid, {:telemetry, :throughput, measurements})
+        end,
+        nil
+      )
+
+      {:ok, _message} = SessionServer.append_message(session.id, "alice", "text", %{})
+
+      assert_receive {:telemetry, :throughput, measurements}
+      assert measurements.count == 1
+
+      :telemetry.detach(handler_id)
+    end
+  end
+
   # Note: Drain tests are skipped because async Task.async in SlotLogServer.flush_to_database
   # doesn't automatically inherit :shared sandbox mode. Drain functionality will be tested
   # in integration tests where we can use real DB transactions.

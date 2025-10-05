@@ -22,6 +22,7 @@ Content-Type: application/json
     "message_history_mode": "tail",
     "message_history_limit": 20,
     "timeout_ms": 30000,
+    "debounce_window_ms": 500,
     "headers": {
       "X-API-Key": "secret"
     }
@@ -32,7 +33,32 @@ Content-Type: application/json
 - `message_history_mode`: `tail` (default), `last`, or `entire`
 - `message_history_limit`: positive integer (used by `tail`)
 - `timeout_ms`: how long FleetLM waits for a response
+- `debounce_window_ms`: debounce window in milliseconds (default: 500)
 - `headers`: optional map sent with every webhook request
+
+## Webhook Debouncing
+
+FleetLM batches rapid message bursts using a debounce mechanism to reduce agent load and improve efficiency:
+
+- When a user sends a message, FleetLM schedules a webhook dispatch after `debounce_window_ms`
+- If another message arrives before the timer fires, the timer resets
+- When the timer finally expires, the agent receives **all accumulated messages** in a single webhook call
+
+**Example:** User sends 10 messages with 300ms gaps, `debounce_window_ms = 500`:
+- Messages 1-10 arrive over 3 seconds
+- Each message resets the 500ms timer
+- After the last message, timer fires after 500ms
+- Agent receives **1 webhook** with all 10 messages batched together
+
+**Benefits:**
+- Reduces webhook calls (10 messages → 1 webhook)
+- Mirrors natural human ↔ agent interaction patterns
+- Configurable per-agent for different use cases
+
+**Tuning:**
+- `debounce_window_ms: 0` — Immediate dispatch (no batching)
+- `debounce_window_ms: 500` — Default, good for most cases
+- `debounce_window_ms: 2000` — High batching for slow-typing users
 
 ## Webhook request payload
 
