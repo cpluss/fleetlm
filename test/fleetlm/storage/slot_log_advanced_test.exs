@@ -133,12 +133,10 @@ defmodule Fleetlm.Storage.SlotLogAdvancedTest do
       start_cursor = %CommitLog.Cursor{segment: 0, offset: 0}
       tip_cursor = CommitLog.tip(log)
 
-      {:ok, {_final_cursor, entries_rev}} =
+      {:ok, {_final_cursor, entries}} =
         CommitLog.fold(slot, start_cursor, tip_cursor, [], [], fn batch, acc ->
-          {:cont, batch ++ acc}
+          {:cont, acc ++ batch}
         end)
-
-      entries = Enum.reverse(entries_rev)
 
       :ok = CommitLog.close(log)
 
