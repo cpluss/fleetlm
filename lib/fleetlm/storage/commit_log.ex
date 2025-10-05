@@ -612,4 +612,3 @@ defmodule Fleetlm.Storage.CommitLog do
     )
   end
 end
-

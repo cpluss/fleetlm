@@ -40,6 +40,6 @@ defmodule Fleetlm.Runtime.Supervisor do
       Fleetlm.Runtime.DrainCoordinator
     ]
 
-    Supervisor.init(children, strategy: :one_for_all)
+    Supervisor.init(children, strategy: :one_for_one)
   end
 end

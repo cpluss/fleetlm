@@ -110,7 +110,23 @@ defmodule Fleetlm.Storage.SlotLogServer do
   @impl true
   def init({slot, task_supervisor, registry}) do
     {:ok, log} = CommitLog.open(slot)
-    {:ok, flushed_cursor} = CommitLog.load_cursor(slot)
+
+    flushed_cursor =
+      case CommitLog.load_cursor(slot) do
+        {:ok, cursor} ->
+          cursor
+
+        {:error, :invalid_cursor} ->
+          Logger.warning("Slot #{slot}: Invalid cursor file, starting from beginning")
+          %CommitLog.Cursor{segment: 0, offset: 0}
+
+        {:error, reason} ->
+          Logger.warning(
+            "Slot #{slot}: Failed to load cursor (#{inspect(reason)}), starting from beginning"
+          )
+
+          %CommitLog.Cursor{segment: 0, offset: 0}
+      end
 
     tip = CommitLog.tip(log)
     flushed_cursor = clamp_cursor(flushed_cursor, tip)
