@@ -20,20 +20,17 @@ defmodule Fleetlm.Storage.SlotLogServer do
   @default_task_supervisor Fleetlm.Storage.SlotLogTaskSupervisor
   @default_registry Fleetlm.Storage.Registry
 
-  @default_flush_interval_ms 300
-  @flush_timeout Application.compile_env(:fleetlm, :slot_flush_timeout, 10_000)
+  @default_flush_interval_ms Application.compile_env(:fleetlm, :slot_log_flush_interval_ms, 300)
+  @flush_timeout Application.compile_env(:fleetlm, :slot_log_flush_timeout, 10_000)
 
+  # 512kB default.
   @default_sync_bytes Application.compile_env(:fleetlm, :slot_log_sync_bytes, 512 * 1024)
   @default_sync_interval_ms Application.compile_env(:fleetlm, :slot_log_sync_interval_ms, 25)
-  @default_flush_chunk_bytes Application.compile_env(
-                               :fleetlm,
-                               :slot_log_flush_chunk_bytes,
-                               4 * 1024 * 1024
-                             )
-
+  # 4MB default.
+  @default_flush_chunk_bytes Application.compile_env(:fleetlm, :slot_log_flush_chunk_bytes, 4 * 1024 * 1024)
   # PostgreSQL has a parameter limit of ~65535. With 10 fields per message,
   # we can safely insert ~6500 messages. Use 5000 for safety margin.
-  @insert_batch_size 5000
+  @insert_batch_size Application.compile_env(:fleetlm, :slot_log_insert_batch_size, 5000)
 
   @type state :: %{
           slot: non_neg_integer(),

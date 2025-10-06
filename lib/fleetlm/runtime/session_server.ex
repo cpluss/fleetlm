@@ -390,7 +390,6 @@ defmodule Fleetlm.Runtime.SessionServer do
 
   defp delete_n_entries(:"$end_of_table", _table, _n), do: :ok
   defp delete_n_entries(_key, _table, 0), do: :ok
-
   defp delete_n_entries(key, table, n) do
     next = :ets.next(table, key)
     :ets.delete(table, key)

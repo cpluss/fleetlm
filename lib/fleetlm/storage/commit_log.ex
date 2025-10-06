@@ -1,11 +1,26 @@
 defmodule Fleetlm.Storage.CommitLog do
   @moduledoc """
-  File-backed WAL for slot log servers.
+  File-backed WAL for slot log servers. Not perfect but gets the job done
+  without being too complex / burdensome.
 
-  Entries are stored in fixed-size segment files and framed as
-  `<<len::32, crc32::32, payload::binary>>`, where payload is a
-  serialized `%Fleetlm.Storage.Entry{}`. Cursors track `{segment, offset}`
-  positions so readers can resume without loading entire files into memory.
+  This acts as a staging area for messages before they're persisted to the
+  database, in order for us to shortcut the message ack latency by a great
+  deal. Being disk IO bound means we can tolerate a lot of throughput without
+  affecting the user experience.
+
+  - Entries are stored in fixed-size segment files and framed as
+    `<<len::32, crc32::32, payload::binary>>`, where payload is a
+    serialized `%Fleetlm.Storage.Entry{}`. Cursors track `{segment, offset}`
+    positions so readers can resume without loading entire files into memory.
+  - Segments are rotated when they reach the limit, and the current segment is synced to disk
+    every 512KB or 25ms.
+  - Segments are stored as individual files. This means we can easily drop completed segments
+    without loading the entire file into memory.
+  - Cursors are persisted alongside the commit log so we can resume from the last flushed position
+    after a crash. In the face of a crash we'll resume and potentially double write some messages,
+    but that's okay.
+  - We use a CRC32 checksum to validate the integrity of the frames, and truncate the segment
+    if a CRC mismatch is detected.
   """
 
   alias Fleetlm.Storage.Entry
@@ -13,7 +28,7 @@ defmodule Fleetlm.Storage.CommitLog do
   require Logger
 
   defmodule Cursor do
-    @moduledoc "Opaque commit-log cursor"
+    @moduledoc "Cursor for the commit log, not to be confused with the database cursor"
 
     @enforce_keys [:segment, :offset]
     defstruct [:segment, :offset]
@@ -21,6 +36,8 @@ defmodule Fleetlm.Storage.CommitLog do
     @type t :: %__MODULE__{segment: non_neg_integer(), offset: non_neg_integer()}
   end
 
+  # NOTE: these are not configurable, they're hardcoded to avoid messing up
+  # the backwards compatibility of the commit log.
   @frame_header_bytes 8
   # 128kB
   @default_segment_bytes 128 * 1024 * 1024
@@ -35,6 +52,7 @@ defmodule Fleetlm.Storage.CommitLog do
           writer: IO.device(),
           segment_size: non_neg_integer(),
           segment_limit: pos_integer(),
+          # the "tip" of the commit log, one past the last frame
           tip: Cursor.t(),
           bytes_since_sync: non_neg_integer(),
           last_sync_ms: integer()
@@ -179,6 +197,10 @@ defmodule Fleetlm.Storage.CommitLog do
 
   @doc """
   Persist the flushed cursor for crash recovery.
+
+  We store this alongside the commit log so we can resume from the last flushed position
+  after a crash. In the face of a crash we'll resume and potentially double write some messages,
+  but that's okay.
   """
   @spec persist_cursor(non_neg_integer(), Cursor.t()) :: :ok | {:error, term()}
   def persist_cursor(slot, %Cursor{} = cursor) do
@@ -260,8 +282,10 @@ defmodule Fleetlm.Storage.CommitLog do
 
   ## Internal helpers
 
+  # Streaming fold over the commit log between two cursors. Bit of a mess but it works fairly
+  # OK. It also means we can avoid loading the entire file into memory, which is a big win
+  # when we want to flush massive amounts of messages.
   defp do_fold(_slot, cursor, cursor, _chunk_bytes, acc, _callback), do: {:ok, {cursor, acc}}
-
   defp do_fold(slot, %Cursor{} = cursor, %Cursor{} = to, chunk_bytes, acc, callback) do
     path = segment_path(slot, cursor.segment)
 
@@ -579,6 +603,7 @@ defmodule Fleetlm.Storage.CommitLog do
     end
   end
 
+  # Utility to ensure we always open the writer in append mode.
   defp open_writer(path) do
     :file.open(path, [:raw, :binary, :append, :write, :delayed_write])
   end

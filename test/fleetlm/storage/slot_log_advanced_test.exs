@@ -9,12 +9,10 @@ defmodule Fleetlm.Storage.SlotLogAdvancedTest do
   """
 
   use Fleetlm.TestCase
-  use Bitwise
 
   import Ecto.Query
 
   alias Fleetlm.Storage.CommitLog
-  alias Fleetlm.Storage.CommitLog.Cursor
   alias Fleetlm.Storage.SlotLogServer
   alias Fleetlm.Storage.Model.Message
 
@@ -204,7 +202,7 @@ defmodule Fleetlm.Storage.SlotLogAdvancedTest do
       # Flip some bits in the middle to corrupt a frame (skip header)
       if byte_size(data) > 100 do
         <<before::binary-size(100), byte::8, rest::binary>> = data
-        corrupted = <<before::binary, byte ^^^ 0xFF, rest::binary>>
+        corrupted = <<before::binary, Bitwise.bxor(byte, 0xFF), rest::binary>>
         File.write!(wal_path, corrupted)
 
         # Restart - should repair and truncate
