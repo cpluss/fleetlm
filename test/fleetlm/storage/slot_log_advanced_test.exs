@@ -74,11 +74,12 @@ defmodule Fleetlm.Storage.SlotLogAdvancedTest do
       {:ok, log} = CommitLog.open(slot, segment_bytes: 256)
 
       # Write entries to create multiple segments
-      for seq <- 1..5 do
-        entry = build_entry(slot, session.id, seq)
-        {:ok, log_updated} = CommitLog.append(log, entry)
-        log = log_updated
-      end
+      log =
+        Enum.reduce(1..5, log, fn seq, log_acc ->
+          entry = build_entry(slot, session.id, seq)
+          {:ok, log_updated} = CommitLog.append(log_acc, entry)
+          log_updated
+        end)
 
       {:ok, log} = CommitLog.sync(log)
 
@@ -124,11 +125,12 @@ defmodule Fleetlm.Storage.SlotLogAdvancedTest do
       # Write entries across multiple segments
       entry_count = 10
 
-      for seq <- 1..entry_count do
-        entry = build_entry(slot, session.id, seq)
-        {:ok, log_updated} = CommitLog.append(log, entry)
-        log = log_updated
-      end
+      log =
+        Enum.reduce(1..entry_count, log, fn seq, log_acc ->
+          entry = build_entry(slot, session.id, seq)
+          {:ok, log_updated} = CommitLog.append(log_acc, entry)
+          log_updated
+        end)
 
       {:ok, log} = CommitLog.sync(log)
 
