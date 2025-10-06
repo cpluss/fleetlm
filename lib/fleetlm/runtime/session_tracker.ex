@@ -29,7 +29,7 @@ defmodule Fleetlm.Runtime.SessionTracker do
   the HashRing redistributes session ownership. Some sessions need to move
   from their current node to a new owner node.
 
-  **Naive approach fails:** Simply draining on the old node and starting on
+  **Naive approach:** Simply draining on the old node and starting on
   the new node creates a race condition window where:
   - Old node hasn't finished draining yet
   - New node thinks it should own the session
@@ -114,6 +114,7 @@ defmodule Fleetlm.Runtime.SessionTracker do
   """
 
   use Phoenix.Tracker
+  alias MapSet
 
   @doc """
   Start the tracker linked to the current process.
@@ -126,27 +127,27 @@ defmodule Fleetlm.Runtime.SessionTracker do
   @doc """
   Required callback for Phoenix.Tracker.
   """
+  @impl true
   def init(opts) do
     server = Keyword.fetch!(opts, :pubsub_server)
-    {:ok, %{pubsub_server: server, node_name: Phoenix.PubSub.node_name(server)}}
+
+    # Monitor node membership changes so we can detect topology updates even
+    # when there is no presence churn (e.g. a brand-new node with zero
+    # sessions yet).
+    :ok = :net_kernel.monitor_nodes(true, [:nodedown_reason])
+
+    state = %{
+      pubsub_server: server,
+      node_name: Phoenix.PubSub.node_name(server),
+      known_nodes: current_nodes_set()
+    }
+
+    {:ok, state}
   end
 
   @doc """
   Track a session as running on this node.
-
   Called by SessionServer.init/1 when a session starts.
-
-  ## Parameters
-  - pid: The SessionServer process pid
-  - session_id: The session identifier
-  - metadata: Map with :node and :status keys
-
-  ## Example
-
-      SessionTracker.track(self(), "session-123", %{
-        node: Node.self(),
-        status: :running
-      })
   """
   def track(pid, session_id, metadata) do
     Phoenix.Tracker.track(__MODULE__, pid, "sessions", session_id, metadata)
@@ -156,10 +157,6 @@ defmodule Fleetlm.Runtime.SessionTracker do
   Update a session's status to :draining without untracking it.
 
   Called by RebalanceManager when ownership moves to another node.
-
-  ## Example
-
-      SessionTracker.mark_draining("session-123")
   """
   def mark_draining(session_id) do
     # Look up the SessionServer PID from the registry
@@ -182,14 +179,6 @@ defmodule Fleetlm.Runtime.SessionTracker do
   - `{:ok, node, :running}` - Session is running on node and accepting requests
   - `{:ok, node, :draining}` - Session is draining on node, reject requests
   - `:not_found` - Session not tracked anywhere (safe to start)
-
-  ## Example
-
-      case SessionTracker.find_session("session-123") do
-        {:ok, node, :running} -> route_to(node)
-        {:ok, node, :draining} -> {:error, :draining}
-        :not_found -> start_on_owner_node()
-      end
   """
   def find_session(session_id) do
     case Phoenix.Tracker.list(__MODULE__, "sessions")
@@ -205,26 +194,93 @@ defmodule Fleetlm.Runtime.SessionTracker do
   @doc """
   Called when cluster topology changes (nodes join/leave).
 
-  This callback receives diffs from the CRDT gossip protocol and triggers
-  rebalancing when nodes are added or removed.
+  We inspect the diff for previously unseen nodes so we can avoid triggering
+  rebalancing on routine session churn. Node monitor events complement this so
+  we still rebalance when a node joins/leaves before it tracks any sessions.
 
   The diff format is: %{"sessions" => {joins, leaves}} where joins and leaves
   are lists of {session_id, metadata} tuples.
   """
-  def handle_diff(_diff, state) do
-    # Diff format: %{"sessions" => {joins_list, leaves_list}}
-    # We don't need to process individual session joins/leaves here.
-    # We only care about node-level topology changes which happen via
-    # Phoenix.Tracker's internal gossip when a node joins/leaves the cluster.
-    #
-    # For now, we'll trigger rebalancing on ANY diff, but in production
-    # you might want to be smarter about detecting actual node changes vs
-    # just session churn.
+  @impl true
+  def handle_diff(diff, state) do
+    {known_nodes, trigger?} = diff_topology_change(diff, state.known_nodes)
+    state = %{state | known_nodes: known_nodes}
 
-    # TODO: Detect actual node topology changes vs session churn
-    # For now: always check (safe but potentially wasteful)
-    send(Fleetlm.Runtime.RebalanceManager, :rebalance)
+    if trigger?, do: send(Fleetlm.Runtime.RebalanceManager, :rebalance)
 
     {:ok, state}
+  end
+
+  @impl true
+  def handle_info({:nodeup, node}, state), do: handle_nodeup(node, state)
+
+  @impl true
+  def handle_info({:nodeup, node, _info}, state), do: handle_nodeup(node, state)
+
+  @impl true
+  def handle_info({:nodedown, node}, state), do: handle_nodedown(node, state)
+
+  @impl true
+  def handle_info({:nodedown, node, _info}, state), do: handle_nodedown(node, state)
+
+  @impl true
+  def handle_info(_message, state), do: {:noreply, state}
+
+  defp handle_nodeup(node, %{known_nodes: known_nodes} = state) do
+    cond do
+      node == Node.self() ->
+        {:noreply, state}
+
+      MapSet.member?(known_nodes, node) ->
+        {:noreply, state}
+
+      true ->
+        send(Fleetlm.Runtime.RebalanceManager, :rebalance)
+        {:noreply, %{state | known_nodes: MapSet.put(known_nodes, node)}}
+    end
+  end
+
+  defp handle_nodedown(node, %{known_nodes: known_nodes} = state) do
+    cond do
+      node == Node.self() ->
+        {:noreply, state}
+
+      MapSet.member?(known_nodes, node) ->
+        send(Fleetlm.Runtime.RebalanceManager, :rebalance)
+        {:noreply, %{state | known_nodes: MapSet.delete(known_nodes, node)}}
+
+      true ->
+        {:noreply, state}
+    end
+  end
+
+  @doc false
+  def diff_topology_change(diff, known_nodes) do
+    new_nodes =
+      diff
+      |> Map.get("sessions", {[], []})
+      |> nodes_from_diff()
+
+    cond do
+      MapSet.size(new_nodes) == 0 -> {known_nodes, false}
+      MapSet.subset?(new_nodes, known_nodes) -> {known_nodes, false}
+      true -> {MapSet.union(known_nodes, new_nodes), true}
+    end
+  end
+
+  defp nodes_from_diff({joins, leaves}) do
+    joins
+    |> Enum.concat(leaves)
+    |> Enum.reduce(MapSet.new(), fn
+      {_key, %{node: node}}, acc when is_atom(node) -> MapSet.put(acc, node)
+      _entry, acc -> acc
+    end)
+  end
+
+  defp nodes_from_diff(_), do: MapSet.new()
+
+  defp current_nodes_set do
+    [Node.self() | Node.list()]
+    |> Enum.into(MapSet.new())
   end
 end

@@ -2,6 +2,7 @@ defmodule Fleetlm.Runtime.SessionTrackerTest do
   use Fleetlm.TestCase
 
   alias Fleetlm.Runtime.{SessionTracker, SessionServer}
+  alias MapSet
 
   setup do
     session = create_test_session("alice", "bot")
@@ -130,6 +131,36 @@ defmodule Fleetlm.Runtime.SessionTrackerTest do
       Process.sleep(100)
 
       assert :not_found = SessionTracker.find_session(session.id)
+    end
+  end
+
+  describe "diff_topology_change/2" do
+    test "ignores churn from existing nodes" do
+      known = MapSet.new([Node.self()])
+
+      diff = %{
+        "sessions" =>
+          {[
+             {"session-1", %{node: Node.self(), status: :running}}
+           ], []}
+      }
+
+      assert {^known, false} = SessionTracker.diff_topology_change(diff, known)
+    end
+
+    test "detects new nodes in tracker diff" do
+      known = MapSet.new([Node.self()])
+      new_node = :"new-node@127.0.0.1"
+
+      diff = %{
+        "sessions" =>
+          {[
+             {"session-1", %{node: new_node, status: :running}}
+           ], []}
+      }
+
+      {updated, true} = SessionTracker.diff_topology_change(diff, known)
+      assert MapSet.member?(updated, new_node)
     end
   end
 end
