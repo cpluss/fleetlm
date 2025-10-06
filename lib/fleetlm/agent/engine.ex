@@ -26,6 +26,17 @@ defmodule Fleetlm.Agent.Engine do
 
   # Unified ETS schema: {key, user_id, last_sent, target_seq, due_at, first_seq, enqueued_at, attempts, status}
   # status: nil (idle), :pending (queued), :inflight (dispatching)
+  #
+  # Tuple field positions (1-indexed for :ets.update_element)
+  #@_pos_key 1
+  @pos_user_id 2
+  @pos_last_sent 3
+  #@pos_target_seq 4
+  @pos_due_at 5
+  #@pos_first_seq 6
+  #@pos_enqueued_at 7
+  #@pos_attempts 8
+  @pos_status 9
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -102,6 +113,7 @@ defmodule Fleetlm.Agent.Engine do
 
   def handle_info({:DOWN, _ref, :process, _pid, reason}, state) do
     # Task crashed - the task supervisor will log this, we just continue
+    # with the next dispatch as that will retry the task.
     Logger.debug("Agent dispatch task terminated: #{inspect(reason)}")
     {:noreply, dispatch_due_sessions(state)}
   end
@@ -128,7 +140,12 @@ defmodule Fleetlm.Agent.Engine do
 
     if status == :inflight do
       # Already dispatching; push due_at forward to avoid re-reading
-      :ets.update_element(@table, key, {5, System.monotonic_time(:millisecond) + tick_ms()})
+      :ets.update_element(
+        @table,
+        key,
+        {@pos_due_at, System.monotonic_time(:millisecond) + tick_ms()}
+      )
+
       state
     else
       launch_dispatch(key, user_id, target_seq, first_seq, enqueued_at, attempts, state)
@@ -142,7 +159,7 @@ defmodule Fleetlm.Agent.Engine do
     started_at = System.monotonic_time(:millisecond)
 
     # Mark as inflight in ETS
-    :ets.update_element(@table, key, [{9, :inflight}])
+    :ets.update_element(@table, key, [{@pos_status, :inflight}])
 
     job = %{
       agent_id: agent_id,
@@ -197,7 +214,7 @@ defmodule Fleetlm.Agent.Engine do
   end
 
   defp mark_pending(key) do
-    :ets.update_element(@table, key, [{9, :pending}])
+    :ets.update_element(@table, key, [{@pos_status, :pending}])
   end
 
   defp reschedule_with_backoff(key, %{agent_id: agent_id, session_id: session_id} = meta) do
@@ -273,23 +290,15 @@ defmodule Fleetlm.Agent.Engine do
   end
 
   defp lookup_last_sent(key, fallback) do
-    case :ets.lookup(@table, key) do
-      [] ->
-        max(fallback - 1, 0)
-
-      [{^key, _user_id, last_sent, _target, _due, _first, _enqueued, _attempts, _status}] ->
-        last_sent
-    end
+    :ets.lookup_element(@table, key, @pos_last_sent)
+  rescue
+    ArgumentError -> max(fallback - 1, 0)
   end
 
   defp lookup_user_id(key) do
-    case :ets.lookup(@table, key) do
-      [{^key, user_id, _last_sent, _target, _due, _first, _enqueued, _attempts, _status}] ->
-        user_id
-
-      _ ->
-        nil
-    end
+    :ets.lookup_element(@table, key, @pos_user_id)
+  rescue
+    ArgumentError -> nil
   end
 
   defp ensure_table do
@@ -311,8 +320,6 @@ defmodule Fleetlm.Agent.Engine do
         :ok
     end
   end
-
-  ## Telemetry & helpers
 
   defp record_finish(
          %{

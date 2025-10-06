@@ -136,6 +136,7 @@ defmodule Fleetlm.Agent.Dispatch do
     # Process each complete line within the buffer
     lines = String.split(new_buffer, "\n")
     {complete_lines, [remaining]} = Enum.split(lines, -1)
+
     result =
       Enum.reduce_while(complete_lines, {:ok, acc.count}, fn line, {:ok, count} ->
         case append_line(line, acc.session_id, acc.agent_id) do
