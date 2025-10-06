@@ -27,7 +27,11 @@ defmodule Fleetlm.Storage.SlotLogServer do
   @default_sync_bytes Application.compile_env(:fleetlm, :slot_log_sync_bytes, 512 * 1024)
   @default_sync_interval_ms Application.compile_env(:fleetlm, :slot_log_sync_interval_ms, 25)
   # 4MB default.
-  @default_flush_chunk_bytes Application.compile_env(:fleetlm, :slot_log_flush_chunk_bytes, 4 * 1024 * 1024)
+  @default_flush_chunk_bytes Application.compile_env(
+                               :fleetlm,
+                               :slot_log_flush_chunk_bytes,
+                               4 * 1024 * 1024
+                             )
   # PostgreSQL has a parameter limit of ~65535. With 10 fields per message,
   # we can safely insert ~6500 messages. Use 5000 for safety margin.
   @insert_batch_size Application.compile_env(:fleetlm, :slot_log_insert_batch_size, 5000)
@@ -255,47 +259,29 @@ defmodule Fleetlm.Storage.SlotLogServer do
   def handle_call(:flush_now, _from, %{pending_flush: %Task{} = task} = state) do
     result = await_flush_task(task, @flush_timeout)
     {reply, next_state} = handle_flush_completion(result, %{state | pending_flush: nil})
-    {:reply, reply, next_state}
+
+    case reply do
+      {:error, reason} ->
+        {:reply, {:error, reason}, next_state}
+
+      :ok ->
+        if next_state.dirty do
+          case flush_dirty_now(next_state) do
+            {:ok, final_state} -> {:reply, :ok, final_state}
+            {:already_clean, final_state} -> {:reply, :ok, final_state}
+            {:error, reason, final_state} -> {:reply, {:error, reason}, final_state}
+          end
+        else
+          {:reply, :ok, next_state}
+        end
+    end
   end
 
   def handle_call(:flush_now, _from, %{dirty: true, pending_flush: nil} = state) do
-    case CommitLog.sync(state.log) do
-      {:ok, log} ->
-        target = CommitLog.tip(log)
-
-        if cursor_before?(state.flushed_cursor, target) do
-          case flush_to_database(
-                 state.slot,
-                 state.flushed_cursor,
-                 target,
-                 state.flush_chunk_bytes
-               ) do
-            {:ok, info} ->
-              {:ok, log} = CommitLog.drop_completed_segments(log, info.flushed_cursor)
-              persist_cursor(state.slot, info.flushed_cursor)
-
-              dirty? = cursor_before?(info.flushed_cursor, CommitLog.tip(log))
-
-              new_state =
-                state
-                |> Map.put(:log, log)
-                |> Map.put(:flushed_cursor, info.flushed_cursor)
-                |> Map.put(:dirty, dirty?)
-                |> Map.put(:notify_next_flush, [])
-
-              Enum.each(state.notify_next_flush, &send(&1, :flushed))
-
-              {:reply, :ok, new_state}
-
-            {:error, reason} ->
-              {:reply, {:error, reason}, %{state | log: log}}
-          end
-        else
-          {:reply, :already_clean, %{state | log: log, dirty: false}}
-        end
-
-      {:error, reason} ->
-        {:reply, {:error, reason}, state}
+    case flush_dirty_now(state) do
+      {:ok, new_state} -> {:reply, :ok, new_state}
+      {:already_clean, new_state} -> {:reply, :already_clean, new_state}
+      {:error, reason, new_state} -> {:reply, {:error, reason}, new_state}
     end
   end
 
@@ -448,6 +434,15 @@ defmodule Fleetlm.Storage.SlotLogServer do
   end
 
   defp handle_flush_completion({:ok, info}, state) do
+    apply_flush_success(state, info)
+  end
+
+  defp handle_flush_completion({:error, reason}, state) do
+    Logger.error("Flush failed for slot #{state.slot}: #{inspect(reason)}")
+    {{:error, reason}, %{state | dirty: true}}
+  end
+
+  defp apply_flush_success(state, info) do
     Enum.each(state.notify_next_flush, &send(&1, :flushed))
 
     {:ok, log} = CommitLog.drop_completed_segments(state.log, info.flushed_cursor)
@@ -465,9 +460,35 @@ defmodule Fleetlm.Storage.SlotLogServer do
     {:ok, new_state}
   end
 
-  defp handle_flush_completion({:error, reason}, state) do
-    Logger.error("Flush failed for slot #{state.slot}: #{inspect(reason)}")
-    {{:error, reason}, %{state | dirty: true}}
+  defp flush_dirty_now(%{dirty: false} = state), do: {:already_clean, state}
+
+  defp flush_dirty_now(state) do
+    case CommitLog.sync(state.log) do
+      {:ok, log} ->
+        state = %{state | log: log}
+        target = CommitLog.tip(log)
+
+        if cursor_before?(state.flushed_cursor, target) do
+          case flush_to_database(
+                 state.slot,
+                 state.flushed_cursor,
+                 target,
+                 state.flush_chunk_bytes
+               ) do
+            {:ok, info} ->
+              {:ok, new_state} = apply_flush_success(state, info)
+              {:ok, new_state}
+
+            {:error, reason} ->
+              {:error, reason, state}
+          end
+        else
+          {:already_clean, %{state | dirty: false}}
+        end
+
+      {:error, reason} ->
+        {:error, reason, state}
+    end
   end
 
   defp maybe_sync(log, bytes_threshold, interval_ms) do

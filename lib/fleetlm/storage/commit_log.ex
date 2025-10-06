@@ -286,6 +286,7 @@ defmodule Fleetlm.Storage.CommitLog do
   # OK. It also means we can avoid loading the entire file into memory, which is a big win
   # when we want to flush massive amounts of messages.
   defp do_fold(_slot, cursor, cursor, _chunk_bytes, acc, _callback), do: {:ok, {cursor, acc}}
+
   defp do_fold(slot, %Cursor{} = cursor, %Cursor{} = to, chunk_bytes, acc, callback) do
     path = segment_path(slot, cursor.segment)
 
@@ -400,12 +401,14 @@ defmodule Fleetlm.Storage.CommitLog do
                         [entry | acc]
                       )
                     else
+                      # During normal reads (flush operations), don't truncate on CRC errors.
+                      # Just stop reading and return what we have. Truncation should only
+                      # happen during initial repair (scan_segment) when the writer is closed.
                       Logger.warning(
-                        "Commit log CRC mismatch slot=#{slot} segment=#{segment} offset=#{offset}; truncating"
+                        "Commit log CRC mismatch during read slot=#{slot} segment=#{segment} offset=#{offset}; stopping read"
                       )
 
-                      truncate_device(device, next_offset - frame_bytes)
-                      {:error, {:crc_mismatch, slot, segment, offset}}
+                      {:ok, Enum.reverse(acc), offset}
                     end
 
                   {:ok, _partial} ->

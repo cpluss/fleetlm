@@ -110,6 +110,39 @@ defmodule Fleetlm.Storage.SlotLogServerTest do
     test "flush_now is idempotent when already clean", %{slot: slot} do
       assert :already_clean = SlotLogServer.flush_now(slot)
     end
+
+    test "flush_now waits for in-flight flush tasks before persisting new appends", %{
+      slot: slot,
+      server_pid: server_pid
+    } do
+      session = create_test_session()
+      initial = 3_000
+      extra = 50
+
+      for seq <- 1..initial do
+        entry = build_entry(slot, session.id, seq)
+        :ok = SlotLogServer.append(slot, entry)
+      end
+
+      SlotLogServer.notify_next_flush(slot)
+      send(server_pid, :flush)
+      Process.sleep(20)
+
+      for seq <- (initial + 1)..(initial + extra) do
+        entry = build_entry(slot, session.id, seq)
+        :ok = SlotLogServer.append(slot, entry)
+      end
+
+      assert :ok = SlotLogServer.flush_now(slot)
+      assert_received :flushed
+
+      messages =
+        Message
+        |> where([m], m.session_id == ^session.id)
+        |> Repo.all()
+
+      assert length(messages) == initial + extra
+    end
   end
 
   describe "cursor persistence" do
@@ -243,6 +276,7 @@ defmodule Fleetlm.Storage.SlotLogServerTest do
         catch
           # Catch exit from GenServer.call timeout and convert to raise for eventually
           :exit, {:timeout, _} -> raise "Slot server call timeout"
+          :exit, {:noproc, _} -> raise "Slot server not ready yet"
         end
       end,
       timeout: timeout

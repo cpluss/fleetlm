@@ -175,7 +175,10 @@ defmodule Fleetlm.Storage.SlotLogAdvancedTest do
   end
 
   describe "data integrity during reads" do
-    test "detects CRC mismatch during read and stops", %{slot: slot, slot_log_dir: slot_log_dir} do
+    test "detects CRC mismatch during repair and truncates", %{
+      slot: slot,
+      slot_log_dir: slot_log_dir
+    } do
       session = create_test_session()
 
       # Write some valid entries
@@ -205,13 +208,14 @@ defmodule Fleetlm.Storage.SlotLogAdvancedTest do
         corrupted = <<before::binary, Bitwise.bxor(byte, 0xFF), rest::binary>>
         File.write!(wal_path, corrupted)
 
-        # Restart - should repair and truncate
+        # Restart - should repair and truncate during scan_segment (initial repair)
         {:ok, _pid} = Fleetlm.Storage.Supervisor.ensure_started(slot)
 
         # Should be able to read but won't get all entries due to truncation
+        # during the initial repair phase
         {:ok, entries} = SlotLogServer.read(slot, session.id, 0)
 
-        # We should get fewer than 3 entries due to truncation
+        # We should get fewer than 3 entries due to truncation during repair
         assert length(entries) < 3
       end
     end
