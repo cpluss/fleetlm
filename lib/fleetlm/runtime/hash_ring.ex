@@ -6,6 +6,11 @@ defmodule Fleetlm.Runtime.HashRing do
   perform routing decisions without cross-node RPCs. Ring construction is purely
   deterministic: given the same sorted node list and slot count, every node will
   derive the exact same ownership table.
+
+  Note that it's a bit of an abusive pattern to use `:persistent_term` for this. It
+  should be fine since the hash-ring is only updated when cluster topology changes, which
+  should be a rare event. It also ensures that once the hash-ring is updated every reading
+  process will be updated.
   """
 
   import Bitwise
