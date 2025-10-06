@@ -19,7 +19,8 @@ defmodule Fleetlm.Agent.Cache do
   end
 
   @doc """
-  Get an agent from cache or load from database.
+  Get an agent from cache or load from database. Read-through.
+
   Returns the same shape as Agent.get/1 but with caching.
   """
   @spec get(String.t()) :: {:ok, Fleetlm.Agent.t()} | {:error, :not_found}
@@ -41,11 +42,11 @@ defmodule Fleetlm.Agent.Cache do
   end
 
   @doc """
-  Invalidate cached agent (call after updates).
+  Invalidate cached agent (call on agent updates).
   """
   @spec invalidate(String.t()) :: :ok
   def invalidate(agent_id) when is_binary(agent_id) do
-    GenServer.cast(__MODULE__, {:invalidate, agent_id})
+    GenServer.call(__MODULE__, {:invalidate, agent_id})
   end
 
   @doc """
@@ -73,10 +74,10 @@ defmodule Fleetlm.Agent.Cache do
   end
 
   @impl true
-  def handle_cast({:invalidate, agent_id}, state) do
+  def handle_call({:invalidate, agent_id}, _from, state) do
     :ets.delete(@table, agent_id)
     Logger.debug("Agent cache invalidated for #{agent_id}")
-    {:noreply, state}
+    {:reply, :ok, state}
   end
 
   ## Private Helpers
