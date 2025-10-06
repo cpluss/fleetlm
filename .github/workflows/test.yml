@@ -52,7 +52,7 @@ jobs:
         MIX_ENV: test
 
     - name: Run tests
-      run: mix test
+      run: mix test --trace
 
 #    - name: Run tests with coverage
 #      run: mix test --cover
