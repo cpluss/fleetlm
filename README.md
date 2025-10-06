@@ -6,6 +6,8 @@
 [![Elixir](https://img.shields.io/badge/Elixir-1.15.7-purple.svg)](https://elixir-lang.org/)
 [![Phoenix](https://img.shields.io/badge/Phoenix-1.8.1-red.svg)](https://phoenixframework.org/)
 
+> [!NOTE]
+> **Work in Progress**: FleetLM is under active development. APIs and behavior may change. Please [report any issues](https://github.com/cpluss/fleetlm/issues) you encounter.
 
 **Write stateless agents. We handle the rest.**
 
