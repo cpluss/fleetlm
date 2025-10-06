@@ -69,9 +69,9 @@ jobs:
         sbom: false
 
     - name: Generate artifact attestation
-      if: github.event_name != 'pull_request' && !github.event.repository.private
+      if: github.event_name != 'pull_request' && !github.event.repository.private && steps.build.outputs.digest != ''
       uses: actions/attest-build-provenance@v1
       with:
-        subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.meta.outputs.digest }}
+        subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
         subject-digest: ${{ steps.build.outputs.digest }}
         push-to-registry: true
