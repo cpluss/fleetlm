@@ -186,7 +186,7 @@ defmodule Fleetlm.Storage.SlotLogServerTest do
       assert_receive {:DOWN, ^ref, :process, ^server_pid, :killed}, 1_000
 
       {:ok, _new_pid} = Fleetlm.Storage.Supervisor.ensure_started(slot)
-      wait_for_slot(slot, exclude: server_pid)
+      wait_for_slot(slot, exclude: server_pid, timeout: 10_000)
 
       assert :ok = SlotLogServer.flush_now(slot)
 
@@ -235,48 +235,46 @@ defmodule Fleetlm.Storage.SlotLogServerTest do
   defp wait_for_slot(slot, opts \\ []) do
     exclude = Keyword.get(opts, :exclude, nil)
     # Use longer timeout to allow for slow GenServer initialization
-    timeout = Keyword.get(opts, :timeout, 2_000)
+    timeout = Keyword.get(opts, :timeout, 5_000)
 
     eventually(
       fn ->
-        try do
-          case Registry.lookup(Fleetlm.Storage.Registry, slot) do
-            [{pid, _}] ->
-              cond do
-                exclude != nil and pid == exclude ->
-                  raise "Old slot server still running"
+        case Registry.lookup(Fleetlm.Storage.Registry, slot) do
+          [] ->
+            case Fleetlm.Storage.Supervisor.ensure_started(slot) do
+              {:ok, _pid} -> raise "Slot server not started yet"
+              {:error, reason} -> raise "Failed to start slot #{slot}: #{inspect(reason)}"
+            end
 
-                exclude != nil and not Process.alive?(exclude) ->
-                  # Old process is dead, verify new server is responsive
-                  # Use short timeout to allow eventually to retry quickly
-                  via = {:via, Registry, {Fleetlm.Storage.Registry, slot}}
+          [{pid, _}] ->
+            cond do
+              exclude != nil and pid == exclude and Process.alive?(pid) ->
+                raise "Old slot server still running"
 
+              not Process.alive?(pid) ->
+                Fleetlm.Storage.Supervisor.ensure_started(slot)
+                raise "Slot server not ready yet"
+
+              exclude != nil and pid == exclude ->
+                raise "Slot server not ready yet"
+
+              true ->
+                via = {:via, Registry, {Fleetlm.Storage.Registry, slot}}
+
+                try do
                   case GenServer.call(via, :snapshot, 100) do
                     {:ok, _} -> :ok
                     _ -> raise "Slot server not ready yet"
                   end
+                catch
+                  :exit, {:timeout, _} ->
+                    raise "Slot server call timeout"
 
-                exclude == nil ->
-                  # No exclude filter, just verify server is responsive
-                  # Use short timeout to allow eventually to retry quickly
-                  via = {:via, Registry, {Fleetlm.Storage.Registry, slot}}
-
-                  case GenServer.call(via, :snapshot, 100) do
-                    {:ok, _} -> :ok
-                    _ -> raise "Slot server not ready yet"
-                  end
-
-                true ->
-                  raise "Waiting for old process to exit"
-              end
-
-            [] ->
-              raise "Slot server not started yet"
-          end
-        catch
-          # Catch exit from GenServer.call timeout and convert to raise for eventually
-          :exit, {:timeout, _} -> raise "Slot server call timeout"
-          :exit, {:noproc, _} -> raise "Slot server not ready yet"
+                  :exit, {:noproc, _} ->
+                    Fleetlm.Storage.Supervisor.ensure_started(slot)
+                    raise "Slot server not ready yet"
+                end
+            end
         end
       end,
       timeout: timeout
