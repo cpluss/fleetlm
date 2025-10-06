@@ -155,8 +155,8 @@ export function decode(raw) {
 /**
  * Create a Phoenix channel join message.
  */
-export function joinMessage(topic, joinRef) {
-  return [`${joinRef}`, `${joinRef}`, topic, 'phx_join', {}];
+export function joinMessage(topic, joinRef, payload = {}) {
+  return [`${joinRef}`, `${joinRef}`, topic, 'phx_join', payload];
 }
 
 /**

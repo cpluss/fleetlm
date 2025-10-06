@@ -1,21 +1,23 @@
 /**
  * FleetLM Message Correctness Benchmark
  *
- * Tests that EVERY message sent gets a response - zero data loss.
+ * Verifies that every message sent by a user session is observed back on the
+ * websocket stream (no loss) and that the roundtrip completes within the
+ * configured timeout.
  *
- * This benchmark:
- * - Sends N messages per session
- * - Waits for ALL responses before disconnecting
- * - Tracks each message by unique ID
- * - Reports 100% success or fails with details
+ * Key behaviours:
+ * - Reuses a dedicated session per VU to avoid create/delete churn.
+ * - Sends messages with flow control (configurable pipeline depth).
+ * - Tracks message acks, broadcasts, and roundtrip latency per client ref.
+ * - Fails loudly when any message is missing.
  *
  * Usage:
  *   k6 run bench/k6/message-correctness.js
  *   k6 run -e VUS=10 -e MESSAGES=20 bench/k6/message-correctness.js
+ *   k6 run -e PIPELINE_DEPTH=2 bench/k6/message-correctness.js
  */
 
 import ws from 'k6/ws';
-import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import * as lib from './lib.js';
 
@@ -31,6 +33,29 @@ const messageCorrectnessRate = new Rate('message_correctness_rate');
 const roundtripLatency = new Trend('roundtrip_latency_ms', true);
 
 // ============================================================================
+// Configuration helpers
+// ============================================================================
+
+const defaultMessagesPerIteration = Number(__ENV.MESSAGES || 10);
+const defaultPipelineDepth = Math.max(Number(__ENV.PIPELINE_DEPTH || 1), 1);
+
+const vuState = new Map();
+
+function getVuState(vuId) {
+  if (!vuState.has(vuId)) {
+    vuState.set(vuId, {
+      lastSeq: 0,
+    });
+  }
+  return vuState.get(vuId);
+}
+
+function configuredVus() {
+  // CLI flags override exported options, but we defensively check env.
+  return Number(__ENV.VUS || options.vus || 5);
+}
+
+// ============================================================================
 // Test Configuration
 // ============================================================================
 
@@ -38,9 +63,10 @@ export const options = {
   vus: Number(__ENV.VUS || 5),
   iterations: Number(__ENV.ITERATIONS || 10),
   setupTimeout: '60s',
+  teardownTimeout: '60s',
   thresholds: {
     message_correctness_rate: ['rate==1.0'], // MUST be 100%
-    messages_lost: ['count==0'],              // MUST be zero
+    messages_lost: ['count==0'], // MUST be zero
   },
 };
 
@@ -49,17 +75,50 @@ export const options = {
 // ============================================================================
 
 export function setup() {
+  const vus = configuredVus();
+  const messagesPerIter = defaultMessagesPerIteration;
+  const pipelineDepth = defaultPipelineDepth;
+
   console.log('Setting up message correctness benchmark...');
   console.log(`Run ID: ${lib.config.runId}`);
-  console.log(`VUs: ${options.vus}`);
-  console.log(`Iterations: ${options.iterations}`);
+  console.log(`Configured VUs: ${vus}`);
+  console.log(`Iterations (per CLI/options): ${options.iterations}`);
+  console.log(`Messages per iteration: ${messagesPerIter}`);
+  console.log(`Pipeline depth: ${pipelineDepth}`);
   console.log('Threshold: 100% message delivery (zero loss)');
 
-  lib.setupEchoAgent();
+  const agent = lib.setupEchoAgent();
+
+  const sessions = {};
+
+  for (let vu = 1; vu <= vus; vu++) {
+    const userId = lib.generateParticipantId('user', vu);
+    try {
+      const session = lib.createSession(userId, agent.id, {
+        bench: true,
+        run_id: lib.config.runId,
+        scenario: 'message_correctness',
+        vu,
+      });
+
+      sessions[vu] = {
+        sessionId: session.id,
+        userId,
+      };
+    } catch (error) {
+      console.error(`Failed to create session for VU${vu}: ${error.message}`);
+      throw error;
+    }
+  }
+
+  console.log(`Setup complete: ${Object.keys(sessions).length} sessions ready`);
 
   return {
-    agentId: lib.config.agentId,
+    agentId: agent.id,
     runId: lib.config.runId,
+    sessions,
+    messagesPerIter,
+    pipelineDepth,
   };
 }
 
@@ -70,23 +129,27 @@ export function setup() {
 export default function (data) {
   const vuId = __VU;
   const iteration = __ITER;
-  const agentId = data.agentId;
-  const userId = lib.generateParticipantId(`user-iter${iteration}`, vuId);
-  const messagesToSend = Number(__ENV.MESSAGES || 10);
+  const state = getVuState(vuId);
+  const sessionData = data.sessions?.[vuId];
 
-  // Create session
-  const session = lib.createSession(userId, agentId, {
-    vu: vuId,
-    iteration,
-    type: 'correctness',
-  });
-  const sessionId = session.id;
-  const wsUrl = lib.buildWsUrl(userId);
-  const topic = lib.sessionTopic(sessionId);
+  if (!sessionData) {
+    console.error(`VU${vuId}: no pre-created session found; skipping iteration ${iteration}`);
+    return;
+  }
 
-  // Track all sent messages
-  const sentMessages = new Map(); // clientRef => { sentAt, text }
-  const receivedMessages = new Set(); // clientRef
+  const messagesToSend = Number(__ENV.MESSAGES || data.messagesPerIter || defaultMessagesPerIteration);
+  const pipelineDepth = Math.max(Number(__ENV.PIPELINE_DEPTH || data.pipelineDepth || defaultPipelineDepth), 1);
+  const wsUrl = lib.buildWsUrl(sessionData.userId);
+  const topic = lib.sessionTopic(sessionData.sessionId);
+
+  const sentMessages = new Map(); // clientRef => { ref, text, sentAt, matched, error }
+  const pendingRefs = new Map(); // ref => clientRef
+
+  let messagesSentCount = 0;
+  let matchedCount = 0;
+  let refCounter = 1;
+  let joined = false;
+  let joinRef = `${refCounter++}`;
 
   ws.connect(
     wsUrl,
@@ -94,83 +157,94 @@ export default function (data) {
       tags: { scenario: 'correctness', vu: vuId, iteration },
     },
     (socket) => {
-      let joined = false;
-      let messagesSentCount = 0;
-      const joinRef = 1;
-
       socket.on('open', () => {
-        // Join session
-        socket.send(lib.encode(lib.joinMessage(topic, joinRef)));
+        const joinPayload = state.lastSeq > 0 ? { last_seq: state.lastSeq } : {};
+        socket.send(lib.encode(lib.joinMessage(topic, joinRef, joinPayload)));
+      });
 
-        socket.on('message', (raw) => {
-          const frame = lib.decode(raw);
-          if (!frame) return;
+      socket.on('message', (raw) => {
+        const frame = lib.decode(raw);
+        if (!frame) return;
 
-          // Handle join reply
-          if (lib.isJoinReply(frame, joinRef, topic)) {
-            joined = true;
-            // Start sending messages
-            sendAllMessages();
+        const [, refMsg, topicMsg, eventMsg, payload] = frame;
+
+        if (lib.isJoinReply(frame, joinRef, topic)) {
+          joined = true;
+          const history = payload?.response?.messages || payload?.response || [];
+          if (Array.isArray(history)) {
+            for (const message of history) {
+              if (typeof message?.seq === 'number') {
+                state.lastSeq = Math.max(state.lastSeq, message.seq);
+              }
+            }
+          }
+
+          sendReadyMessages();
+          return;
+        }
+
+        if (eventMsg === 'phx_reply' && topicMsg === topic) {
+          const status = payload?.status;
+          const clientRef = pendingRefs.get(refMsg);
+
+          if (status === 'ok') {
+            pendingRefs.delete(refMsg);
+            sendReadyMessages();
             return;
           }
 
-          // Handle message events
-          if (lib.isMessageEvent(frame, topic)) {
-            messagesReceived.add(1);
-            const [, , , , payload] = frame;
-            const content = payload?.content || {};
-            const clientRef = content?.client_ref;
-
+         if (status === 'error') {
+            pendingRefs.delete(refMsg);
             if (clientRef && sentMessages.has(clientRef)) {
-              const sentAt = sentMessages.get(clientRef).sentAt;
-              roundtripLatency.add(lib.nowMs() - sentAt);
-              receivedMessages.add(clientRef);
+              const record = sentMessages.get(clientRef);
+              record.error = payload?.response || payload?.reason || 'unknown_error';
+            }
+
+            console.error(
+              `VU${vuId} Iter${iteration}: server rejected message ref=${refMsg} reason=${JSON.stringify(payload)}`
+            );
+            sendReadyMessages();
+            return;
+          }
+        }
+
+        if (lib.isMessageEvent(frame, topic)) {
+          messagesReceived.add(1);
+
+          const seq = payload?.seq;
+          if (typeof seq === 'number') {
+            state.lastSeq = Math.max(state.lastSeq, seq);
+          }
+
+          const clientRef = payload?.content?.client_ref;
+
+          if (clientRef && sentMessages.has(clientRef)) {
+            const record = sentMessages.get(clientRef);
+            if (!record.matched) {
+              record.matched = true;
+              matchedCount++;
+              pendingRefs.delete(record.ref);
+
+              const elapsed = lib.nowMs() - record.sentAt;
+              roundtripLatency.add(elapsed);
               messagesMatched.add(1);
-            }
-
-            // Check if all messages received
-            if (receivedMessages.size === messagesToSend) {
-              // Success! All messages accounted for
-              for (let i = 0; i < messagesToSend; i++) {
-                messageCorrectnessRate.add(true);
-              }
-              socket.close();
+              messageCorrectnessRate.add(true);
             }
           }
-        });
 
-        function sendAllMessages() {
-          for (let i = 0; i < messagesToSend; i++) {
-            const clientRef = `${userId}-msg${i}-${lib.nowMs()}`;
-            const ref = joinRef + i + 1;
-            const text = `correctness test message ${i}`;
-
-            const msg = [
-              null,
-              `${ref}`,
-              topic,
-              'send',
-              {
-                content: {
-                  kind: 'text',
-                  content: {
-                    text,
-                    client_ref: clientRef,
-                  },
-                  metadata: {
-                    vu: vuId,
-                    iteration,
-                    sequence: i,
-                  },
-                },
-              },
-            ];
-
-            sentMessages.set(clientRef, { sentAt: lib.nowMs(), text });
-            socket.send(lib.encode(msg));
-            messagesSent.add(1);
-            messagesSentCount++;
+          if (matchedCount === messagesToSend) {
+            socket.close();
+          } else {
+            sendReadyMessages();
           }
+
+          return;
+        }
+
+        if (eventMsg === 'backpressure' && topicMsg === topic) {
+          console.warn(
+            `VU${vuId} Iter${iteration}: received backpressure notice ${JSON.stringify(payload)}`
+          );
         }
       });
 
@@ -179,44 +253,82 @@ export default function (data) {
       });
 
       socket.on('close', () => {
-        // Check for message loss
-        const lost = messagesToSend - receivedMessages.size;
-        if (lost > 0) {
-          messagesLost.add(lost);
-          console.error(
-            `VU${vuId} Iter${iteration}: LOST ${lost}/${messagesToSend} messages!`
-          );
+        const lost = [];
+        for (const [clientRef, record] of sentMessages.entries()) {
+          if (!record.matched) {
+            lost.push({ clientRef, text: record.text, error: record.error });
+          }
+        }
 
-          // Report which messages were lost
-          for (const [clientRef, data] of sentMessages.entries()) {
-            if (!receivedMessages.has(clientRef)) {
-              console.error(`  Lost message: "${data.text}" (ref: ${clientRef})`);
-              messageCorrectnessRate.add(false);
-            }
+        if (lost.length > 0) {
+          messagesLost.add(lost.length);
+          for (const entry of lost) {
+            const reason = entry.error ? ` (error: ${JSON.stringify(entry.error)})` : '';
+            console.error(
+              `VU${vuId} Iter${iteration}: lost message "${entry.text}" ref=${entry.clientRef}${reason}`
+            );
+            messageCorrectnessRate.add(false);
           }
         }
       });
 
-      // Timeout: give plenty of time for all messages to complete
-      // With <1ms latency, even 100 messages should complete in <1 second
       socket.setTimeout(() => {
-        const stillWaiting = messagesToSend - receivedMessages.size;
-        if (stillWaiting > 0) {
+        if (matchedCount !== messagesToSend) {
+          const remaining = messagesToSend - matchedCount;
           console.error(
-            `VU${vuId} Iter${iteration}: Timeout! Still waiting for ${stillWaiting} messages`
+            `VU${vuId} Iter${iteration}: timeout waiting for ${remaining} messages (matched ${matchedCount}/${messagesToSend})`
           );
-          messagesLost.add(stillWaiting);
-          for (let i = 0; i < stillWaiting; i++) {
-            messageCorrectnessRate.add(false);
-          }
         }
         socket.close();
-      }, 30000 / 1000);
+      }, 30000);
+
+      function sendReadyMessages() {
+        if (!joined) return;
+
+        while (messagesSentCount < messagesToSend && pendingRefs.size < pipelineDepth) {
+          const messageIndex = messagesSentCount;
+          const clientRef = `${sessionData.userId}-iter${iteration}-msg${messageIndex}-${lib.nowMs()}`;
+          const ref = `${refCounter++}`;
+          const text = `correctness test message ${messageIndex}`;
+
+          const now = lib.nowMs();
+          sentMessages.set(clientRef, {
+            ref,
+            text,
+            sentAt: now,
+            matched: false,
+          });
+          pendingRefs.set(ref, clientRef);
+
+          const payload = [
+            null,
+            ref,
+            topic,
+            'send',
+            {
+              content: {
+                kind: 'text',
+                content: {
+                  text,
+                  client_ref: clientRef,
+                },
+                metadata: {
+                  vu: vuId,
+                  iteration,
+                  sequence: messageIndex,
+                  run_id: data.runId,
+                },
+              },
+            },
+          ];
+
+          socket.send(lib.encode(payload));
+          messagesSent.add(1);
+          messagesSentCount++;
+        }
+      }
     }
   );
-
-  // Clean up
-  lib.deleteSession(sessionId);
 }
 
 // ============================================================================
@@ -224,10 +336,17 @@ export default function (data) {
 // ============================================================================
 
 export function teardown(data) {
+  if (data.sessions) {
+    const sessionEntries = Object.values(data.sessions);
+    console.log(`Cleaning up ${sessionEntries.length} sessions...`);
+    for (const entry of sessionEntries) {
+      lib.deleteSession(entry.sessionId);
+    }
+  }
+
   console.log('\nMessage Correctness Results');
   console.log('===========================');
   console.log(`Run ID: ${data.runId}`);
-  console.log('');
   console.log('Expected: 100% message delivery (zero loss)');
-  console.log('Check thresholds above for pass/fail');
+  console.log('Check metrics above for pass/fail thresholds.');
 }
