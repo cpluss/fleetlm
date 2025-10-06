@@ -56,23 +56,6 @@ defmodule FleetlmWeb.SessionController do
     end
   end
 
-  # Legacy API with initiator_id/peer_id
-  def create(conn, %{"initiator_id" => initiator_id, "peer_id" => peer_id} = params) do
-    metadata = Map.get(params, "metadata", %{})
-
-    case Storage.create_session(initiator_id, peer_id, metadata) do
-      {:ok, session} ->
-        conn
-        |> put_status(:created)
-        |> json(%{session: render_session(session)})
-
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: inspect(reason)})
-    end
-  end
-
   def messages(conn, %{"session_id" => session_id} = params) do
     last_seq = parse_int(params["after_seq"], 0)
     limit = parse_int(params["limit"], 50)

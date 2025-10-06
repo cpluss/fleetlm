@@ -5,7 +5,7 @@ sidebar_position: 3
 
 # Clients
 
-Use the REST API for simple workflows or Phoenix Channels for realtime streaming.
+Use the REST API for simple workflows or websockets for realtime streaming.
 
 ## REST basics
 

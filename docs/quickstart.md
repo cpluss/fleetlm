@@ -9,14 +9,16 @@ Spin up FleetLM locally, register an agent webhook, and send your first message.
 
 ## 1. Run the stack
 
+Checkout the repository
+
 ```bash
 git clone https://github.com/cpluss/fleetlm.git
 cd fleetlm
+```
 
-# Optionally set secrets/env overrides
-echo "SECRET_KEY_BASE=$(mix phx.gen.secret)" > .env
-echo "PHX_HOST=localhost" >> .env
+Run the test stack using docker
 
+```bash
 docker compose up --build
 ```
 
@@ -24,7 +26,7 @@ The API and WebSocket endpoints are available at `http://localhost:4000` and `ws
 
 ## 2. Register an agent
 
-Tell FleetLM where to POST webhooks. The payload is nested under an `agent` key, matching the Phoenix controller params.
+Tell FleetLM where your agent lives.
 
 ```bash
 curl -X POST http://localhost:4000/api/agents \
@@ -47,6 +49,8 @@ Your webhook will receive the session id, agent id, user id, and the most recent
 
 ## 3. Create a session
 
+Every session need to be created upfront so we know what agent to connect it to.
+
 ```bash
 curl -X POST http://localhost:4000/api/sessions \
   -H "Content-Type: application/json" \
@@ -61,6 +65,8 @@ curl -X POST http://localhost:4000/api/sessions \
 Save the `id` from the response. All future REST and WebSocket calls reference it.
 
 ## 4. Send a message
+
+Sending a message using the REST API is easy, and follows a flexible format that mirror many popular platforms (e.g. OpenAI) today.
 
 ```bash
 curl -X POST http://localhost:4000/api/sessions/{session_id}/messages \
