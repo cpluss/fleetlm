@@ -69,6 +69,5 @@ config :fleetlm, :storage_flush_interval_ms, 500
 
 # Tune agent dispatch engine for development benchmarks
 config :fleetlm,
-  agent_dispatch_max_concurrency: 50,
   agent_dispatch_tick_ms: 25,
   agent_debounce_window_ms: 250

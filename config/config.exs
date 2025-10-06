@@ -11,8 +11,6 @@ config :fleetlm,
   ecto_repos: [Fleetlm.Repo],
   generators: [timestamp_type: :utc_datetime]
 
-config :fleetlm, :participant_tick_interval_ms, 1_000
-
 config :fleetlm, Fleetlm.Runtime.Sharding.HashRing,
   slot_count: 512,
   virtual_nodes_per_node: 128

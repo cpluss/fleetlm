@@ -28,12 +28,8 @@ config :logger, level: :warning
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 
-config :fleetlm, :participant_tick_interval_ms, 100
-
 # Use local PubSub for tests to avoid Redis dependency
 config :fleetlm, :pubsub_adapter, :local
-
-config :fleetlm, :persistence_worker_mode, :noop
 
 # Increase slot flush timeout for tests (slower due to sandbox mode)
 config :fleetlm, :slot_flush_timeout, 15_000
@@ -53,6 +49,3 @@ config :fleetlm, :slot_log_mode, :test
 
 # Eliminate drain grace period in tests to reduce artificial sleeps
 config :fleetlm, Fleetlm.Runtime.DrainCoordinator, drain_grace_period: 0
-
-# Suppress expected slot flush error logs in negative-path storage tests
-config :fleetlm, :suppress_slot_flush_errors, true
