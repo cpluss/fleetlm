@@ -11,8 +11,6 @@ defmodule Fleetlm.Agent.Dispatch do
   alias Fleetlm.Runtime.Router
   alias Fleetlm.Storage
 
-  @receive_timeout 10 * 60 * 1000
-
   @type job :: %{
           agent_id: String.t(),
           session_id: String.t(),
@@ -97,7 +95,7 @@ defmodule Fleetlm.Agent.Dispatch do
     request =
       Finch.build(:post, url, headers, Jason.encode!(payload))
       |> Finch.request(Fleetlm.Agent.HTTP,
-        receive_timeout: @receive_timeout,
+        receive_timeout: agent.timeout_ms,
         pool_timeout: agent.timeout_ms
       )
 
