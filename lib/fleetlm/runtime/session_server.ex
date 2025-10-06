@@ -28,9 +28,9 @@ defmodule Fleetlm.Runtime.SessionServer do
   # How many messages to keep in the tail cache in memory
   # to avoid fetching all messages from storage on each session join
   # or replay (e.g. as when we send a lot of messages to the backing agent webhook).
-  @tail_size 64
+  @tail_size Application.compile_env(:fleetlm, :session_server_tail_size, 128)
   # How long to wait before shutting down the session if it's inactive.
-  @inactivity_timeout :timer.minutes(15)
+  @inactivity_timeout Application.compile_env(:fleetlm, :session_server_inactivity_timeout, :timer.minutes(15))
 
   defstruct [
     :session_id,
@@ -89,7 +89,7 @@ defmodule Fleetlm.Runtime.SessionServer do
     GenServer.call(via(session_id), :drain, :timer.seconds(10))
   end
 
-  # Server callbacks
+  # Gen Server callbacks
 
   @impl true
   def init(session_id) do
@@ -262,7 +262,7 @@ defmodule Fleetlm.Runtime.SessionServer do
         Logger.debug("Session #{state.session_id} slot #{state.slot} flushed successfully")
 
       :error ->
-        Logger.warning(
+        Logger.error(
           "Session #{state.session_id} slot #{state.slot} flush timed out, proceeding with drain anyway"
         )
     end
@@ -332,48 +332,28 @@ defmodule Fleetlm.Runtime.SessionServer do
   end
 
   defp mark_session_active(session_id) do
-    try do
-      Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id)
-      |> case do
-        nil ->
-          :ok
-
-        session ->
-          session
-          |> Ecto.Changeset.change(%{status: "active"})
-          |> Fleetlm.Repo.update()
-      end
-    rescue
-      DBConnection.OwnershipError ->
-        Logger.warning("Could not mark session #{session_id} as active - no DB access")
+    Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id)
+    |> case do
+      nil ->
         :ok
 
-      e ->
-        Logger.error("Error marking session #{session_id} as active: #{inspect(e)}")
-        :ok
+      session ->
+        session
+        |> Ecto.Changeset.change(%{status: "active"})
+        |> Fleetlm.Repo.update()
     end
   end
 
   defp mark_session_inactive(session_id) do
-    try do
-      Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id)
-      |> case do
-        nil ->
-          :ok
-
-        session ->
-          session
-          |> Ecto.Changeset.change(%{status: "inactive"})
-          |> Fleetlm.Repo.update()
-      end
-    rescue
-      DBConnection.OwnershipError ->
-        Logger.warning("Could not mark session #{session_id} as inactive - no DB access")
+    Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id)
+    |> case do
+      nil ->
         :ok
 
-      e ->
-        Logger.error("Error marking session #{session_id} as inactive: #{inspect(e)}")
-        :ok
+      session ->
+        session
+        |> Ecto.Changeset.change(%{status: "inactive"})
+        |> Fleetlm.Repo.update()
     end
   end
 
@@ -430,24 +410,15 @@ defmodule Fleetlm.Runtime.SessionServer do
   end
 
   defp flush_slot_sync(slot) do
-    try do
-      case Fleetlm.Storage.SlotLogServer.flush_now(slot) do
-        :ok ->
-          :ok
-
-        :already_clean ->
-          :ok
-
-        {:error, reason} ->
-          Logger.error("Flush failed for slot #{slot}: #{inspect(reason)}")
-          :error
-      end
-    catch
-      :exit, {:noproc, _} ->
+    case Fleetlm.Storage.SlotLogServer.flush_now(slot) do
+      :ok ->
         :ok
 
-      :exit, {:timeout, _} ->
-        Logger.error("Timeout flushing slot #{slot}")
+      :already_clean ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error("Flush failed for slot #{slot}: #{inspect(reason)}")
         :error
     end
   end
