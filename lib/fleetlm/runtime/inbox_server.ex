@@ -24,11 +24,15 @@ defmodule Fleetlm.Runtime.InboxServer do
 
   alias Fleetlm.Storage
 
-  @inactivity_timeout :timer.minutes(15)
+  @inactivity_timeout Application.compile_env(
+                        :fleetlm,
+                        :inbox_inactivity_timeout,
+                        :timer.minutes(15)
+                      )
   # 1 second
-  @batch_interval 1_000
+  @batch_interval Application.compile_env(:fleetlm, :inbox_batch_interval, 1_000)
   # Broadcast immediately if 50+ dirty sessions
-  @batch_threshold 50
+  @batch_threshold Application.compile_env(:fleetlm, :inbox_batch_session_threshold, 50)
 
   @pubsub Fleetlm.PubSub
 
