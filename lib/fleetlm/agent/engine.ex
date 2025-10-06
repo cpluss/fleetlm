@@ -28,14 +28,14 @@ defmodule Fleetlm.Agent.Engine do
   # status: nil (idle), :pending (queued), :inflight (dispatching)
   #
   # Tuple field positions (1-indexed for :ets.update_element)
-  #@_pos_key 1
+  # @_pos_key 1
   @pos_user_id 2
   @pos_last_sent 3
-  #@pos_target_seq 4
+  # @pos_target_seq 4
   @pos_due_at 5
-  #@pos_first_seq 6
-  #@pos_enqueued_at 7
-  #@pos_attempts 8
+  # @pos_first_seq 6
+  # @pos_enqueued_at 7
+  # @pos_attempts 8
   @pos_status 9
 
   @spec start_link(keyword()) :: GenServer.on_start()

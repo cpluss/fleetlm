@@ -10,7 +10,7 @@ defmodule Fleetlm.Agent.Cache do
   require Logger
 
   @table __MODULE__
-  @ttl :timer.minutes(5)
+  @ttl Application.compile_env(:fleetlm, :agent_cache_ttl, :timer.minutes(5))
 
   ## Public API
 
