@@ -260,6 +260,21 @@ defmodule Fleetlm.Storage do
     )
   end
 
+  @doc """
+  Flush any pending WAL entries for the given session.
+
+  Returns :ok when the flush completes, :already_clean when no entries
+  were pending, or {:error, reason} if the flush could not be performed.
+  """
+  @spec flush_session(String.t()) :: :ok | :already_clean | {:error, term()}
+  def flush_session(session_id) when is_binary(session_id) do
+    slot = storage_slot_for_session(session_id)
+
+    with :ok <- ensure_slot_server_started(slot) do
+      SlotLogServer.flush_now(slot)
+    end
+  end
+
   # Private helpers
 
   # Calculate the storage slot for a session (local per-node sharding for disk log I/O).

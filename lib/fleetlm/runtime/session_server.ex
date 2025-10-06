@@ -30,7 +30,11 @@ defmodule Fleetlm.Runtime.SessionServer do
   # or replay (e.g. as when we send a lot of messages to the backing agent webhook).
   @tail_size Application.compile_env(:fleetlm, :session_server_tail_size, 128)
   # How long to wait before shutting down the session if it's inactive.
-  @inactivity_timeout Application.compile_env(:fleetlm, :session_server_inactivity_timeout, :timer.minutes(15))
+  @inactivity_timeout Application.compile_env(
+                        :fleetlm,
+                        :session_server_inactivity_timeout,
+                        :timer.minutes(15)
+                      )
 
   defstruct [
     :session_id,
@@ -256,14 +260,14 @@ defmodule Fleetlm.Runtime.SessionServer do
   def handle_call(:drain, _from, state) do
     Logger.info("Draining session #{state.session_id}")
 
-    # Flush slot log synchronously (best effort - proceed even on timeout)
-    case flush_slot_sync(state.slot) do
+    # Flush storage synchronously (best effort - proceed even on timeout)
+    case flush_session_sync(state.session_id) do
       :ok ->
-        Logger.debug("Session #{state.session_id} slot #{state.slot} flushed successfully")
+        Logger.debug("Session #{state.session_id} storage flushed successfully")
 
       :error ->
         Logger.error(
-          "Session #{state.session_id} slot #{state.slot} flush timed out, proceeding with drain anyway"
+          "Session #{state.session_id} storage flush timed out, proceeding with drain anyway"
         )
     end
 
@@ -299,8 +303,8 @@ defmodule Fleetlm.Runtime.SessionServer do
   def terminate(reason, state) do
     Logger.info("SessionServer terminating: #{state.session_id}, reason: #{inspect(reason)}")
 
-    # Flush slot log if not already drained
-    flush_slot_sync(state.slot)
+    # Flush storage if not already drained
+    flush_session_sync(state.session_id)
 
     # Mark session inactive (skip in tests to avoid DB ownership issues)
     unless Application.get_env(:fleetlm, :skip_terminate_db_ops, false) do
@@ -409,8 +413,8 @@ defmodule Fleetlm.Runtime.SessionServer do
     }
   end
 
-  defp flush_slot_sync(slot) do
-    case Fleetlm.Storage.SlotLogServer.flush_now(slot) do
+  defp flush_session_sync(session_id) do
+    case Fleetlm.Storage.flush_session(session_id) do
       :ok ->
         :ok
 
@@ -418,7 +422,7 @@ defmodule Fleetlm.Runtime.SessionServer do
         :ok
 
       {:error, reason} ->
-        Logger.error("Flush failed for slot #{slot}: #{inspect(reason)}")
+        Logger.error("Flush failed for session #{session_id}: #{inspect(reason)}")
         :error
     end
   end
