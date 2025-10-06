@@ -80,8 +80,6 @@ defmodule Fleetlm.Agent.Dispatch do
     end
   end
 
-  ## HTTP dispatch --------------------------------------------------------------
-
   defp dispatch(agent, job, messages) do
     payload = build_payload(agent, job.session_id, job.user_id, messages)
     url = build_url(agent)
@@ -92,18 +90,30 @@ defmodule Fleetlm.Agent.Dispatch do
       | custom_headers(agent)
     ]
 
+    # We stream and buffer response bodies in order to handle streaming
+    # message responses, intermediary updates, etc without leaning on
+    # SSE. This way the webhook can stream jsonl output, or updates, as
+    # it pleases.
+    acc = %{
+      buffer: "",
+      count: 0,
+      status: nil,
+      session_id: job.session_id,
+      agent_id: job.agent_id
+    }
+
     request =
       Finch.build(:post, url, headers, Jason.encode!(payload))
-      |> Finch.request(Fleetlm.Agent.HTTP,
+      |> Finch.stream(Fleetlm.Agent.HTTP, acc, &handle_stream_chunk/2,
         receive_timeout: agent.timeout_ms,
         pool_timeout: agent.timeout_ms
       )
 
     case request do
-      {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->
-        process_json_lines(body, job.session_id, job.agent_id)
+      {:ok, %{status: status, count: count}} when status in 200..299 ->
+        {:ok, count}
 
-      {:ok, %Finch.Response{status: status}} ->
+      {:ok, %{status: status}} ->
         {:error, {:http_error, status}}
 
       {:error, reason} ->
@@ -111,19 +121,40 @@ defmodule Fleetlm.Agent.Dispatch do
     end
   end
 
-  ## Message helpers ------------------------------------------------------------
-
-  defp process_json_lines(body, session_id, agent_id) do
-    body
-    |> String.split("\n", trim: true)
-    |> Enum.reduce_while({:ok, 0}, fn line, {:ok, count} ->
-      case append_line(line, session_id, agent_id) do
-        :ok -> {:cont, {:ok, count + 1}}
-        {:error, reason} -> {:halt, {:error, reason}}
-      end
-    end)
+  defp handle_stream_chunk({:status, status}, acc) do
+    %{acc | status: status}
   end
 
+  defp handle_stream_chunk({:headers, _headers}, acc) do
+    acc
+  end
+
+  defp handle_stream_chunk({:data, data}, acc) do
+    # Append new data to buffer
+    new_buffer = acc.buffer <> data
+
+    # Process each complete line within the buffer
+    lines = String.split(new_buffer, "\n")
+    {complete_lines, [remaining]} = Enum.split(lines, -1)
+    result =
+      Enum.reduce_while(complete_lines, {:ok, acc.count}, fn line, {:ok, count} ->
+        case append_line(line, acc.session_id, acc.agent_id) do
+          :ok -> {:cont, {:ok, count + 1}}
+          {:error, reason} -> {:halt, {:error, reason}}
+        end
+      end)
+
+    case result do
+      {:ok, new_count} ->
+        %{acc | buffer: remaining, count: new_count}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  # append a single line to the session, note that this
+  # has a side effect of _writing messages_ to the session.
   defp append_line(line, session_id, agent_id) do
     trimmed = String.trim(line)
 
@@ -150,8 +181,6 @@ defmodule Fleetlm.Agent.Dispatch do
     end
   end
 
-  ## Data loading & payload -----------------------------------------------------
-
   defp ensure_enabled(%{status: "enabled"}), do: :ok
   defp ensure_enabled(_), do: {:error, :agent_disabled}
 
@@ -161,6 +190,10 @@ defmodule Fleetlm.Agent.Dispatch do
         Storage.get_messages(session_id, 0, agent.message_history_limit)
 
       "entire" ->
+        # this is an expensive operation and should be avoided if possible, however
+        # due to our message history mode, we need to fetch all messages. There is
+        # most likely a better solution that would allow the agent to summarise their
+        # current session themselves, but this will do for now.
         Storage.get_all_messages(session_id)
 
       "last" ->
@@ -188,8 +221,6 @@ defmodule Fleetlm.Agent.Dispatch do
     }
   end
 
-  ## HTTP helpers ---------------------------------------------------------------
-
   defp build_url(agent) do
     uri = URI.parse(agent.origin_url)
     base_path = uri.path || "/"
@@ -205,8 +236,6 @@ defmodule Fleetlm.Agent.Dispatch do
     |> Map.new(fn {k, v} -> {String.downcase(to_string(k)), v} end)
     |> Enum.to_list()
   end
-
-  ## Error classification -------------------------------------------------------
 
   defp classify_error({:request_failed, reason}), do: {:connection, reason}
   defp classify_error({:http_error, status}), do: {:http_error, status}
