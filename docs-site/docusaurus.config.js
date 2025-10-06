@@ -1,6 +1,6 @@
 // @ts-check
 
-const siteUrl = process.env.DOCUSAURUS_SITE_URL || "https://docs.example.com";
+const siteUrl = process.env.DOCUSAURUS_SITE_URL || "https://docs.fleetlm.com";
 const baseUrl = process.env.DOCUSAURUS_BASE_URL || "/";
 
 const config = {
