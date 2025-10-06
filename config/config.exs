@@ -15,6 +15,10 @@ config :fleetlm, Fleetlm.Runtime.Sharding.HashRing,
   slot_count: 512,
   virtual_nodes_per_node: 128
 
+config :fleetlm, Fleetlm.Runtime.DrainCoordinator,
+  drain_timeout: :timer.seconds(30),
+  drain_grace_period: :timer.seconds(2)
+
 # Configures the endpoint
 config :fleetlm, FleetlmWeb.Endpoint,
   url: [host: "localhost"],

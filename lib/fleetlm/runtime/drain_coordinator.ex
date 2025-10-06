@@ -8,15 +8,13 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
   - Ensure messages are flushed to database
   - Mark sessions as inactive
   - Timeout protection (max 30 seconds)
-
-  This is critical for zero-downtime deployments.
   """
 
   use GenServer
   require Logger
 
-  @drain_timeout :timer.seconds(30)
-  @default_drain_grace_period :timer.seconds(2)
+  @drain_timeout Application.compile_env(:fleetlm, :drain_timeout, :timer.seconds(30))
+  @drain_grace_period Application.compile_env(:fleetlm, :drain_grace_period, :timer.seconds(2))
 
   # Client API
 
@@ -26,6 +24,9 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
 
   @doc """
   Manually trigger drain (useful for testing).
+
+  NOTE: USE WITH CAUTION - THIS WILL BLOCK UNTIL THE DRAIN IS COMPLETED!
+  If it is not used correctly it will mess up the sessions.
   """
   def trigger_drain do
     GenServer.call(__MODULE__, :drain, :infinity)
@@ -147,10 +148,8 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
     )
 
     # Give a brief grace period for final cleanup
-    grace_period = drain_grace_period()
-
-    if grace_period > 0 do
-      Process.sleep(grace_period)
+    if @drain_grace_period > 0 do
+      Process.sleep(@drain_grace_period)
     end
 
     if failures > 0 do
@@ -191,10 +190,5 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
         Logger.error("Error draining session #{session_id}: #{kind} #{inspect(reason)}")
         {:error, {kind, reason}}
     end
-  end
-
-  defp drain_grace_period do
-    Application.get_env(:fleetlm, __MODULE__, [])
-    |> Keyword.get(:drain_grace_period, @default_drain_grace_period)
   end
 end
