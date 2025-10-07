@@ -49,7 +49,7 @@ Server runs at `http://localhost:4000` with WebSocket endpoint at `ws://localhos
 mix setup          # Install deps, create DB, run migrations
 mix phx.server     # Start server on :4000
 mix test           # Run test suite
-mix precommit      # Format, compile (warnings-as-errors), test
+mix precommit      # Format, compile (warnings-as-errors), tes
 ```
 
 ## Contributing
@@ -59,6 +59,8 @@ Before opening a PR:
 1. Run `mix precommit` (compile, format, test)
 2. Add tests for new behavior
 3. Update docs if you change runtime or message flow
+
+If you use a coding agent (claude, codex, etc) make sure they follow `CLAUDE.md` or `AGENTS.md`, and carefully review all output.
 
 ## License
 
