@@ -39,11 +39,10 @@ defmodule FleetlmWeb.SessionController do
     end
   end
 
-  # New API with sender_id/recipient_id
-  def create(conn, %{"sender_id" => sender_id, "recipient_id" => recipient_id} = params) do
+  def create(conn, %{"user_id" => user_id, "agent_id" => agent_id} = params) do
     metadata = Map.get(params, "metadata", %{})
 
-    case Storage.create_session(sender_id, recipient_id, metadata) do
+    case Storage.create_session(user_id, agent_id, metadata) do
       {:ok, session} ->
         conn
         |> put_status(:created)
@@ -56,11 +55,17 @@ defmodule FleetlmWeb.SessionController do
     end
   end
 
+  def create(conn, _params) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "user_id and agent_id are required"})
+  end
+
   def messages(conn, %{"session_id" => session_id} = params) do
     last_seq = parse_int(params["after_seq"], 0)
     limit = parse_int(params["limit"], 50)
 
-    # Get first participant from session to use for join (required for authorization)
+    # Always join as the user participant for bootstrap hydration
     case Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id) do
       nil ->
         conn
@@ -68,9 +73,15 @@ defmodule FleetlmWeb.SessionController do
         |> json(%{error: "Session not found"})
 
       session ->
-        case Router.join(session_id, session.sender_id, last_seq: last_seq, limit: limit) do
-          {:ok, result} ->
-            json(conn, %{messages: result.messages})
+        with {:ok, participant_id} <- session_user_id(session),
+             {:ok, result} <-
+               Router.join(session_id, participant_id, last_seq: last_seq, limit: limit) do
+          json(conn, %{messages: result.messages})
+        else
+          {:error, :missing_user} ->
+            conn
+            |> put_status(:unprocessable_entity)
+            |> json(%{error: "Session missing user participant"})
 
           {:error, reason} ->
             conn
@@ -80,20 +91,25 @@ defmodule FleetlmWeb.SessionController do
     end
   end
 
-  # Full message with all fields
-  def append_message(
-        conn,
-        %{
-          "session_id" => session_id,
-          "sender_id" => sender_id,
-          "kind" => kind,
-          "content" => content,
-          "metadata" => metadata
-        }
-      ) do
-    case Router.append_message(session_id, sender_id, kind, content, metadata) do
-      {:ok, message} ->
-        json(conn, %{message: render_message(message)})
+  def append_message(conn, %{"session_id" => session_id} = params) do
+    with {:ok, sender_id} <- resolve_participant(params),
+         {:ok, kind} <- resolve_kind(params),
+         {:ok, content} <- require_map_param(params, "content"),
+         {:ok, metadata} <- normalize_metadata(Map.get(params, "metadata", %{})) do
+      case Router.append_message(session_id, sender_id, kind, content, metadata) do
+        {:ok, message} ->
+          json(conn, %{message: render_message(message)})
+
+        {:error, reason} ->
+          conn
+          |> put_status(:unprocessable_entity)
+          |> json(%{error: inspect(reason)})
+      end
+    else
+      {:error, %ArgumentError{} = error} ->
+        conn
+        |> put_status(:unprocessable_entity)
+        |> json(%{error: Exception.message(error)})
 
       {:error, reason} ->
         conn
@@ -102,42 +118,10 @@ defmodule FleetlmWeb.SessionController do
     end
   end
 
-  # Message with sender, kind, and content (metadata defaults to %{})
-  def append_message(
-        conn,
-        %{
-          "session_id" => session_id,
-          "sender_id" => sender_id,
-          "kind" => kind,
-          "content" => content
-        }
-      ) do
-    case Router.append_message(session_id, sender_id, kind, content, %{}) do
-      {:ok, message} ->
-        json(conn, %{message: render_message(message)})
-
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: inspect(reason)})
-    end
-  end
-
-  # Message with sender and content only (kind defaults to "text", metadata to %{})
-  def append_message(conn, %{
-        "session_id" => session_id,
-        "sender_id" => sender_id,
-        "content" => content
-      }) do
-    case Router.append_message(session_id, sender_id, "text", content, %{}) do
-      {:ok, message} ->
-        json(conn, %{message: render_message(message)})
-
-      {:error, reason} ->
-        conn
-        |> put_status(:unprocessable_entity)
-        |> json(%{error: inspect(reason)})
-    end
+  def append_message(conn, _params) do
+    conn
+    |> put_status(:unprocessable_entity)
+    |> json(%{error: "session_id is required"})
   end
 
   def mark_read(conn, %{"session_id" => session_id} = params) do
@@ -178,31 +162,15 @@ defmodule FleetlmWeb.SessionController do
     end
   end
 
-  defp render_session(%{metadata: nil} = session) do
-    %{
-      id: session.id,
-      # Map new field names to old API for backward compatibility
-      initiator_id: session.sender_id,
-      peer_id: session.recipient_id,
-      sender_id: session.sender_id,
-      recipient_id: session.recipient_id,
-      status: session.status,
-      metadata: %{},
-      inserted_at: encode_datetime(session.inserted_at),
-      updated_at: encode_datetime(session.updated_at)
-    }
-  end
+  defp render_session(session) do
+    user_id = Map.get(session, :user_id)
+    agent_id = Map.get(session, :agent_id)
+    metadata = session.metadata || %{}
 
-  defp render_session(%{metadata: metadata} = session) do
     %{
       id: session.id,
-      # Map user_id/agent_id to API field names for backward compatibility
-      initiator_id: session.user_id,
-      peer_id: session.agent_id,
-      sender_id: session.user_id,
-      recipient_id: session.agent_id,
-      user_id: session.user_id,
-      agent_id: session.agent_id,
+      user_id: user_id,
+      agent_id: agent_id,
       status: session.status,
       metadata: metadata,
       inserted_at: encode_datetime(session.inserted_at),
@@ -214,6 +182,7 @@ defmodule FleetlmWeb.SessionController do
     %{
       id: message.id,
       session_id: message.session_id,
+      seq: Map.get(message, :seq) || Map.get(message, "seq"),
       sender_id: message.sender_id,
       kind: message.kind,
       content: message.content,
@@ -241,4 +210,57 @@ defmodule FleetlmWeb.SessionController do
       _ -> {:error, %ArgumentError{message: "#{key} is required"}}
     end
   end
+
+  defp resolve_participant(%{"user_id" => _user_id, "agent_id" => _}) do
+    {:error,
+     %ArgumentError{
+       message: "Provide either user_id or agent_id when sending a message, not both"
+     }}
+  end
+
+  defp resolve_participant(%{"user_id" => user_id})
+       when is_binary(user_id) and byte_size(user_id) > 0 do
+    {:ok, user_id}
+  end
+
+  defp resolve_participant(%{"agent_id" => agent_id})
+       when is_binary(agent_id) and byte_size(agent_id) > 0 do
+    {:ok, agent_id}
+  end
+
+  defp resolve_participant(%{"sender_id" => _}) do
+    {:error,
+     %ArgumentError{
+       message: "sender_id is deprecated; use user_id or agent_id to identify the sender"
+     }}
+  end
+
+  defp resolve_participant(_),
+    do: {:error, %ArgumentError{message: "user_id or agent_id is required"}}
+
+  defp resolve_kind(%{"kind" => kind}) when is_binary(kind) and byte_size(kind) > 0,
+    do: {:ok, kind}
+
+  defp resolve_kind(%{"kind" => _}),
+    do: {:error, %ArgumentError{message: "kind must be a non-empty string"}}
+
+  defp resolve_kind(_), do: {:ok, "text"}
+
+  defp require_map_param(params, key) do
+    case Map.fetch(params, key) do
+      {:ok, value} when is_map(value) -> {:ok, value}
+      {:ok, _} -> {:error, %ArgumentError{message: "#{key} must be a map"}}
+      :error -> {:error, %ArgumentError{message: "#{key} is required"}}
+    end
+  end
+
+  defp normalize_metadata(value) when is_map(value), do: {:ok, value}
+
+  defp normalize_metadata(_),
+    do: {:error, %ArgumentError{message: "metadata must be a map"}}
+
+  defp session_user_id(%{user_id: user_id}) when is_binary(user_id) and byte_size(user_id) > 0,
+    do: {:ok, user_id}
+
+  defp session_user_id(_), do: {:error, :missing_user}
 end

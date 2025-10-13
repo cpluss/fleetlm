@@ -72,8 +72,8 @@ const App = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          sender_id: USER_ID,
-          recipient_id: AGENT_ID,
+          user_id: USER_ID,
+          agent_id: AGENT_ID,
           metadata: {},
         }),
       });

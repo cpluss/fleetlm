@@ -15,10 +15,12 @@ Use the REST API for simple workflows or websockets for realtime streaming.
 curl -X POST http://localhost:4000/api/sessions/{session_id}/messages \
   -H "Content-Type: application/json" \
   -d '{
-    "sender_id": "alice",
+    "user_id": "alice",
     "kind": "text",
     "content": {"text": "Hello"}
   }'
+
+# For agent authored messages, provide `agent_id` instead of `user_id`.
 ```
 
 ### Fetch messages

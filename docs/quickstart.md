@@ -55,10 +55,8 @@ Every session need to be created upfront so we know what agent to connect it to.
 curl -X POST http://localhost:4000/api/sessions \
   -H "Content-Type: application/json" \
   -d '{
-    "session": {
-      "user_id": "alice",
-      "agent_id": "demo-agent"
-    }
+    "user_id": "alice",
+    "agent_id": "demo-agent"
   }'
 ```
 
@@ -72,7 +70,7 @@ Sending a message using the REST API is easy, and follows a flexible format that
 curl -X POST http://localhost:4000/api/sessions/{session_id}/messages \
   -H "Content-Type: application/json" \
   -d '{
-    "sender_id": "alice",
+    "user_id": "alice",
     "kind": "text",
     "content": {"text": "Hello!"}
   }'

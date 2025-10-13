@@ -65,8 +65,8 @@ Then create a session:
 curl -X POST http://localhost:4000/api/sessions \
   -H "Content-Type: application/json" \
   -d '{
-    "sender_id": "alice",
-    "recipient_id": "demo-agent",
+    "user_id": "alice",
+    "agent_id": "demo-agent",
     "metadata": {"demo": true}
   }'
 ```
@@ -210,8 +210,8 @@ Use the REST API:
 curl -X POST http://localhost:4000/api/sessions \
   -H "Content-Type: application/json" \
   -d '{
-    "sender_id": "bob",
-    "recipient_id": "demo-agent",
+    "user_id": "bob",
+    "agent_id": "demo-agent",
     "metadata": {}
   }'
 ```
