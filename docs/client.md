@@ -29,6 +29,23 @@ curl -X POST http://localhost:4000/api/sessions/{session_id}/messages \
 curl http://localhost:4000/api/sessions/{session_id}/messages?after_seq=0&limit=50
 ```
 
+Assistant responses are stored with `kind: "assistant"` and a structured payload:
+
+```json
+{
+  "seq": 2,
+  "kind": "assistant",
+  "content": {
+    "id": "msg_123",
+    "role": "assistant",
+    "parts": [
+      { "type": "text", "text": "Thinking...", "state": "done" }
+    ]
+  },
+  "metadata": { "termination": "finish", "latency_ms": 1800 }
+}
+```
+
 ### Mark messages as read
 
 ```bash
@@ -64,8 +81,17 @@ channel.join()
   .receive("error", (err) => console.error("join failed", err));
 
 channel.on("message", (msg) => {
-  console.log(`${msg.sender_id}:`, msg.content);
+  if (msg.kind === "assistant") {
+    console.log(`${msg.sender_id} parts:`, msg.content.parts);
+  } else {
+    console.log(`${msg.sender_id}:`, msg.content);
+  }
   lastSeq = Math.max(lastSeq, msg.seq);
+});
+
+channel.on("stream_chunk", ({ chunk, agent_id }) => {
+  // Render incremental updates before the message is persisted
+  console.debug(`chunk from ${agent_id}:`, chunk);
 });
 
 channel.push("send", {
@@ -76,4 +102,4 @@ channel.push("send", {
 });
 ```
 
-Reconnect with the same `user_id` and pass the most recent `last_seq` so FleetLM can replay anything you missed.
+Reconnect with the same `user_id` and pass the most recent `last_seq` so FleetLM can replay anything you missed. Live chunks are not replayed—clients should reconstruct UI from the persisted assistant message delivered via `message` after a `finish` chunk.

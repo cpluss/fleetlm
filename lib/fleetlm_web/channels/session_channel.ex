@@ -47,6 +47,12 @@ defmodule FleetlmWeb.SessionChannel do
     {:noreply, socket}
   end
 
+  @impl true
+  def handle_info({:session_stream_chunk, payload}, socket) do
+    push(socket, "stream_chunk", payload)
+    {:noreply, socket}
+  end
+
   # Full message with all fields
   @impl true
   def handle_in(
