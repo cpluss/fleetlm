@@ -36,6 +36,7 @@ defmodule Fleetlm.Observability.Telemetry do
   @agent_validation_error_event [:fleetlm, :agent, :validation_error]
   @agent_debounce_event [:fleetlm, :agent, :debounce]
   @agent_e2e_latency_event [:fleetlm, :agent, :e2e_latency]
+  @agent_dispatch_drop_event [:fleetlm, :agent, :dispatch, :drop]
 
   @session_drain_event [:fleetlm, :session, :drain]
 
@@ -320,6 +321,22 @@ defmodule Fleetlm.Observability.Telemetry do
   end
 
   @doc """
+  Emit agent dispatch drop telemetry - tracks permanent webhook failures.
+  """
+  @spec emit_agent_dispatch_drop(String.t(), String.t(), term(), term()) :: :ok
+  def emit_agent_dispatch_drop(agent_id, session_id, reason, error \\ nil)
+      when is_binary(agent_id) and is_binary(session_id) do
+    measurements = %{count: 1}
+
+    metadata =
+      %{agent_id: agent_id, session_id: session_id}
+      |> maybe_put(:reason, normalize_drop_reason(reason))
+      |> maybe_put(:error, normalize_drop_error(error))
+
+    :telemetry.execute(@agent_dispatch_drop_event, measurements, metadata)
+  end
+
+  @doc """
   Emit agent parse error telemetry - CRITICAL protocol violation tracking.
   """
   @spec emit_agent_parse_error(String.t(), String.t(), atom(), String.t()) :: :ok
@@ -404,6 +421,26 @@ defmodule Fleetlm.Observability.Telemetry do
   def emit_message_throughput do
     measurements = %{count: 1}
     :telemetry.execute(@message_throughput_event, measurements, %{})
+  end
+
+  defp normalize_drop_reason(nil), do: nil
+  defp normalize_drop_reason(reason) when is_atom(reason), do: reason
+
+  defp normalize_drop_reason({:http_status, status} = tuple) when is_integer(status) do
+    tuple
+  end
+
+  defp normalize_drop_reason(reason) do
+    inspect(reason, limit: 10, printable_limit: 200)
+  end
+
+  defp normalize_drop_error(nil), do: nil
+  defp normalize_drop_error(reason) when is_binary(reason), do: String.slice(reason, 0, 200)
+
+  defp normalize_drop_error(reason) do
+    reason
+    |> inspect(limit: 10, printable_limit: 200)
+    |> String.slice(0, 200)
   end
 
   defp maybe_put(map, _key, nil), do: map

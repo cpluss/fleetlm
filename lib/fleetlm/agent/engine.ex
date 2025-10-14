@@ -12,6 +12,7 @@ defmodule Fleetlm.Agent.Engine do
 
   alias Fleetlm.Agent
   alias Fleetlm.Agent.Dispatch
+  alias Fleetlm.Observability.Telemetry, as: ObservabilityTelemetry
 
   @table :agent_dispatch_queue
 
@@ -19,6 +20,7 @@ defmodule Fleetlm.Agent.Engine do
   @window_default Application.compile_env(:fleetlm, :agent_debounce_window_ms, 500)
   @retry_base Application.compile_env(:fleetlm, :agent_dispatch_retry_backoff_ms, 250)
   @retry_max Application.compile_env(:fleetlm, :agent_dispatch_retry_backoff_max_ms, 5_000)
+  @attempt_limit_default Application.compile_env(:fleetlm, :agent_dispatch_retry_max_attempts, 5)
   @select_batch 128
 
   @typedoc "Identifies a session/agent pair"
@@ -101,10 +103,19 @@ defmodule Fleetlm.Agent.Engine do
   end
 
   def handle_info({:dispatch_failed, key, reason, meta}, state) do
-    Logger.warning("Agent dispatch failed: #{inspect(reason)}", session_key: key)
+    attempts = Map.get(meta, :attempts, 1)
+    {decision, decision_reason} = decide_retry(reason, attempts)
 
-    mark_pending(key)
-    reschedule_with_backoff(key, meta)
+    case decision do
+      :retry ->
+        mark_pending(key)
+        reschedule_with_backoff(key, meta)
+        log_dispatch_failure(:retry, key, reason, attempts, decision_reason, meta)
+
+      :drop ->
+        drop_dispatch(key, meta)
+        log_dispatch_failure(:drop, key, reason, attempts, decision_reason, meta)
+    end
 
     state
     |> dispatch_due_sessions()
@@ -215,6 +226,31 @@ defmodule Fleetlm.Agent.Engine do
 
   defp mark_pending(key) do
     :ets.update_element(@table, key, [{@pos_status, :pending}])
+  end
+
+  defp drop_dispatch(key, meta) do
+    case :ets.lookup(@table, key) do
+      [
+        {^key, user_id, last_sent, _target_seq, _due_at, _first_seq, _enqueued_at, _attempts,
+         _status}
+      ] ->
+        # Reset entry to the neutral "idle" state (mirrors complete_dispatch/2). We keep the row
+        # so future enqueues retain the last_sent watermark and don't re-send old messages.
+        :ets.insert(@table, {
+          key,
+          user_id || Map.get(meta, :user_id),
+          last_sent,
+          nil,
+          nil,
+          nil,
+          nil,
+          0,
+          nil
+        })
+
+      [] ->
+        :ok
+    end
   end
 
   defp reschedule_with_backoff(key, %{agent_id: agent_id, session_id: session_id} = meta) do
@@ -363,6 +399,112 @@ defmodule Fleetlm.Agent.Engine do
 
   defp backoff_ms(attempt) do
     trunc(min(@retry_base * :math.pow(2, attempt - 1), @retry_max))
+  end
+
+  defp max_attempts do
+    attempts =
+      Application.get_env(:fleetlm, :agent_dispatch_retry_max_attempts, @attempt_limit_default)
+
+    if is_integer(attempts) and attempts > 0 do
+      attempts
+    else
+      @attempt_limit_default
+    end
+  end
+
+  @doc false
+  @spec decide_retry(term(), term()) :: {:retry | :drop, term()}
+  def decide_retry(reason, attempts) do
+    attempt_count =
+      case attempts do
+        n when is_integer(n) and n >= 0 -> n
+        _ -> 0
+      end
+
+    case reason do
+      {:http_error, status} ->
+        case retry_strategy_for_status(status) do
+          :retry -> attempts_decision(attempt_count)
+          :drop -> {:drop, {:http_status, status}}
+        end
+
+      :agent_disabled ->
+        {:drop, :agent_disabled}
+
+      {:json_decode_failed, _} ->
+        {:drop, :invalid_payload}
+
+      :invalid_message_format ->
+        {:drop, :invalid_message_format}
+
+      {:invalid_message_format, _} ->
+        {:drop, :invalid_message_format}
+
+      _ ->
+        attempts_decision(attempt_count)
+    end
+  end
+
+  defp attempts_decision(attempt_count) do
+    if attempt_count >= max_attempts() do
+      {:drop, :max_attempts}
+    else
+      {:retry, :backoff}
+    end
+  end
+
+  @doc false
+  @spec retry_strategy_for_status(term()) :: :retry | :drop
+  def retry_strategy_for_status(status) when is_integer(status) do
+    cond do
+      status in [502, 503] ->
+        :retry
+
+      status == 404 ->
+        :drop
+
+      status >= 500 and status < 600 ->
+        :drop
+
+      status >= 400 and status < 500 ->
+        :drop
+
+      true ->
+        :retry
+    end
+  end
+
+  def retry_strategy_for_status(_status), do: :retry
+
+  defp log_dispatch_failure(:retry, key, reason, attempts, decision_reason, _meta) do
+    Logger.warning(
+      "Agent dispatch failed; retry scheduled (attempt #{attempts}): #{inspect(reason)}",
+      session_key: key,
+      attempts: attempts,
+      decision_reason: decision_reason
+    )
+  end
+
+  defp log_dispatch_failure(:drop, key, reason, attempts, decision_reason, meta) do
+    Logger.error("Agent dispatch dropped after #{attempts} attempts: #{inspect(reason)}",
+      session_key: key,
+      attempts: attempts,
+      decision_reason: decision_reason,
+      agent_id: Map.get(meta, :agent_id),
+      session_id: Map.get(meta, :session_id)
+    )
+
+    agent_id = Map.get(meta, :agent_id)
+    session_id = Map.get(meta, :session_id)
+
+    if is_binary(agent_id) and is_binary(session_id) do
+      ObservabilityTelemetry.emit_agent_dispatch_drop(
+        agent_id,
+        session_id,
+        decision_reason,
+        reason
+      )
+    end
   end
 
   defp schedule_tick(%{poll_ref: ref} = state) do
