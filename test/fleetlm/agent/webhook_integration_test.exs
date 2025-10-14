@@ -200,6 +200,26 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
       assert Enum.at(payload["messages"], 2)["content"]["text"] == "Second"
     end
 
+    test "agent response without trailing newline is processed", %{
+      session: session,
+      bypass: bypass
+    } do
+      Bypass.expect_once(bypass, "POST", "/webhook", fn conn ->
+        {:ok, _body, conn} = Plug.Conn.read_body(conn)
+
+        response = Jason.encode!(%{"kind" => "text", "content" => %{"text" => "No newline"}})
+        Plug.Conn.resp(conn, 200, response)
+      end)
+
+      {:ok, _} =
+        Router.append_message(session.id, "alice", "text", %{"text" => "Hello newline"}, %{})
+
+      assert_message_count(session.id, 2)
+
+      {:ok, messages} = StorageAPI.get_messages(session.id, 0, 100)
+      assert Enum.at(messages, 1).content["text"] == "No newline"
+    end
+
     test "disabled agent does not receive webhooks", %{session: _session, bypass: bypass} do
       # Allow any requests to the shared bypass (from echo-agent if any)
       Bypass.pass(bypass)

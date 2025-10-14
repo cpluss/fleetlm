@@ -6,6 +6,8 @@ defmodule Fleetlm.Agent.Dispatch do
   JSONL response, and appends agent messages back into the session.
   """
 
+  require Logger
+
   alias Fleetlm.Agent
   alias Fleetlm.Observability.Telemetry
   alias Fleetlm.Runtime.Router
@@ -84,6 +86,10 @@ defmodule Fleetlm.Agent.Dispatch do
     payload = build_payload(agent, job.session_id, job.user_id, messages)
     url = build_url(agent)
 
+    payload_json = Jason.encode!(payload)
+
+    log_agent_request(job, payload, url, byte_size(payload_json))
+
     headers = [
       {"content-type", "application/json"},
       {"accept", "application/json"}
@@ -103,22 +109,47 @@ defmodule Fleetlm.Agent.Dispatch do
     }
 
     request =
-      Finch.build(:post, url, headers, Jason.encode!(payload))
+      Finch.build(:post, url, headers, payload_json)
       |> Finch.stream(Fleetlm.Agent.HTTP, acc, &handle_stream_chunk/2,
         receive_timeout: agent.timeout_ms,
         pool_timeout: agent.timeout_ms
       )
 
     case request do
-      {:ok, %{status: status, count: count}} when status in 200..299 ->
-        {:ok, count}
+      {:ok, acc} ->
+        case flush_buffer(acc) do
+          {:ok, final_acc} ->
+            log_agent_response(job, final_acc)
+            handle_stream_result(final_acc)
 
-      {:ok, %{status: status}} ->
-        {:error, {:http_error, status}}
+          {:error, reason} ->
+            Logger.error(
+              "[agent_dispatch] flush_failed agent=#{job.agent_id} session=#{job.session_id} reason=#{inspect(reason)}"
+            )
+
+            {:error, reason}
+        end
 
       {:error, reason} ->
+        Logger.error(
+          "[agent_dispatch] request_failed agent=#{job.agent_id} session=#{job.session_id} reason=#{inspect(reason)}"
+        )
+
         {:error, {:request_failed, reason}}
     end
+  end
+
+  defp handle_stream_result(%{status: status, count: count})
+       when is_integer(status) and status in 200..299 do
+    {:ok, count}
+  end
+
+  defp handle_stream_result(%{status: status}) when is_integer(status) do
+    {:error, {:http_error, status}}
+  end
+
+  defp handle_stream_result(_acc) do
+    {:error, {:request_failed, :missing_status}}
   end
 
   defp handle_stream_chunk({:status, status}, acc) do
@@ -154,6 +185,25 @@ defmodule Fleetlm.Agent.Dispatch do
     end
   end
 
+  defp flush_buffer(%{buffer: buffer} = acc) when is_binary(buffer) do
+    cond do
+      buffer == "" ->
+        {:ok, acc}
+
+      String.trim(buffer) == "" ->
+        {:ok, %{acc | buffer: ""}}
+
+      true ->
+        case append_line(buffer, acc.session_id, acc.agent_id) do
+          :ok ->
+            {:ok, %{acc | buffer: "", count: acc.count + 1}}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+    end
+  end
+
   # append a single line to the session, note that this
   # has a side effect of _writing messages_ to the session.
   defp append_line(line, session_id, agent_id) do
@@ -167,8 +217,20 @@ defmodule Fleetlm.Agent.Dispatch do
           metadata = Map.get(msg, "metadata", %{})
 
           case Router.append_message(session_id, agent_id, kind, content, metadata) do
-            {:ok, _} -> :ok
-            {:error, reason} -> {:error, reason}
+            {:ok, appended_message} ->
+    Logger.info(
+      "[agent_dispatch] appended agent=#{agent_id} session=#{session_id} kind=#{kind} " <>
+        "seq=#{Map.get(appended_message, :seq)} metadata=#{map_size(metadata)} preview=#{preview_content(content)}"
+    )
+
+              :ok
+
+            {:error, reason} ->
+              Logger.error(
+                "[agent_dispatch] append_failed agent=#{agent_id} session=#{session_id} kind=#{kind} reason=#{inspect(reason)}"
+              )
+
+              {:error, reason}
           end
 
         {:ok, _other} ->
@@ -180,6 +242,39 @@ defmodule Fleetlm.Agent.Dispatch do
           {:error, {:json_decode_failed, reason}}
       end
     end
+  end
+
+  defp log_agent_request(job, payload, url, payload_bytes) do
+    messages = Map.fetch!(payload, :messages)
+
+    Logger.info(
+      "[agent_dispatch] request agent=#{job.agent_id} session=#{job.session_id} user=#{job.user_id} " <>
+        "messages=#{length(messages)} target_seq=#{job.target_seq} last_sent=#{job.last_sent} " <>
+        "attempts=#{Map.get(job, :attempts, 0)} bytes=#{payload_bytes} url=#{url}"
+    )
+  end
+
+  defp log_agent_response(job, %{status: status, count: count}) do
+    cond do
+      is_integer(status) and status in 200..299 ->
+        Logger.info(
+          "[agent_dispatch] response agent=#{job.agent_id} session=#{job.session_id} status=#{status} messages_appended=#{count}"
+        )
+
+      is_integer(status) ->
+        Logger.warning(
+          "[agent_dispatch] response_non_success agent=#{job.agent_id} session=#{job.session_id} status=#{status} messages_appended=#{count}"
+        )
+
+      true ->
+        Logger.warning(
+          "[agent_dispatch] response_missing_status agent=#{job.agent_id} session=#{job.session_id} messages_appended=#{count}"
+        )
+    end
+  end
+
+  defp preview_content(content) do
+    inspect(content, pretty: false, limit: 6, printable_limit: 200)
   end
 
   defp ensure_enabled(%{status: "enabled"}), do: :ok
