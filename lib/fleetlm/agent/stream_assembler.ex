@@ -323,7 +323,7 @@ defmodule Fleetlm.Agent.StreamAssembler do
       update_part(state, index, fn part ->
         part
         |> Map.put("state", "approval-requested")
-        |> Map.put("approval", %{id: chunk["approvalId"]})
+        |> Map.put("approval", %{"id" => chunk["approvalId"]})
       end)
 
     {state, tool_state}
@@ -334,7 +334,7 @@ defmodule Fleetlm.Agent.StreamAssembler do
       update_part(state, index, fn part ->
         part
         |> Map.put("state", "output-denied")
-        |> Map.put("approval", Map.get(part, "approval", %{id: chunk["toolCallId"]}))
+        |> Map.put("approval", Map.get(part, "approval", %{"id" => chunk["toolCallId"]}))
       end)
 
     {state, tool_state}

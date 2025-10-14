@@ -173,7 +173,7 @@ defmodule Fleetlm.Agent.Dispatch do
 
   defp handle_stream_chunk({:headers, _headers}, acc), do: acc
 
-  defp handle_stream_chunk({:data, data}, acc) do
+  defp handle_stream_chunk({:data, data}, acc) when is_map(acc) and is_map_key(acc, :assembler) do
     new_buffer = acc.buffer <> data
     lines = String.split(new_buffer, "\n")
     {complete_lines, [remaining]} = Enum.split(lines, -1)
@@ -195,7 +195,7 @@ defmodule Fleetlm.Agent.Dispatch do
     end
   end
 
-  defp flush_buffer(%{buffer: buffer} = acc) when is_binary(buffer) do
+  defp flush_buffer(%{buffer: buffer, assembler: _} = acc) when is_binary(buffer) do
     trimmed = String.trim(buffer)
 
     cond do
@@ -213,7 +213,7 @@ defmodule Fleetlm.Agent.Dispatch do
     end
   end
 
-  defp process_line(line, acc) do
+  defp process_line(line, %{assembler: _} = acc) do
     trimmed = String.trim(line)
 
     if trimmed == "" do
@@ -230,9 +230,12 @@ defmodule Fleetlm.Agent.Dispatch do
     end
   end
 
-  defp ingest_chunk(chunk, acc) do
-    case StreamAssembler.ingest(acc.assembler, chunk) do
+  defp ingest_chunk(chunk, %{assembler: assembler} = acc) when is_map(chunk) do
+    chunk_type = Map.get(chunk, "type", "unknown")
+
+    case StreamAssembler.ingest(assembler, chunk) do
       {:ok, new_state, actions} ->
+        Telemetry.emit_agent_stream_chunk(acc.agent_id, acc.session_id, chunk_type, :ok)
         acc = %{acc | assembler: new_state}
 
         case apply_stream_actions(acc, actions) do
@@ -241,6 +244,7 @@ defmodule Fleetlm.Agent.Dispatch do
         end
 
       {:error, reason, new_state, actions} ->
+        Telemetry.emit_agent_stream_chunk(acc.agent_id, acc.session_id, chunk_type, :error)
         acc = %{acc | assembler: new_state}
 
         case apply_stream_actions(acc, actions) do
@@ -270,6 +274,15 @@ defmodule Fleetlm.Agent.Dispatch do
   end
 
   defp handle_stream_action(acc, {:finalize, message, meta}) do
+    part_count = length(Map.get(message, "parts", []))
+
+    Telemetry.emit_agent_stream_finalized(
+      acc.agent_id,
+      acc.session_id,
+      meta.termination,
+      part_count
+    )
+
     case persist_message(acc, message, meta) do
       {:ok, acc} ->
         {:ok, %{acc | assembler: StreamAssembler.new(role: "assistant")}}
@@ -283,6 +296,10 @@ defmodule Fleetlm.Agent.Dispatch do
     {:ok, acc}
   end
 
+  # Persists the final assembled message from the stream to the session.
+  # The `termination` metadata tag indicates how the stream ended:
+  # - `:finish` - agent completed normally with a "finish" chunk
+  # - `:abort` - agent cancelled the stream early with an "abort" chunk
   defp persist_message(acc, message, meta) do
     parts = Map.get(message, "parts", [])
     content = %{"id" => message["id"], "role" => message["role"], "parts" => parts}
