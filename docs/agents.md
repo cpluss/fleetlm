@@ -89,7 +89,7 @@ Session metadata is stored internally but not forwarded to the webhook.
 | `last` | Most recent message, `limit` must stay > 0   |
 | `entire` | Full conversation; limit must stay > 0    |
 
-## Respond with AI SDK JSONL
+## Respond with [AI SDK JSONL](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol)
 
 Reply with status `200` and newline-delimited JSON. Each line must be a valid **UI message chunk**. FleetLM validates the payload, broadcasts it to WebSocket subscribers via `stream_chunk`, and only persists a message when it receives a terminal chunk (`finish` or `abort`).
 
