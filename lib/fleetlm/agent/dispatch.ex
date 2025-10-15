@@ -9,9 +9,11 @@ defmodule Fleetlm.Agent.Dispatch do
   require Logger
 
   alias Fleetlm.Agent
+  alias Fleetlm.Agent.StreamAssembler
   alias Fleetlm.Observability.Telemetry
   alias Fleetlm.Runtime.Router
   alias Fleetlm.Storage
+  alias Phoenix.PubSub
 
   @type job :: %{
           agent_id: String.t(),
@@ -105,7 +107,8 @@ defmodule Fleetlm.Agent.Dispatch do
       count: 0,
       status: nil,
       session_id: job.session_id,
-      agent_id: job.agent_id
+      agent_id: job.agent_id,
+      assembler: StreamAssembler.new(role: "assistant")
     }
 
     request =
@@ -116,7 +119,7 @@ defmodule Fleetlm.Agent.Dispatch do
       )
 
     case request do
-      {:ok, acc} ->
+      {:ok, %{assembler: _} = acc} ->
         case flush_buffer(acc) do
           {:ok, final_acc} ->
             log_agent_response(job, final_acc)
@@ -129,6 +132,20 @@ defmodule Fleetlm.Agent.Dispatch do
 
             {:error, reason}
         end
+
+      {:ok, {:error, reason}} ->
+        Logger.error(
+          "[agent_dispatch] stream_failed agent=#{job.agent_id} session=#{job.session_id} reason=#{inspect(reason)}"
+        )
+
+        {:error, reason}
+
+      {:ok, other} ->
+        Logger.error(
+          "[agent_dispatch] unexpected_accumulator agent=#{job.agent_id} session=#{job.session_id} acc=#{inspect(other)}"
+        )
+
+        {:error, {:invalid_accumulator, other}}
 
       {:error, reason} ->
         Logger.error(
@@ -152,95 +169,172 @@ defmodule Fleetlm.Agent.Dispatch do
     {:error, {:request_failed, :missing_status}}
   end
 
-  defp handle_stream_chunk({:status, status}, acc) do
-    %{acc | status: status}
-  end
+  defp handle_stream_chunk({:status, status}, acc), do: %{acc | status: status}
 
-  defp handle_stream_chunk({:headers, _headers}, acc) do
-    acc
-  end
+  defp handle_stream_chunk({:headers, _headers}, acc), do: acc
 
-  defp handle_stream_chunk({:data, data}, acc) do
-    # Append new data to buffer
+  defp handle_stream_chunk({:data, data}, acc) when is_map(acc) and is_map_key(acc, :assembler) do
     new_buffer = acc.buffer <> data
-
-    # Process each complete line within the buffer
     lines = String.split(new_buffer, "\n")
     {complete_lines, [remaining]} = Enum.split(lines, -1)
 
     result =
-      Enum.reduce_while(complete_lines, {:ok, acc.count}, fn line, {:ok, count} ->
-        case append_line(line, acc.session_id, acc.agent_id) do
-          :ok -> {:cont, {:ok, count + 1}}
-          {:error, reason} -> {:halt, {:error, reason}}
+      Enum.reduce_while(complete_lines, {:ok, %{acc | buffer: ""}}, fn line, {:ok, acc} ->
+        case process_line(line, acc) do
+          {:ok, acc} -> {:cont, {:ok, acc}}
+          {:error, reason, acc} -> {:halt, {:error, reason, acc}}
         end
       end)
 
     case result do
-      {:ok, new_count} ->
-        %{acc | buffer: remaining, count: new_count}
+      {:ok, acc} ->
+        %{acc | buffer: remaining}
 
-      {:error, reason} ->
+      {:error, reason, _acc} ->
         {:error, reason}
     end
   end
 
-  defp flush_buffer(%{buffer: buffer} = acc) when is_binary(buffer) do
+  defp flush_buffer(%{buffer: buffer, assembler: _} = acc) when is_binary(buffer) do
+    trimmed = String.trim(buffer)
+
     cond do
       buffer == "" ->
         {:ok, acc}
 
-      String.trim(buffer) == "" ->
+      trimmed == "" ->
         {:ok, %{acc | buffer: ""}}
 
       true ->
-        case append_line(buffer, acc.session_id, acc.agent_id) do
-          :ok ->
-            {:ok, %{acc | buffer: "", count: acc.count + 1}}
-
-          {:error, reason} ->
-            {:error, reason}
+        case process_line(trimmed, %{acc | buffer: ""}) do
+          {:ok, acc} -> {:ok, acc}
+          {:error, reason, _acc} -> {:error, reason}
         end
     end
   end
 
-  # append a single line to the session, note that this
-  # has a side effect of _writing messages_ to the session.
-  defp append_line(line, session_id, agent_id) do
+  defp process_line(line, %{assembler: _} = acc) do
     trimmed = String.trim(line)
 
     if trimmed == "" do
-      :ok
+      {:ok, acc}
     else
       case Jason.decode(trimmed) do
-        {:ok, %{"kind" => kind, "content" => content} = msg} ->
-          metadata = Map.get(msg, "metadata", %{})
-
-          case Router.append_message(session_id, agent_id, kind, content, metadata) do
-            {:ok, appended_message} ->
-    Logger.info(
-      "[agent_dispatch] appended agent=#{agent_id} session=#{session_id} kind=#{kind} " <>
-        "seq=#{Map.get(appended_message, :seq)} metadata=#{map_size(metadata)} preview=#{preview_content(content)}"
-    )
-
-              :ok
-
-            {:error, reason} ->
-              Logger.error(
-                "[agent_dispatch] append_failed agent=#{agent_id} session=#{session_id} kind=#{kind} reason=#{inspect(reason)}"
-              )
-
-              {:error, reason}
-          end
-
-        {:ok, _other} ->
-          Telemetry.emit_agent_parse_error(agent_id, session_id, :missing_fields, trimmed)
-          {:error, :invalid_message_format}
+        {:ok, chunk} ->
+          ingest_chunk(chunk, acc)
 
         {:error, reason} ->
-          Telemetry.emit_agent_parse_error(agent_id, session_id, :invalid_json, trimmed)
-          {:error, {:json_decode_failed, reason}}
+          Telemetry.emit_agent_parse_error(acc.agent_id, acc.session_id, :invalid_json, trimmed)
+          {:error, {:json_decode_failed, reason}, acc}
       end
+    end
+  end
+
+  defp ingest_chunk(chunk, %{assembler: assembler} = acc) when is_map(chunk) do
+    chunk_type = Map.get(chunk, "type", "unknown")
+
+    case StreamAssembler.ingest(assembler, chunk) do
+      {:ok, new_state, actions} ->
+        Telemetry.emit_agent_stream_chunk(acc.agent_id, acc.session_id, chunk_type, :ok)
+        acc = %{acc | assembler: new_state}
+
+        case apply_stream_actions(acc, actions) do
+          {:ok, acc} -> {:ok, acc}
+          {:error, reason, acc} -> {:error, reason, acc}
+        end
+
+      {:error, reason, new_state, actions} ->
+        Telemetry.emit_agent_stream_chunk(acc.agent_id, acc.session_id, chunk_type, :error)
+        acc = %{acc | assembler: new_state}
+
+        case apply_stream_actions(acc, actions) do
+          {:ok, acc} -> {:error, reason, acc}
+          {:error, reason2, acc} -> {:error, reason2, acc}
+        end
+    end
+  end
+
+  defp apply_stream_actions(acc, actions) do
+    Enum.reduce_while(actions, {:ok, acc}, fn action, {:ok, acc} ->
+      case handle_stream_action(acc, action) do
+        {:ok, acc} -> {:cont, {:ok, acc}}
+        {:error, reason, acc} -> {:halt, {:error, reason, acc}}
+      end
+    end)
+  end
+
+  defp handle_stream_action(acc, {:chunk, chunk}) do
+    PubSub.broadcast(
+      Fleetlm.PubSub,
+      "session:#{acc.session_id}",
+      {:session_stream_chunk, %{"agent_id" => acc.agent_id, "chunk" => chunk}}
+    )
+
+    {:ok, acc}
+  end
+
+  defp handle_stream_action(acc, {:finalize, message, meta}) do
+    part_count = length(Map.get(message, "parts", []))
+
+    Telemetry.emit_agent_stream_finalized(
+      acc.agent_id,
+      acc.session_id,
+      meta.termination,
+      part_count
+    )
+
+    case persist_message(acc, message, meta) do
+      {:ok, acc} ->
+        {:ok, %{acc | assembler: StreamAssembler.new(role: "assistant")}}
+
+      {:error, reason, acc} ->
+        {:error, reason, acc}
+    end
+  end
+
+  defp handle_stream_action(acc, {:abort, _chunk}) do
+    {:ok, acc}
+  end
+
+  # Persists the final assembled message from the stream to the session.
+  # The `termination` metadata tag indicates how the stream ended:
+  # - `:finish` - agent completed normally with a "finish" chunk
+  # - `:abort` - agent cancelled the stream early with an "abort" chunk
+  defp persist_message(acc, message, meta) do
+    parts = Map.get(message, "parts", [])
+    content = %{"id" => message["id"], "role" => message["role"], "parts" => parts}
+
+    base_metadata =
+      case Map.get(message, "metadata") do
+        %{} = map -> map
+        _ -> %{}
+      end
+
+    metadata =
+      base_metadata
+      |> Map.put("termination", Atom.to_string(meta.termination))
+
+    metadata =
+      case Map.get(meta, :finish_chunk) do
+        nil -> metadata
+        finish_chunk -> Map.put(metadata, "_finish_chunk", finish_chunk)
+      end
+
+    case Router.append_message(acc.session_id, acc.agent_id, "assistant", content, metadata) do
+      {:ok, appended_message} ->
+        Logger.info(
+          "[agent_dispatch] appended agent=#{acc.agent_id} session=#{acc.session_id} kind=assistant " <>
+            "seq=#{Map.get(appended_message, :seq)} preview=#{preview_from_parts(parts)} termination=#{metadata["termination"]}"
+        )
+
+        {:ok, %{acc | count: acc.count + 1}}
+
+      {:error, reason} ->
+        Logger.error(
+          "[agent_dispatch] append_failed agent=#{acc.agent_id} session=#{acc.session_id} kind=assistant reason=#{inspect(reason)}"
+        )
+
+        {:error, reason, acc}
     end
   end
 
@@ -273,9 +367,16 @@ defmodule Fleetlm.Agent.Dispatch do
     end
   end
 
-  defp preview_content(content) do
-    inspect(content, pretty: false, limit: 6, printable_limit: 200)
+  defp preview_from_parts(parts) when is_list(parts) do
+    parts
+    |> Enum.find(fn part -> part["type"] == "text" end)
+    |> case do
+      %{"text" => text} -> String.slice(text, 0, 200)
+      _ -> "n/a"
+    end
   end
+
+  defp preview_from_parts(_), do: "n/a"
 
   defp ensure_enabled(%{status: "enabled"}), do: :ok
   defp ensure_enabled(_), do: {:error, :agent_disabled}

@@ -55,9 +55,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
         send(test_pid, {:webhook_called, payload})
 
         # Return agent response
-        response =
-          Jason.encode!(%{"kind" => "text", "content" => %{"text" => "Hello back from agent!"}}) <>
-            "\n"
+        response = ai_stream_text("Hello back from agent!")
 
         Plug.Conn.resp(conn, 200, response)
       end)
@@ -94,7 +92,15 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
       [_user_msg, agent_msg] = messages
       assert agent_msg.sender_id == "echo-agent"
       assert agent_msg.seq == 2
-      assert agent_msg.content["text"] == "Hello back from agent!"
+      assert agent_msg.kind == "assistant"
+      assert agent_msg.content["id"]
+      assert agent_msg.content["role"] == "assistant"
+
+      assert [%{"type" => "text", "text" => "Hello back from agent!"} = text_part] =
+               agent_msg.content["parts"]
+
+      assert text_part["state"] == "done"
+      assert agent_msg.metadata["termination"] == "finish"
     end
 
     test "multiple user messages trigger multiple webhooks", %{session: session, bypass: bypass} do
@@ -102,8 +108,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
       Bypass.expect(bypass, "POST", "/webhook", fn conn ->
         {:ok, _body, conn} = Plug.Conn.read_body(conn)
 
-        response =
-          Jason.encode!(%{"kind" => "text", "content" => %{"text" => "Echo response"}}) <> "\n"
+        response = ai_stream_text("Echo response")
 
         Plug.Conn.resp(conn, 200, response)
       end)
@@ -142,8 +147,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
 
         :counters.add(webhook_count, 1, 1)
 
-        response =
-          Jason.encode!(%{"kind" => "text", "content" => %{"text" => "Response"}}) <> "\n"
+        response = ai_stream_text("Response")
 
         Plug.Conn.resp(conn, 200, response)
       end)
@@ -178,8 +182,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
 
         response_text = if call_num == 1, do: "First response", else: "Second response"
 
-        response =
-          Jason.encode!(%{"kind" => "text", "content" => %{"text" => response_text}}) <> "\n"
+        response = ai_stream_text(response_text)
 
         Plug.Conn.resp(conn, 200, response)
       end)
@@ -195,9 +198,9 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
 
       # Should have 3 messages in history: user1, agent1, user2
       assert length(payload["messages"]) == 3
-      assert Enum.at(payload["messages"], 0)["content"]["text"] == "First"
-      assert Enum.at(payload["messages"], 1)["content"]["text"] == "First response"
-      assert Enum.at(payload["messages"], 2)["content"]["text"] == "Second"
+      assert content_text(Enum.at(payload["messages"], 0)["content"]) == "First"
+      assert content_text(Enum.at(payload["messages"], 1)["content"]) == "First response"
+      assert content_text(Enum.at(payload["messages"], 2)["content"]) == "Second"
     end
 
     test "agent response without trailing newline is processed", %{
@@ -207,7 +210,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
       Bypass.expect_once(bypass, "POST", "/webhook", fn conn ->
         {:ok, _body, conn} = Plug.Conn.read_body(conn)
 
-        response = Jason.encode!(%{"kind" => "text", "content" => %{"text" => "No newline"}})
+        response = ai_stream_text("No newline")
         Plug.Conn.resp(conn, 200, response)
       end)
 
@@ -217,7 +220,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
       assert_message_count(session.id, 2)
 
       {:ok, messages} = StorageAPI.get_messages(session.id, 0, 100)
-      assert Enum.at(messages, 1).content["text"] == "No newline"
+      assert content_text(Enum.at(messages, 1).content) == "No newline"
     end
 
     test "disabled agent does not receive webhooks", %{session: _session, bypass: bypass} do
@@ -283,7 +286,7 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
         {:ok, _body, conn} = Plug.Conn.read_body(conn)
 
         # Return valid response with empty content
-        response = Jason.encode!(%{"kind" => "text", "content" => %{"text" => ""}}) <> "\n"
+        response = ai_stream_text("")
         Plug.Conn.resp(conn, 200, response)
       end)
 
@@ -301,5 +304,33 @@ defmodule Fleetlm.Agent.WebhookIntegrationTest do
       {:ok, messages} = StorageAPI.get_messages(session_id, 0, 100)
       assert length(messages) == expected
     end)
+  end
+
+  defp content_text(content) when is_map(content) do
+    cond do
+      is_binary(Map.get(content, "text")) ->
+        content["text"]
+
+      true ->
+        content
+        |> Map.get("parts", [])
+        |> Enum.find_value(fn
+          %{"type" => "text", "text" => text} -> text
+          _ -> nil
+        end)
+    end
+  end
+
+  defp content_text(_), do: nil
+
+  defp ai_stream_text(text) when is_binary(text) do
+    [
+      %{"type" => "text-start", "id" => "part-1"},
+      %{"type" => "text-delta", "id" => "part-1", "delta" => text},
+      %{"type" => "text-end", "id" => "part-1"},
+      %{"type" => "finish"}
+    ]
+    |> Enum.map(&Jason.encode!/1)
+    |> Enum.join("\n")
   end
 end

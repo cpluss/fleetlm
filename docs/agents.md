@@ -5,7 +5,7 @@ sidebar_position: 2
 
 # Agent Webhooks
 
-FleetLM talks to agents through simple HTTP webhooks. Register the endpoint once, then respond with newline-delimited JSON whenever a session message arrives.
+FleetLM talks to agents through simple HTTP webhooks. Register the endpoint once, then stream [AI SDK UI message chunks](https://sdk.vercel.ai/docs/stream-protocol) (newline-delimited JSON) whenever a session message arrives. FleetLM forwards every chunk to connected clients in real time and compacts the full stream into a single assistant message when it finishes.
 
 ## Register an agent
 
@@ -89,22 +89,27 @@ Session metadata is stored internally but not forwarded to the webhook.
 | `last` | Most recent message, `limit` must stay > 0   |
 | `entire` | Full conversation; limit must stay > 0    |
 
-## Respond with JSONL
+## Respond with [AI SDK JSONL](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol)
 
-Reply using `200` status and newline-delimited JSON. Every line becomes a message appended to the session.
+Reply with status `200` and newline-delimited JSON. Each line must be a valid **UI message chunk**. FleetLM validates the payload, broadcasts it to WebSocket subscribers via `stream_chunk`, and only persists a message when it receives a terminal chunk (`finish` or `abort`).
 
 ```http
 HTTP/1.1 200 OK
 Content-Type: application/json
 
-{"kind": "text", "content": {"text": "Thinking..."}}
-{"kind": "text", "content": {"text": "Here we go!"}}
+{"type":"start","messageId":"msg_123"}
+{"type":"text-start","id":"part_1"}
+{"type":"text-delta","id":"part_1","delta":"Thinking"}
+{"type":"text-delta","id":"part_1","delta":"..."}
+{"type":"text-end","id":"part_1"}
+{"type":"finish","messageMetadata":{"latency_ms": 1800}}
 ```
 
-Each object must include:
+Common chunk types include:
 
-- `kind`: message type (`text`, `tool_call`, etc.)
-- `content`: JSON payload (structure defined by you)
-- `metadata` (optional): stored alongside the message
+- `start`, `finish`, `abort` – lifecycle markers for the message.
+- `text-*`, `reasoning-*` – streaming natural language and reasoning traces.
+- `tool-*` – tool call arguments/results (static and dynamic tools).
+- `data-*`, `file`, `source-*` – structured attachments such as charts or citations.
 
-Malformed lines are skipped and surfaced via telemetry.
+FleetLM stores the final, compacted assistant message with `kind: "assistant"` and the collected `parts` array. Any chunk the parser cannot recognise results in telemetry (`:invalid_json`, `:missing_type`) and is dropped.

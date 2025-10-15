@@ -37,6 +37,8 @@ defmodule Fleetlm.Observability.Telemetry do
   @agent_debounce_event [:fleetlm, :agent, :debounce]
   @agent_e2e_latency_event [:fleetlm, :agent, :e2e_latency]
   @agent_dispatch_drop_event [:fleetlm, :agent, :dispatch, :drop]
+  @agent_stream_chunk_event [:fleetlm, :agent, :stream, :chunk]
+  @agent_stream_finalized_event [:fleetlm, :agent, :stream, :finalized]
 
   @session_drain_event [:fleetlm, :session, :drain]
 
@@ -421,6 +423,47 @@ defmodule Fleetlm.Observability.Telemetry do
   def emit_message_throughput do
     measurements = %{count: 1}
     :telemetry.execute(@message_throughput_event, measurements, %{})
+  end
+
+  @doc """
+  Emit agent stream chunk telemetry - tracks chunk types and errors.
+  """
+  @spec emit_agent_stream_chunk(String.t(), String.t(), String.t(), atom()) :: :ok
+  def emit_agent_stream_chunk(agent_id, session_id, chunk_type, result)
+      when is_binary(agent_id) and is_binary(session_id) and is_binary(chunk_type) and
+             result in [:ok, :error] do
+    measurements = %{count: 1}
+
+    metadata = %{
+      agent_id: agent_id,
+      session_id: session_id,
+      chunk_type: chunk_type,
+      result: result
+    }
+
+    :telemetry.execute(@agent_stream_chunk_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit agent stream finalized telemetry - tracks message assembly completion.
+
+  The `termination` parameter indicates how the stream ended:
+  - `:finish` - normal completion (agent sent "finish" chunk)
+  - `:abort` - early cancellation (agent sent "abort" chunk)
+  """
+  @spec emit_agent_stream_finalized(String.t(), String.t(), atom(), non_neg_integer()) :: :ok
+  def emit_agent_stream_finalized(agent_id, session_id, termination, part_count)
+      when is_binary(agent_id) and is_binary(session_id) and
+             termination in [:finish, :abort] and is_integer(part_count) do
+    measurements = %{part_count: part_count}
+
+    metadata = %{
+      agent_id: agent_id,
+      session_id: session_id,
+      termination: termination
+    }
+
+    :telemetry.execute(@agent_stream_finalized_event, measurements, metadata)
   end
 
   defp normalize_drop_reason(nil), do: nil

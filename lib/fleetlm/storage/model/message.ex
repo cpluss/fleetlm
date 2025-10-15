@@ -42,7 +42,7 @@ defmodule Fleetlm.Storage.Model.Message do
     message
     |> cast(attrs, @required_fields)
     |> validate_required(@required_fields)
-    |> validate_inclusion(:kind, ["text", "system", "tool_call"])
+    |> validate_inclusion(:kind, ["text", "system", "tool_call", "assistant"])
     |> ensure_id()
   end
 

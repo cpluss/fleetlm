@@ -45,4 +45,17 @@ defmodule FleetlmWeb.SessionChannelTest do
     assert {:error, %{reason: "unauthorized"}} =
              subscribe_and_join(socket, SessionChannel, "session:" <> session.id)
   end
+
+  test "pushes stream chunks to clients", %{session: session} do
+    {:ok, socket} = connect(FleetlmWeb.UserSocket, %{"user_id" => session.user_id})
+    {:ok, _reply, socket} = subscribe_and_join(socket, SessionChannel, "session:" <> session.id)
+
+    payload = %{
+      "agent_id" => session.agent_id,
+      "chunk" => %{"type" => "text-delta", "delta" => "Hi"}
+    }
+
+    send(socket.channel_pid, {:session_stream_chunk, payload})
+    assert_push("stream_chunk", ^payload)
+  end
 end
