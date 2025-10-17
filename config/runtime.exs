@@ -30,6 +30,11 @@ if config_env() == :prod do
 
   maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
 
+  # Optional: Override slot log directory (for mounting NVMe, etc)
+  if slot_log_dir = System.get_env("SLOT_LOG_DIR") do
+    config :fleetlm, :slot_log_dir, slot_log_dir
+  end
+
   config :fleetlm, Fleetlm.Repo,
     # ssl: true,
     url: database_url,
