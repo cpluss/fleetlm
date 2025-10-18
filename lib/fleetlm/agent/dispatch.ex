@@ -322,10 +322,10 @@ defmodule Fleetlm.Agent.Dispatch do
 
     case Router.append_message(acc.session_id, acc.agent_id, "assistant", content, metadata) do
       {:ok, appended_message} ->
-        Logger.info(
-          "[agent_dispatch] appended agent=#{acc.agent_id} session=#{acc.session_id} kind=assistant " <>
-            "seq=#{Map.get(appended_message, :seq)} preview=#{preview_from_parts(parts)} termination=#{metadata["termination"]}"
-        )
+        # Logger.info(
+        #  "[agent_dispatch] appended agent=#{acc.agent_id} session=#{acc.session_id} kind=assistant " <>
+        #    "seq=#{Map.get(appended_message, :seq)} preview=#{preview_from_parts(parts)} termination=#{metadata["termination"]}"
+        # )
 
         {:ok, %{acc | count: acc.count + 1}}
 
@@ -341,11 +341,11 @@ defmodule Fleetlm.Agent.Dispatch do
   defp log_agent_request(job, payload, url, payload_bytes) do
     messages = Map.fetch!(payload, :messages)
 
-    Logger.info(
-      "[agent_dispatch] request agent=#{job.agent_id} session=#{job.session_id} user=#{job.user_id} " <>
-        "messages=#{length(messages)} target_seq=#{job.target_seq} last_sent=#{job.last_sent} " <>
-        "attempts=#{Map.get(job, :attempts, 0)} bytes=#{payload_bytes} url=#{url}"
-    )
+    # Logger.info(
+    #   "[agent_dispatch] request agent=#{job.agent_id} session=#{job.session_id} user=#{job.user_id} " <>
+    #     "messages=#{length(messages)} target_seq=#{job.target_seq} last_sent=#{job.last_sent} " <>
+    #     "attempts=#{Map.get(job, :attempts, 0)} bytes=#{payload_bytes} url=#{url}"
+    # )
   end
 
   defp log_agent_response(job, %{status: status, count: count}) do

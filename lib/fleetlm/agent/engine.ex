@@ -214,10 +214,36 @@ defmodule Fleetlm.Agent.Engine do
     # Update last_sent and clear dispatch fields
     case :ets.lookup(@table, key) do
       [
-        {^key, user_id, _old_last_sent, _target_seq, _due_at, _first_seq, _enqueued_at, _attempts,
+        {^key, user_id, _old_last_sent, target_seq, due_at, first_seq, enqueued_at, _attempts,
          _status}
       ] ->
-        :ets.insert(@table, {key, user_id, new_last_sent, nil, nil, nil, nil, 0, nil})
+        if is_nil(target_seq) or target_seq <= new_last_sent do
+          :ets.insert(@table, {key, user_id, new_last_sent, nil, nil, nil, nil, 0, nil})
+        else
+          {agent_id, _session_id} = key
+          now = System.monotonic_time(:millisecond)
+
+          next_first_seq =
+            case first_seq do
+              nil -> new_last_sent + 1
+              value -> max(value, new_last_sent + 1)
+            end
+
+          next_due_at = due_at || now + debounce_window(agent_id)
+          next_enqueued_at = enqueued_at || now
+
+          :ets.insert(@table, {
+            key,
+            user_id,
+            new_last_sent,
+            target_seq,
+            next_due_at,
+            next_first_seq,
+            next_enqueued_at,
+            0,
+            :pending
+          })
+        end
 
       [] ->
         :ok
@@ -290,10 +316,16 @@ defmodule Fleetlm.Agent.Engine do
 
       [
         {^key, existing_user, last_sent, current_seq, _due, first_seq, _enqueued,
-         current_attempts, _status}
+         current_attempts, status}
       ]
       when not is_nil(current_seq) ->
         # Existing queue entry: update target_seq and due_at, preserve first_seq
+        next_status =
+          case status do
+            :inflight -> :inflight
+            _ -> :pending
+          end
+
         :ets.insert(@table, {
           key,
           existing_user || user_id,
@@ -303,7 +335,7 @@ defmodule Fleetlm.Agent.Engine do
           first_seq,
           enqueued_at,
           max(attempts, current_attempts),
-          :pending
+          next_status
         })
 
       [
