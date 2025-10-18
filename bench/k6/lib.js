@@ -80,10 +80,12 @@ export function setupEchoAgent() {
 
 /**
  * Generate a unique participant ID for this benchmark run.
- * Note: FleetLM doesn't require pre-creating participants - IDs can be used directly in sessions.
+ * Uses random UUID to ensure even distribution across storage slots.
  */
 export function generateParticipantId(prefix, vuId) {
-  return `${prefix}-${config.runId}-vu${vuId}`;
+  // Generate random UUID to avoid hash collisions on storage slots
+  const uuid = crypto.randomUUID();
+  return `${prefix}-${uuid}`;
 }
 
 // ============================================================================
@@ -97,8 +99,8 @@ export function createSession(userId, agentId, metadata = {}) {
   const res = http.post(
     `${config.apiUrl}/sessions`,
     JSON.stringify({
-      sender_id: userId,
-      recipient_id: agentId,
+      user_id: userId,
+      agent_id: agentId,
       metadata: { ...metadata, bench: true, run_id: config.runId },
     }),
     jsonHeaders

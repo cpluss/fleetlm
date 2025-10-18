@@ -34,12 +34,13 @@ defmodule BenchEchoAgent do
   # Pre-encode the health response once
   @health_response Jason.encode!(%{status: "ok", agent: "bench-echo-agent"})
 
-  # Static echo response template
-  @echo_response Jason.encode!(%{
-    kind: "text",
-    content: %{text: "ack"},
-    metadata: %{bench: true}
-  }) <> "\n"
+  # AI SDK JSONL stream response - pre-encode all chunks
+  @echo_response [
+    Jason.encode!(%{"type" => "text-start", "id" => "part_1"}),
+    Jason.encode!(%{"type" => "text-delta", "id" => "part_1", "delta" => "ack"}),
+    Jason.encode!(%{"type" => "text-end", "id" => "part_1"}),
+    Jason.encode!(%{"type" => "finish"})
+  ] |> Enum.join("\n") |> Kernel.<>("\n")
 
   get "/health" do
     send_resp(conn, 200, @health_response)
