@@ -1,32 +1,32 @@
 /**
- * FleetLM Message Throughput Benchmark
+ * FleetLM Scenario 1: Hot-Path Throughput
  *
- * Finds the ACTUAL sustainable message throughput using flow control.
- * Each VU sends a message, waits for ack, then sends the next (pipelined with configurable depth).
+ * Validates Raft write scalability under burst load.
  *
- * Architecture:
- * - Sessions are pre-created during setup (one per VU)
- * - VUs ramp up gradually to find capacity under increasing load
- * - Each VU uses flow control: send → wait for ack → send next
- * - Configurable pipeline depth to allow N in-flight messages
- * - Measures SUSTAINABLE throughput, not just flooding
+ * Profile:
+ * - 20 concurrent WebSocket sessions (VUs)
+ * - Pipeline depth: 5 messages in-flight per VU
+ * - Duration: 30s ramp-up → 1m40s steady → 10s ramp-down
+ * - Pattern: Send message → Wait for ack → Send next (flow-controlled)
  *
- * Metrics:
- * - messages_sent: Total messages sent by all VUs
- * - acks_received: Server acks received (successful appends)
- * - messages_received: Message broadcasts from agent
- * - backpressure_events: Times server pushed back
- * - Success rate: Should be ~100% with proper flow control
+ * Expected Results (M3 Ultra, single node):
+ * - Throughput: 18,000-20,000 msg/s
+ * - p95 latency: 4-6ms
+ * - p99 latency: 10-20ms
+ * - Success rate: 99.9%+
+ *
+ * Thresholds (Pass/Fail):
+ * - ack_latency p95 < 10ms (Raft append + broadcast)
+ * - ack_latency p99 < 150ms (Target SLA)
+ * - Success rate > 99% (acks_received / messages_sent)
+ * - Throughput > 10,000 msg/s
  *
  * Usage:
- *   # Default: 10 VUs with pipeline depth of 5
- *   k6 run bench/k6/message-throughput.js
- *   
- *   # More aggressive: higher pipeline depth
- *   k6 run -e PIPELINE_DEPTH=10 -e MAX_VUS=20 bench/k6/message-throughput.js
- *   
- *   # Conservative: pipeline depth of 1 (strict send/ack)
- *   k6 run -e PIPELINE_DEPTH=1 bench/k6/message-throughput.js
+ *   # Default: 20 VUs with pipeline depth of 5
+ *   k6 run bench/k6/1-hot-path-throughput.js
+ *
+ *   # Higher load
+ *   k6 run -e PIPELINE_DEPTH=10 -e MAX_VUS=50 bench/k6/1-hot-path-throughput.js
  */
 
 import ws from 'k6/ws';
@@ -42,14 +42,15 @@ const messagesSent = new Counter('messages_sent');
 const acksReceived = new Counter('acks_received');
 const messagesReceived = new Counter('messages_received');
 const backpressureEvents = new Counter('backpressure_events');
+const ackLatency = new Trend('ack_latency', true); // Trend with percentiles
 
 // ============================================================================
 // Test Configuration
 // ============================================================================
 
-const maxVUs = Number(__ENV.MAX_VUS || 10);
+const maxVUs = Number(__ENV.MAX_VUS || 20);
 const rampDuration = __ENV.RAMP_DURATION || '30s';
-const steadyDuration = __ENV.STEADY_DURATION || '1m';
+const steadyDuration = __ENV.STEADY_DURATION || '1m40s';
 const rampDownDuration = __ENV.RAMP_DOWN_DURATION || '10s';
 
 export const options = {
@@ -68,8 +69,18 @@ export const options = {
     },
   },
   thresholds: {
-    // No hard thresholds - this is a load test to find breaking points
-    // Manually compare messages_sent vs acks_received to see success rate
+    // Primary: System stability
+    'checks': [
+      { threshold: 'rate>0.99', abortOnFail: true }, // 99% success rate (no errors)
+    ],
+    // Secondary: Performance targets
+    'ack_latency': [
+      { threshold: 'p(95)<10', abortOnFail: false },  // p95 < 10ms (ideal)
+      { threshold: 'p(99)<150', abortOnFail: false }, // p99 < 150ms (SLA)
+    ],
+    'acks_received': [
+      { threshold: 'count>1000000', abortOnFail: false }, // Throughput check
+    ],
   },
 };
 
@@ -154,9 +165,9 @@ export default function (data) {
       let joined = false;
       let messageSeq = 0;
       const joinRef = 1;
-      
-      // Track pending acks for flow control
-      const pendingRefs = new Set();
+
+      // Track pending acks for flow control + latency measurement
+      const pendingRefs = new Map(); // ref -> timestamp
 
       socket.on('open', () => {
         // Join the session channel
@@ -191,10 +202,15 @@ export default function (data) {
           return;
         }
 
-        // Handle acks - remove from pending to allow next message
+        // Handle acks - measure latency and remove from pending
         if (eventMsg === 'phx_reply' && topicMsg === topic && payload?.status === 'ok') {
-          pendingRefs.delete(refMsg);
-          acksReceived.add(1);
+          const sendTime = pendingRefs.get(refMsg);
+          if (sendTime) {
+            const latency = Date.now() - sendTime;
+            ackLatency.add(latency);
+            pendingRefs.delete(refMsg);
+            acksReceived.add(1);
+          }
         }
 
         // Count message broadcasts
@@ -247,7 +263,7 @@ export default function (data) {
             },
           ];
 
-          pendingRefs.add(`${ref}`);
+          pendingRefs.set(`${ref}`, Date.now());
           socket.send(lib.encode(msg));
           messagesSent.add(1);
         }
