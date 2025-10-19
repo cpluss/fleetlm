@@ -40,8 +40,6 @@ config :fleetlm, Fleetlm.Runtime.DrainCoordinator,
   drain_grace_period: 0
 
 # Raft test configuration
-# Use lazy initialization (start groups on-demand, not all 256 upfront)
 config :fleetlm,
-  raft_mode: :test,
   raft_data_dir: "tmp/test_raft",
   raft_flush_interval_ms: 100

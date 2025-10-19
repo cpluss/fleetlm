@@ -3,6 +3,7 @@ defmodule Fleetlm.Runtime.Supervisor do
   Root supervisor for the Raft-based runtime tree.
 
   Starts:
+  - RaftTopology (cluster-aware Raft membership manager)
   - RaftManager (256 Raft groups for distributed message storage)
   - Flusher (write-behind to Postgres every 5s)
   - InboxSupervisor (user inbox processes - unchanged)
@@ -13,11 +14,11 @@ defmodule Fleetlm.Runtime.Supervisor do
   DELETED:
   - Storage.Supervisor (SlotLogServers) → Replaced by Ra WAL (RAM)
   - SessionRegistry / SessionSupervisor → No more per-session processes
-  - SessionTracker (CRDT) → Raft membership handles routing
-  - RebalanceManager → Leadership transfer handles rebalancing
+  - SessionTracker (CRDT) → Raft membership via Ra
 
   NEW:
-  - RaftManager → Manages 256 Raft groups
+  - RaftTopology → Cluster monitoring + Raft membership management
+  - RaftManager → Manages 256 Raft groups (lazy initialization)
   - Flusher → Background write-behind to Postgres
   """
 
@@ -32,8 +33,14 @@ defmodule Fleetlm.Runtime.Supervisor do
   @impl true
   def init(_arg) do
     children = [
-      # Raft group manager (starts 256 Raft groups)
-      Fleetlm.Runtime.RaftManager,
+      # Task.Supervisor for async Raft group startup (Horde pattern)
+      {Task.Supervisor, name: Fleetlm.RaftTaskSupervisor},
+
+      # Presence replicates ready-node membership across the cluster
+      Fleetlm.Runtime.RaftTopology.Presence,
+
+      # Topology coordinator (monitors cluster, manages Raft membership)
+      Fleetlm.Runtime.RaftTopology,
 
       # Background flusher (write-behind to Postgres)
       Fleetlm.Runtime.Flusher,

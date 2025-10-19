@@ -1,78 +1,76 @@
 defmodule Fleetlm.Runtime.RaftManager do
   @moduledoc """
-  Manages Raft groups for distributed message storage.
+  Pure utility module for Raft group placement and lifecycle.
 
-  ## Architecture
+  ## Responsibilities
 
-  - 256 Raft groups total across cluster
-  - Each group: 3 replicas (2-of-3 quorum, same AZ)
-  - Each group: 16 lanes for parallel writes
-  - Placement: Rendezvous (HRW) hashing for deterministic replica selection
+  - Compute replica placement via rendezvous hashing
+  - Bootstrap or join Raft clusters
+  - Query Presence for cluster membership (single source of truth)
 
-  ## Startup
+  ## NOT Responsible For
 
-  On node boot:
-  1. Determine which groups this node should participate in
-  2. Start Ra servers for those groups
-  3. Join existing Raft clusters or bootstrap new ones
-
-  ## Routing
-
-  - session_id → group: phash2(session_id, 256)
-  - session_id → lane: phash2(session_id, 16)
-  - Any node can propose to any group (leader forwards internally)
+  - Rebalancing (RaftTopology handles this)
+  - Tracking started groups (stateless)
+  - Monitoring cluster changes (RaftTopology handles this)
   """
 
-  use GenServer
   require Logger
 
-  alias Fleetlm.Runtime.RaftFSM
+  alias Fleetlm.Runtime.{RaftFSM, RaftTopology}
 
   @num_groups 256
   @replication_factor 3
-  # Client API
 
-  def start_link(opts) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
-  end
-
-  @doc "Get the Raft group ID for a session"
+  @doc "Map session_id → group_id (0..255)"
   def group_for_session(session_id) do
-      # TODO: replace with consistent hashing algo
     :erlang.phash2(session_id, @num_groups)
   end
 
-  @doc "Get the lane ID for a session within its group"
+  @doc "Map session_id → lane_id (0..15) within its group"
   def lane_for_session(session_id) do
-    # TODO: replace with consistent hashing algo
     :erlang.phash2(session_id, 16)
   end
 
-  @doc "Get the Ra server ID for a group"
+  @doc "Get Ra server ID (process name) for a group"
   def server_id(group_id) do
-    # Must be an atom for Ra's process registration
     String.to_atom("raft_group_#{group_id}")
   end
 
-  @doc "Get all Ra server IDs for a group across all replicas"
-  def cluster_members(group_id) do
-    for node <- replicas_for_group(group_id) do
-      {server_id(group_id), node}
-    end
+  @doc "Get cluster name for Ra API calls"
+  def cluster_name(group_id) do
+    String.to_atom("raft_cluster_#{group_id}")
   end
 
-  @spec replicas_for_group(any()) :: list()
-  @doc "Determine which nodes should host replicas for a group"
+  @doc """
+  Determine which nodes should host replicas for a group.
+
+  CRITICAL: Uses all_nodes() (joining + ready) for placement.
+  Ensures new nodes get scheduled as replicas during their join phase.
+
+  Falls back to current_nodes() if Presence empty (boot scenario).
+  """
   def replicas_for_group(group_id) do
-    current_nodes()
+    nodes =
+      case RaftTopology.all_nodes() do
+        [] ->
+          # Boot fallback before Presence syncs
+          [Node.self() | Node.list()] |> Enum.uniq() |> Enum.sort()
+
+        all_nodes ->
+          # Placement uses ALL nodes (joining + ready), not just ready!
+          all_nodes
+      end
+
+    # Rendezvous (HRW) hashing for deterministic placement
+    nodes
     |> Enum.map(fn node ->
-      # TODO: replace with consistent hashing algo
       score = :erlang.phash2({group_id, node})
       {score, node}
     end)
     |> Enum.sort()
     |> Enum.take(@replication_factor)
-    |> Enum.map(fn {_, node} -> node end)
+    |> Enum.map(fn {_score, node} -> node end)
   end
 
   @doc "Check if this node should participate in a group"
@@ -81,141 +79,85 @@ defmodule Fleetlm.Runtime.RaftManager do
   end
 
   @doc """
-  Ensure a Raft group is started (lazy initialization for test mode).
+  Start a Raft group on this node.
 
-  In production: groups are pre-started in init/1.
-  In test: groups are started on-demand to avoid initializing all 256 groups.
+  Called by RaftTopology's Task.Supervisor (async).
+
+  ## Process
+
+  1. Check if already running (idempotent)
+  2. Determine if bootstrap node (lowest in replica set)
+  3. Bootstrap: call :ra.start_cluster with all replicas
+  4. Join: call :ra.start_server to join existing cluster
+
+  Returns:
+  - :ok if started or already running
+  - {:error, reason} if failed
   """
-  def ensure_started(group_id) do
-    case raft_mode() do
-      :test ->
-        # Lazy start in test mode
-        ensure_group_started(group_id)
+  def start_group(group_id) do
+    server_id = server_id(group_id)
 
-      _ ->
-        # In production, groups are already started
-        {:ok, :already_started}
-    end
-  end
-
-  # GenServer callbacks
-
-  @impl true
-  def init(_opts) do
-    # Ensure Ra is started
-    case :ra.start() do
-      :ok -> :ok
-      {:error, {:already_started, _}} -> :ok
-    end
-
-    case raft_mode() do
-      :test ->
-        # Test mode: lazy initialization (start groups on-demand)
-        Logger.info("RaftManager: Test mode - using lazy group initialization")
-        {:ok, %{started_groups: MapSet.new()}}
-
-      _ ->
-        # Production mode: start all groups upfront
-        groups_to_start = for g <- 0..(@num_groups - 1), should_participate?(g), do: g
-
-        Logger.info(
-          "RaftManager: Starting #{length(groups_to_start)} Raft groups on node #{Node.self()}"
-        )
-
-        Enum.each(groups_to_start, &start_group/1)
-
-        {:ok, %{started_groups: MapSet.new(groups_to_start)}}
-    end
-  end
-
-  @impl true
-  def handle_call({:ensure_started, group_id}, _from, state) do
-    if MapSet.member?(state.started_groups, group_id) do
-      {:reply, {:ok, :already_started}, state}
+    # Already running?
+    if Process.whereis(server_id) do
+      :ok
     else
-      case start_group(group_id) do
-        :ok ->
-          {:reply, {:ok, :started}, %{state | started_groups: MapSet.put(state.started_groups, group_id)}}
+      my_node = Node.self()
+      cluster_name = cluster_name(group_id)
+      machine = {:module, RaftFSM, %{group_id: group_id}}
 
-        {:error, reason} ->
-          {:reply, {:error, reason}, state}
+      replica_nodes = replicas_for_group(group_id)
+      server_ids = for node <- replica_nodes, do: {server_id, node}
+
+      # Deterministic coordinator = lowest node name
+      bootstrap_node = Enum.min(replica_nodes)
+      am_bootstrap = my_node == bootstrap_node
+
+      Logger.info(
+        "RaftManager: Starting group #{group_id} with #{length(replica_nodes)} replicas (bootstrap: #{bootstrap_node == my_node})"
+      )
+
+      if am_bootstrap do
+        bootstrap_cluster(group_id, cluster_name, machine, server_ids, {server_id, my_node})
+      else
+        # Wait for bootstrap node to create cluster
+        Process.sleep(500)
+        join_cluster(group_id, server_id, cluster_name, machine)
       end
     end
   end
 
-  @impl true
-  def handle_info(_msg, state) do
-    {:noreply, state}
-  end
-
-  # Private helpers
-
-  defp ensure_group_started(group_id) do
-    GenServer.call(__MODULE__, {:ensure_started, group_id}, 10_000)
-  end
-
-  defp raft_mode do
-    Application.get_env(:fleetlm, :raft_mode, :production)
-  end
-
-  defp start_group(group_id) do
-    server_id = server_id(group_id)
-    my_node = Node.self()
-    my_server_id = {server_id, my_node}
-
-    # Cluster name must be an atom
-    cluster_name = String.to_atom("raft_cluster_#{group_id}")
-
-    # Build machine config (tuple format for behavior-based machines)
-    machine = machine(group_id)
-
-    # Get all replicas for this group (3 nodes in production, 1 in test)
-    replica_nodes = replicas_for_group(group_id)
-    server_ids = for node <- replica_nodes, do: {server_id, node}
-
-    Logger.info(
-      "Starting Raft group #{group_id} with #{length(server_ids)} replicas: #{inspect(replica_nodes)}"
-    )
-
-    # Ra's start_cluster/4 takes: (System, ClusterName, Machine, ServerIds)
-    # System is :default for the default Ra system
+  defp bootstrap_cluster(group_id, cluster_name, machine, server_ids, my_server_id) do
     case :ra.start_cluster(:default, cluster_name, machine, server_ids) do
       {:ok, started, not_started} ->
-        # Check if THIS node started successfully
         cond do
           my_server_id in started ->
-            Logger.info("Raft group #{group_id}: Started as part of cluster")
+            Logger.info("RaftManager: Bootstrapped group #{group_id}")
             :ok
 
           my_server_id in not_started ->
-            # We're in the member list but didn't start - join now
-            Logger.info("Raft group #{group_id}: Not started in initial bootstrap, joining now")
-            join_as_follower(group_id, server_id, cluster_name, machine)
+            join_cluster(group_id, elem(my_server_id, 0), cluster_name, machine)
 
           true ->
-            # Shouldn't happen - we're not in the member list at all
-            Logger.warning("Raft group #{group_id}: This node not in member list, skipping")
+            Logger.warning("RaftManager: Not in member list for group #{group_id}")
             :ok
         end
 
-      {:error, {:already_started, _leader}} ->
-        # Cluster already exists on another node - join it
-        Logger.info("Raft group #{group_id}: Cluster exists, joining as follower")
-        join_as_follower(group_id, server_id, cluster_name, machine)
+      {:error, {:already_started, _}} ->
+        Logger.info("RaftManager: Group #{group_id} exists, joining")
+        join_cluster(group_id, elem(my_server_id, 0), cluster_name, machine)
 
       {:error, reason} ->
-        Logger.error("Failed to start Raft group #{group_id}: #{inspect(reason)}")
+        Logger.error("RaftManager: Failed to bootstrap group #{group_id}: #{inspect(reason)}")
         {:error, reason}
     end
   end
 
-  defp join_as_follower(group_id, server_id, cluster_name, machine) do
+  defp join_cluster(group_id, server_id, cluster_name, machine) do
     my_node = Node.self()
     node_name = my_node |> Atom.to_string() |> String.replace(~r/[^a-zA-Z0-9_]/, "_")
 
-    # Ensure data directory exists
+    # Per-node Ra data directory (avoid conflicts)
     data_dir_root = Application.get_env(:fleetlm, :raft_data_dir, "priv/raft")
-    # Keep per-node Ra log directories so replicas don't trample each other
     data_dir = Path.join([data_dir_root, "group_#{group_id}", node_name])
     File.mkdir_p!(data_dir)
 
@@ -232,36 +174,23 @@ defmodule Fleetlm.Runtime.RaftManager do
 
     case :ra.start_server(:default, server_conf) do
       :ok ->
-        Logger.info("Raft group #{group_id}: Joined as follower on #{my_node}")
+        Logger.info("RaftManager: Joined group #{group_id}")
         :ok
 
-      {:ok, _pid} ->
-        Logger.info("Raft group #{group_id}: Joined as follower on #{my_node}")
+      {:ok, _} ->
         :ok
 
       {:error, {:already_started, _}} ->
-        # Already running locally, that's fine
-        Logger.debug("Raft group #{group_id}: Already running on #{my_node}")
         :ok
 
       {:error, reason} ->
-        Logger.error("Failed to join Raft group #{group_id} as follower: #{inspect(reason)}")
+        Logger.error("RaftManager: Failed to join group #{group_id}: #{inspect(reason)}")
         {:error, reason}
     end
   end
 
-  defp current_nodes do
-    [Node.self() | Node.list()]
-    |> Enum.uniq()
-    |> Enum.sort()
-  end
-
-  # Ra machine definition
-
   @doc false
   def machine(group_id) do
-    # Use tuple format for behavior-based machines
-    # Config MUST be a map (Ra requirement)
     {:module, RaftFSM, %{group_id: group_id}}
   end
 end

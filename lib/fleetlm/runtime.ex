@@ -302,8 +302,9 @@ defmodule Fleetlm.Runtime do
   # Private helpers
 
   defp ensure_group_started(group_id) do
-    case RaftManager.ensure_started(group_id) do
-      {:ok, _} ->
+    # RaftManager.start_group is idempotent (checks if already running)
+    case RaftManager.start_group(group_id) do
+      :ok ->
         :ok
 
       {:error, reason} ->

@@ -20,6 +20,30 @@ if System.get_env("PHX_SERVER") do
   config :fleetlm, FleetlmWeb.Endpoint, server: true
 end
 
+# Cluster configuration (works in all environments, not just prod)
+cluster_nodes = System.get_env("CLUSTER_NODES")
+
+if cluster_nodes && cluster_nodes != "" do
+  hosts =
+    cluster_nodes
+    |> String.split(",")
+    |> Enum.map(&String.trim/1)
+    |> Enum.map(&String.to_atom/1)
+
+  config :libcluster,
+    topologies: [
+      local: [
+        strategy: Cluster.Strategy.Epmd,
+        config: [
+          hosts: hosts,
+          connect: {:net_kernel, :connect_node, []},
+          disconnect: {:erlang, :disconnect_node, []},
+          list_nodes: {:erlang, :nodes, [:connected]}
+        ]
+      ]
+    ]
+end
+
 if config_env() == :prod do
   database_url =
     System.get_env("DATABASE_URL") ||
