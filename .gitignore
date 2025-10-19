@@ -59,3 +59,6 @@ examples/*/node_modules
 
 # osx ..
 .DS_Store
+
+logs/
+node*@127.0.0.1/
