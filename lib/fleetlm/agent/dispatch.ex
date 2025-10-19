@@ -90,8 +90,6 @@ defmodule Fleetlm.Agent.Dispatch do
 
     payload_json = Jason.encode!(payload)
 
-    log_agent_request(job, payload, url, byte_size(payload_json))
-
     headers = [
       {"content-type", "application/json"},
       {"accept", "application/json"}
@@ -348,16 +346,6 @@ defmodule Fleetlm.Agent.Dispatch do
     end
   end
 
-  defp log_agent_request(job, payload, url, payload_bytes) do
-    messages = Map.fetch!(payload, :messages)
-
-    # Logger.info(
-    #   "[agent_dispatch] request agent=#{job.agent_id} session=#{job.session_id} user=#{job.user_id} " <>
-    #     "messages=#{length(messages)} target_seq=#{job.target_seq} last_sent=#{job.last_sent} " <>
-    #     "attempts=#{Map.get(job, :attempts, 0)} bytes=#{payload_bytes} url=#{url}"
-    # )
-  end
-
   defp log_agent_response(job, %{status: status, count: count}) do
     cond do
       is_integer(status) and status in 200..299 ->
@@ -376,17 +364,6 @@ defmodule Fleetlm.Agent.Dispatch do
         )
     end
   end
-
-  defp preview_from_parts(parts) when is_list(parts) do
-    parts
-    |> Enum.find(fn part -> part["type"] == "text" end)
-    |> case do
-      %{"text" => text} -> String.slice(text, 0, 200)
-      _ -> "n/a"
-    end
-  end
-
-  defp preview_from_parts(_), do: "n/a"
 
   defp ensure_enabled(%{status: "enabled"}), do: :ok
   defp ensure_enabled(_), do: {:error, :agent_disabled}

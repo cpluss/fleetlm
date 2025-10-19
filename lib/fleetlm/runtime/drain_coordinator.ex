@@ -108,6 +108,7 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
 
     Logger.info("DrainCoordinator: Triggering snapshots for local Raft groups")
 
+    # TODO: don't hardcode 256 groups
     groups_to_snapshot =
       0..255
       |> Enum.filter(fn group_id ->
@@ -117,7 +118,7 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
 
     total = length(groups_to_snapshot)
 
-    # Trigger snapshots for all 256 Raft groups in parallel
+    # Trigger snapshots for all groups in parallel
     tasks =
       for group_id <- groups_to_snapshot do
         Task.async(fn -> snapshot_group(group_id) end)

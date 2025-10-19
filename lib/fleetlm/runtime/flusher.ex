@@ -54,7 +54,8 @@ defmodule Fleetlm.Runtime.Flusher do
   def handle_info(:flush, state) do
     start_time = System.monotonic_time(:millisecond)
 
-    # Flush all 256 groups in parallel
+    # Flush all groups in parallel
+    # TODO: don't hardcode 256 groups
     tasks =
       for group_id <- 0..255 do
         Task.async(fn -> flush_group(group_id) end)
@@ -106,21 +107,18 @@ defmodule Fleetlm.Runtime.Flusher do
 
       {:timeout, _} ->
         # Group exists but query timed out
-        Logger.warning("Flush query timeout for group #{group_id}")
+        Logger.error("Flush query timeout for group #{group_id}")
         :skip
 
       {:error, :unknown_raft_server} ->
         # Group not started (common in test mode)
+        Logger.warning("Group #{group_id} not started, can not flush")
         :skip
 
       {:error, reason} ->
-        # Don't log :noproc (common in test mode when groups aren't started)
-        unless reason == :noproc do
-          duration_us = System.monotonic_time(:microsecond) - start_time
-          Fleetlm.Observability.Telemetry.emit_raft_flush(:error, group_id, 0, duration_us)
-          Logger.error("Failed to query unflushed for group #{group_id}: #{inspect(reason)}")
-        end
-
+        duration_us = System.monotonic_time(:microsecond) - start_time
+        Fleetlm.Observability.Telemetry.emit_raft_flush(:error, group_id, 0, duration_us)
+        Logger.error("Failed to query unflushed for group #{group_id}: #{inspect(reason)}")
         {:error, reason}
     end
   end
@@ -137,6 +135,7 @@ defmodule Fleetlm.Runtime.Flusher do
     # NOTE: Chunked to avoid Postgres 65535 parameter limit
     # With 10 fields per message, we can safely insert ~6500 messages
     # Use 5000 for safety margin (same as old SlotLogServer)
+    # TODO: make this configurable, not hardcoded
     {inserted_count, _} =
       all_messages
       |> Enum.chunk_every(5000)
@@ -153,6 +152,7 @@ defmodule Fleetlm.Runtime.Flusher do
       end)
 
     # Emit flush telemetry
+    # TODO: add telemetry for number of chunks and messages per chunk
     duration_us = System.monotonic_time(:microsecond) - start_time
     Fleetlm.Observability.Telemetry.emit_raft_flush(:ok, group_id, inserted_count, duration_us)
 
@@ -163,6 +163,8 @@ defmodule Fleetlm.Runtime.Flusher do
       case :ra.process_command(
              {server_id, Node.self()},
              {:advance_watermark, lane, max_seq},
+             # TODO: check if this can be real value vs. the max limit
+             # per chunk.
              5000
            ) do
         {:ok, :ok, _} ->

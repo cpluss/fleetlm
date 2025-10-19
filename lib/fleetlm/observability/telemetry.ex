@@ -7,7 +7,7 @@ defmodule Fleetlm.Observability.Telemetry do
   backends or state management.
   """
 
-  alias Fleetlm.Runtime.{SessionSupervisor, InboxSupervisor}
+  alias Fleetlm.Runtime.InboxSupervisor
 
   @session_append_event [:fleetlm, :session, :append]
   @session_fanout_event [:fleetlm, :session, :fanout]

@@ -188,9 +188,11 @@ defmodule Fleetlm.Agent.Engine do
       case Dispatch.run(job) do
         {:ok, result} ->
           send(scheduler, {:dispatch_done, key, Map.put(result, :last_sent, target_seq)})
+          :ok
 
         {:error, reason} ->
           send(scheduler, {:dispatch_failed, key, reason, Map.put(job, :attempts, attempts + 1)})
+          {:error, reason}
       end
     end
 
