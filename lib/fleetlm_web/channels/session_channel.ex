@@ -5,7 +5,7 @@ defmodule FleetlmWeb.SessionChannel do
 
   use FleetlmWeb, :channel
 
-  alias Fleetlm.Runtime.Router
+  alias Fleetlm.Runtime
   alias Fleetlm.Storage.Model.Session
 
   @impl true
@@ -18,20 +18,12 @@ defmodule FleetlmWeb.SessionChannel do
 
     case authorize(session_id, user_id) do
       {:ok, session} ->
-        case Router.join(session_id, user_id, last_seq: last_seq, limit: 100) do
-          {:ok, result} ->
-            response = %{session_id: session_id, messages: result.messages}
-            {:ok, response, assign(socket, :session, session)}
+        # Get messages via Runtime API
+        {:ok, messages} = Runtime.get_messages(session_id, last_seq, 100)
+        formatted = Enum.map(messages, &format_message/1)
 
-          {:error, :not_found} ->
-            {:error, %{reason: "not found"}}
-
-          {:error, :unauthorized} ->
-            {:error, %{reason: "unauthorized"}}
-
-          {:error, reason} ->
-            {:error, %{reason: inspect(reason)}}
-        end
+        response = %{session_id: session_id, messages: formatted}
+        {:ok, response, assign(socket, :session, session)}
 
       {:error, :not_found} ->
         {:error, %{reason: "not found"}}
@@ -112,17 +104,57 @@ defmodule FleetlmWeb.SessionChannel do
   end
 
   defp do_send_message(socket, session, user_id, kind, content, metadata) do
-    case Router.append_message(session.id, user_id, kind, content, metadata) do
-      {:ok, message} ->
-        {:reply, {:ok, %{seq: message.seq}}, socket}
+    # Determine recipient (flip between user and agent)
+    recipient_id =
+      if user_id == session.user_id, do: session.agent_id, else: session.user_id
 
-      {:error, :draining} ->
-        push(socket, "backpressure", %{
-          reason: "session_draining",
-          retry_after_ms: 1000
-        })
+    # Append via Runtime API (calls Raft internally)
+    case Runtime.append_message(session.id, user_id, recipient_id, kind, content, metadata) do
+      {:ok, seq} ->
+        # Success! Message committed to quorum
 
-        {:noreply, socket}
+        # Broadcast to session channel (for active session participants)
+        message = %{
+          "id" => Uniq.UUID.uuid7(:slug),
+          "session_id" => session.id,
+          "seq" => seq,
+          "sender_id" => user_id,
+          "kind" => kind,
+          "content" => content,
+          "metadata" => metadata,
+          "inserted_at" => NaiveDateTime.to_iso8601(NaiveDateTime.utc_now())
+        }
+
+        Phoenix.PubSub.broadcast(
+          Fleetlm.PubSub,
+          "session:#{session.id}",
+          {:session_message, message}
+        )
+
+        # Broadcast notification to user's inbox
+        notification = %{
+          "session_id" => session.id,
+          "user_id" => session.user_id,
+          "agent_id" => session.agent_id,
+          "message_sender" => user_id,
+          "timestamp" => message["inserted_at"]
+        }
+
+        Phoenix.PubSub.broadcast(
+          Fleetlm.PubSub,
+          "user:#{session.user_id}:inbox",
+          {:message_notification, notification}
+        )
+
+        # Dispatch to agent if sender is user
+        if user_id == session.user_id and session.agent_id != nil and user_id != session.agent_id do
+          Fleetlm.Agent.Engine.enqueue(session.id, session.agent_id, session.user_id, seq)
+        end
+
+        {:reply, {:ok, %{seq: seq}}, socket}
+
+      {:timeout, _leader} ->
+        {:reply, {:error, %{error: "timeout"}}, socket}
 
       {:error, reason} ->
         {:reply, {:error, %{error: inspect(reason)}}, socket}
@@ -142,6 +174,39 @@ defmodule FleetlmWeb.SessionChannel do
         {:error, :unauthorized}
     end
   end
+
+  # Format message for JSON response (handles both Raft and DB messages)
+  defp format_message(%_{} = message) do
+    # DB message (struct)
+    %{
+      "id" => message.id,
+      "session_id" => message.session_id,
+      "seq" => message.seq,
+      "sender_id" => message.sender_id,
+      "kind" => message.kind,
+      "content" => message.content,
+      "metadata" => message.metadata,
+      "inserted_at" => encode_datetime(message.inserted_at)
+    }
+  end
+
+  defp format_message(message) when is_map(message) do
+    # Raft message (plain map)
+    %{
+      "id" => message.id,
+      "session_id" => message.session_id,
+      "seq" => message.seq,
+      "sender_id" => message.sender_id,
+      "kind" => message.kind,
+      "content" => message.content,
+      "metadata" => message.metadata,
+      "inserted_at" => encode_datetime(message.inserted_at)
+    }
+  end
+
+  defp encode_datetime(nil), do: nil
+  defp encode_datetime(%NaiveDateTime{} = naive), do: NaiveDateTime.to_iso8601(naive)
+  defp encode_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 
   defp parse_last_seq(nil), do: 0
 

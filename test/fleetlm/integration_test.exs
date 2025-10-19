@@ -1,39 +1,42 @@
 defmodule Fleetlm.Integration.IntegrationTest do
   @moduledoc """
-  End-to-end integration tests for the session runtime architecture.
+  End-to-end integration tests for the Raft-based runtime architecture.
 
   Tests the complete flow:
-  - Router -> SessionServer -> Storage.API -> disk log
+  - Runtime API -> Raft FSM -> Raft quorum commit
   - PubSub broadcasting
   - InboxServer event-driven updates
   - SessionChannel WebSocket integration
-  - DrainCoordinator graceful shutdown
+  - DrainCoordinator graceful shutdown (Raft snapshots)
   """
   use Fleetlm.TestCase
 
-  alias Fleetlm.Runtime.{Router, SessionSupervisor, InboxServer, DrainCoordinator}
-  alias Fleetlm.Storage, as: StorageAPI
-  alias Fleetlm.Storage.Supervisor, as: StorageSupervisor
+  alias Fleetlm.Runtime
+  alias Fleetlm.Runtime.{InboxServer, DrainCoordinator}
+  alias Fleetlm.Storage.Model.Message
 
   require ExUnit.CaptureLog
 
   describe "complete message flow" do
-    test "Router -> SessionServer -> Storage -> PubSub" do
+    test "Runtime API -> Raft -> PubSub" do
       # Create session
       session = create_test_session("alice", "bob")
 
       # Subscribe to PubSub for verification
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "session:#{session.id}")
 
-      # Append message via Router
-      {:ok, _message} =
-        Router.append_message(
+      # Append message via Runtime API
+      {:ok, seq} =
+        Runtime.append_message(
           session.id,
           "alice",
+          "bob",
           "text",
           %{"text" => "hello bob"},
           %{}
         )
+
+      assert seq == 1
 
       # Should receive PubSub broadcast
       assert_receive {:session_message, payload}, 1000
@@ -41,16 +44,19 @@ defmodule Fleetlm.Integration.IntegrationTest do
       assert payload["sender_id"] == "alice"
       assert payload["content"]["text"] == "hello bob"
 
-      # Verify message in storage
-      slot = :erlang.phash2(session.id, 64)
-      wait_for_flush(slot)
-
-      {:ok, messages} = StorageAPI.get_messages(session.id, 0, 10)
+      # Verify message in Raft state (hot path)
+      {:ok, messages} = Runtime.get_messages(session.id, 0, 10)
       assert length(messages) == 1
       assert hd(messages).content["text"] == "hello bob"
 
-      # Verify session server is active
-      assert SessionSupervisor.active_count() >= 1
+      # Trigger background flush and verify in Postgres
+      send(Fleetlm.Runtime.Flusher, :flush)
+      Process.sleep(500)
+
+      db_messages =
+        Repo.all(from(m in Message, where: m.session_id == ^session.id))
+
+      assert length(db_messages) == 1
     end
 
     test "multi-party conversation with sequence ordering" do
@@ -59,35 +65,34 @@ defmodule Fleetlm.Integration.IntegrationTest do
       Phoenix.PubSub.subscribe(Fleetlm.PubSub, "session:#{session.id}")
 
       # Alice sends 3 messages
-      {:ok, msg1} =
-        Router.append_message(session.id, "alice", "text", %{"text" => "msg1"}, %{})
+      {:ok, seq1} =
+        Runtime.append_message(session.id, "alice", "bob", "text", %{"text" => "msg1"}, %{})
 
       assert_receive {:session_message, _}, 1000
 
-      {:ok, msg2} =
-        Router.append_message(session.id, "alice", "text", %{"text" => "msg2"}, %{})
+      {:ok, seq2} =
+        Runtime.append_message(session.id, "alice", "bob", "text", %{"text" => "msg2"}, %{})
 
       assert_receive {:session_message, _}, 1000
 
       # Bob replies
-      {:ok, msg3} =
-        Router.append_message(session.id, "bob", "text", %{"text" => "msg3"}, %{})
+      {:ok, seq3} =
+        Runtime.append_message(session.id, "bob", "alice", "text", %{"text" => "msg3"}, %{})
 
       assert_receive {:session_message, _}, 1000
 
       # Verify sequence numbers are monotonically increasing
-      assert msg1.seq == 1
-      assert msg2.seq == 2
-      assert msg3.seq == 3
+      assert seq1 == 1
+      assert seq2 == 2
+      assert seq3 == 3
 
-      # Verify replay via Router
-      {:ok, replay} = Router.join(session.id, "alice", last_seq: 0, limit: 10)
-      messages = replay.messages
+      # Verify replay via Runtime API
+      {:ok, messages} = Runtime.get_messages(session.id, 0, 10)
 
       assert length(messages) == 3
-      assert Enum.at(messages, 0)["seq"] == 1
-      assert Enum.at(messages, 1)["seq"] == 2
-      assert Enum.at(messages, 2)["seq"] == 3
+      assert Enum.at(messages, 0).seq == 1
+      assert Enum.at(messages, 1).seq == 2
+      assert Enum.at(messages, 2).seq == 3
     end
 
     test "inbox server receives real-time updates" do
@@ -107,9 +112,10 @@ defmodule Fleetlm.Integration.IntegrationTest do
 
       # Send message to session1
       {:ok, _} =
-        Router.append_message(
+        Runtime.append_message(
           session1.id,
           "bob",
+          "alice",
           "text",
           %{"text" => "hello alice"},
           %{}
@@ -123,9 +129,10 @@ defmodule Fleetlm.Integration.IntegrationTest do
 
       # Send message to session2
       {:ok, _} =
-        Router.append_message(
+        Runtime.append_message(
           session2.id,
           "charlie",
+          "alice",
           "text",
           %{"text" => "hi alice"},
           %{}
@@ -151,9 +158,10 @@ defmodule Fleetlm.Integration.IntegrationTest do
       tasks =
         for session <- sessions do
           Task.async(fn ->
-            Router.append_message(
+            Runtime.append_message(
               session.id,
               session.user_id,
+              session.agent_id,
               "text",
               %{"text" => "parallel message"},
               %{}
@@ -166,51 +174,39 @@ defmodule Fleetlm.Integration.IntegrationTest do
       # All should succeed
       assert Enum.all?(results, &match?({:ok, _}, &1))
 
-      # Verify all sessions have active servers
-      assert SessionSupervisor.active_count() >= 3
-
-      flush_active_slots()
-
-      # Verify messages are stored - either in disk log or DB
-      # (don't force immediate flush for parallel test)
+      # Verify messages are in Raft state
       for session <- sessions do
-        eventually(fn ->
-          {:ok, replay} = Router.join(session.id, session.user_id, last_seq: 0, limit: 10)
-          assert length(replay.messages) >= 1
-        end)
+        {:ok, messages} = Runtime.get_messages(session.id, 0, 10)
+        assert length(messages) >= 1
       end
     end
   end
 
   describe "graceful shutdown" do
-    test "DrainCoordinator flushes all active sessions" do
+    test "DrainCoordinator snapshots all Raft groups" do
       # Create sessions and send messages
       session1 = create_test_session("alice", "bob")
       session2 = create_test_session("charlie", "dave")
 
       {:ok, _} =
-        Router.append_message(session1.id, "alice", "text", %{"text" => "msg1"}, %{})
+        Runtime.append_message(session1.id, "alice", "bob", "text", %{"text" => "msg1"}, %{})
 
       {:ok, _} =
-        Router.append_message(session2.id, "charlie", "text", %{"text" => "msg2"}, %{})
+        Runtime.append_message(session2.id, "charlie", "dave", "text", %{"text" => "msg2"}, %{})
 
-      # Verify sessions are active
-      assert SessionSupervisor.active_count() >= 2
-
-      # Use shared sandbox mode for drain test (may already be shared via TestCase)
+      # Use shared sandbox mode for drain test
       case Ecto.Adapters.SQL.Sandbox.mode(Fleetlm.Repo, {:shared, self()}) do
         :ok -> :ok
         :already_shared -> :ok
       end
 
-      # Trigger drain
+      # Trigger drain (snapshots all 256 Raft groups)
       result = DrainCoordinator.trigger_drain()
       assert result == :ok or match?({:error, {:partial_drain, _, _}}, result)
 
-      # Verify messages are flushed to DB
-      flush_active_slots()
-      {:ok, messages1} = StorageAPI.get_messages(session1.id, 0, 10)
-      {:ok, messages2} = StorageAPI.get_messages(session2.id, 0, 10)
+      # Verify messages can still be read (from Raft state or Postgres)
+      {:ok, messages1} = Runtime.get_messages(session1.id, 0, 10)
+      {:ok, messages2} = Runtime.get_messages(session2.id, 0, 10)
 
       assert length(messages1) >= 1
       assert length(messages2) >= 1
@@ -224,81 +220,80 @@ defmodule Fleetlm.Integration.IntegrationTest do
       # Send 5 messages
       for i <- 1..5 do
         {:ok, _} =
-          Router.append_message(
+          Runtime.append_message(
             session.id,
             "alice",
+            "bob",
             "text",
             %{"text" => "msg#{i}"},
             %{}
           )
       end
 
-      # Join session (as alice - the user)
-      {:ok, result} = Router.join(session.id, "alice", last_seq: 0, limit: 10)
+      # Get messages via Runtime API
+      {:ok, messages} = Runtime.get_messages(session.id, 0, 10)
 
       # Should get all 5 messages
-      assert length(result.messages) == 5
-      assert Enum.at(result.messages, 0)["content"]["text"] == "msg1"
-      assert Enum.at(result.messages, 4)["content"]["text"] == "msg5"
+      assert length(messages) == 5
+      assert Enum.at(messages, 0).content["text"] == "msg1"
+      assert Enum.at(messages, 4).content["text"] == "msg5"
     end
 
-    test "join with last_seq filters older messages" do
+    test "get_messages with after_seq filters older messages" do
       session = create_test_session("alice", "bob")
 
       # Send 5 messages
       for i <- 1..5 do
         {:ok, _} =
-          Router.append_message(
+          Runtime.append_message(
             session.id,
             "alice",
+            "bob",
             "text",
             %{"text" => "msg#{i}"},
             %{}
           )
       end
 
-      # Join with last_seq = 3 (as alice - the user)
-      {:ok, result} = Router.join(session.id, "alice", last_seq: 3, limit: 10)
+      # Get messages after seq 3
+      {:ok, messages} = Runtime.get_messages(session.id, 3, 10)
 
       # Should only get messages 4 and 5
-      assert length(result.messages) == 2
-      assert Enum.at(result.messages, 0)["content"]["text"] == "msg4"
-      assert Enum.at(result.messages, 1)["content"]["text"] == "msg5"
+      assert length(messages) == 2
+      assert Enum.at(messages, 0).content["text"] == "msg4"
+      assert Enum.at(messages, 1).content["text"] == "msg5"
     end
   end
 
   describe "error handling" do
-    test "append to non-existent session fails gracefully" do
+    test "append to non-existent session creates conversation metadata on bootstrap" do
+      # In Raft architecture, sessions MUST exist in DB before first append
+      # Otherwise bootstrap will create a warning conversation
       fake_session_id = Uniq.UUID.uuid7(:slug)
 
-      ExUnit.CaptureLog.capture_log(fn ->
-        assert {:error, _} =
-                 Router.append_message(
-                   fake_session_id,
-                   "alice",
-                   "text",
-                   %{"text" => "test"},
-                   %{}
-                 )
-      end)
+      # This will log a warning but proceed with "unknown" user_id
+      {:ok, seq} =
+        Runtime.append_message(
+          fake_session_id,
+          "alice",
+          "bob",
+          "text",
+          %{"text" => "test"},
+          %{}
+        )
+
+      assert seq == 1
+
+      # Message should be in Raft state
+      {:ok, messages} = Runtime.get_messages(fake_session_id, 0, 10)
+      assert length(messages) == 1
     end
 
-    test "join non-existent session fails gracefully" do
+    test "get_messages for non-existent session returns empty list" do
       fake_session_id = Uniq.UUID.uuid7(:slug)
 
-      ExUnit.CaptureLog.capture_log(fn ->
-        assert {:error, _} = Router.join(fake_session_id, "alice", last_seq: 0, limit: 10)
-      end)
+      {:ok, messages} = Runtime.get_messages(fake_session_id, 0, 10)
+      assert messages == []
     end
-  end
-
-  defp flush_active_slots do
-    StorageSupervisor.active_slots()
-    |> Enum.each(fn slot ->
-      case StorageSupervisor.flush_slot(slot) do
-        {:error, reason} -> flunk("Failed to flush slot #{slot}: #{inspect(reason)}")
-        _ -> :ok
-      end
-    end)
   end
 end

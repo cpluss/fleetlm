@@ -4,8 +4,7 @@ defmodule Fleetlm.TestCase do
 
   Provides:
   - Ecto sandbox with {:shared, self()} mode for spawned processes
-  - Isolated slot log directory per test
-  - Runtime process cleanup (SessionServer, InboxServer, SlotLogServer)
+  - Runtime process cleanup (InboxServer, Raft groups)
   - Graceful teardown
 
   ## Usage
@@ -22,12 +21,10 @@ defmodule Fleetlm.TestCase do
 
       use Fleetlm.TestCase, mode: :channel
 
-  ## Slot Log Isolation
+  ## Raft Architecture
 
-  Each test gets its own temporary slot log directory. SlotLogServers are started
-  lazily via `Fleetlm.Storage.Supervisor.ensure_started/1`, sharing the same
-  supervision pattern we use for sessions and inboxes. Tests flush and stop
-  active slot servers during teardown to maintain isolation.
+  Tests now use Raft for message storage. No per-test slot log isolation needed
+  since Raft state lives in RAM and is automatically cleaned between tests.
   """
 
   use ExUnit.CaseTemplate
@@ -40,7 +37,6 @@ defmodule Fleetlm.TestCase do
       alias Fleetlm.Repo
       alias Fleetlm.Storage, as: StorageAPI
       alias Fleetlm.Storage, as: API
-      alias Fleetlm.Storage.{SlotLogServer, Entry, CommitLog}
       alias Fleetlm.Storage.Model.{Session, Message, Cursor}
 
       import Fleetlm.TestCase
@@ -53,22 +49,18 @@ defmodule Fleetlm.TestCase do
   end
 
   setup tags do
-    # Create isolated slot log directory
-    temp_dir = create_temp_slot_dir(tags)
-
     # Setup database sandbox
     setup_database_sandbox(tags)
 
     # Configure test environment
-    previous_config = configure_test_env(temp_dir)
+    previous_config = configure_test_env()
 
     on_exit(fn ->
       cleanup_runtime_processes()
-      cleanup_slot_logs(temp_dir)
       restore_config(previous_config)
     end)
 
-    context = %{slot_log_dir: temp_dir}
+    context = %{}
 
     # Add mode-specific context (e.g., conn for :conn mode)
     # Mode is stored in @fleetlm_test_mode by the using macro (persisted attribute)
@@ -91,47 +83,6 @@ defmodule Fleetlm.TestCase do
     session
   end
 
-  @doc """
-  Build an Entry struct for testing (does not persist).
-  """
-  def build_entry(slot, session_id, seq, opts \\ []) do
-    message_id = Keyword.get(opts, :message_id, Uniq.UUID.uuid7(:slug))
-    sender_id = Keyword.get(opts, :sender_id, "sender-#{seq}")
-    recipient_id = Keyword.get(opts, :recipient_id, "recipient-#{seq}")
-    kind = Keyword.get(opts, :kind, "text")
-    content = Keyword.get(opts, :content, %{"text" => "message #{seq}"})
-    metadata = Keyword.get(opts, :metadata, %{})
-    idempotency_key = Keyword.get(opts, :idempotency_key, "idem-#{seq}")
-
-    message = %Fleetlm.Storage.Model.Message{
-      id: message_id,
-      session_id: session_id,
-      sender_id: sender_id,
-      recipient_id: recipient_id,
-      seq: seq,
-      kind: kind,
-      content: content,
-      metadata: metadata,
-      shard_key: slot,
-      inserted_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
-    }
-
-    Fleetlm.Storage.Entry.from_message(slot, seq, idempotency_key, message)
-  end
-
-  @doc """
-  Wait for a slot to flush with timeout.
-  Returns :ok on success, raises on timeout.
-  """
-  def wait_for_flush(slot, timeout \\ 2_000) do
-    Fleetlm.Storage.SlotLogServer.notify_next_flush(slot)
-
-    receive do
-      :flushed -> :ok
-    after
-      timeout -> raise "Timeout waiting for slot #{slot} to flush"
-    end
-  end
 
   @doc """
   Retry the provided assertion until it succeeds or the timeout elapses.
@@ -143,15 +94,6 @@ defmodule Fleetlm.TestCase do
     deadline = System.monotonic_time(:millisecond) + timeout
 
     try_eventually(fun, interval, deadline)
-  end
-
-  @doc """
-  Ensure a SlotLogServer is running for the given slot.
-  Delegates to the canonical storage supervisor so tests use the same
-  supervision tree as the runtime.
-  """
-  def ensure_slot_server(slot) do
-    Fleetlm.Storage.Supervisor.ensure_started(slot)
   end
 
   @doc """
@@ -194,32 +136,6 @@ defmodule Fleetlm.TestCase do
     end
   end
 
-  defp create_temp_slot_dir(tags) do
-    test_name =
-      [tags[:case], tags[:test], System.unique_integer([:positive])]
-      |> Enum.map(&format_tag/1)
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.join("-")
-
-    temp_dir = Path.join(System.tmp_dir!(), "fleetlm-test-#{test_name}")
-
-    File.rm_rf!(temp_dir)
-    File.mkdir_p!(temp_dir)
-
-    temp_dir
-  end
-
-  defp format_tag(nil), do: ""
-  defp format_tag(atom) when is_atom(atom), do: Atom.to_string(atom) |> sanitize()
-  defp format_tag(str) when is_binary(str), do: sanitize(str)
-  defp format_tag(other), do: to_string(other) |> sanitize()
-
-  defp sanitize(str) do
-    str
-    |> String.replace(~r/[^A-Za-z0-9]+/, "_")
-    |> String.trim("_")
-    |> String.slice(0..100)
-  end
 
   defp setup_database_sandbox(tags) do
     ownership_timeout = if tags[:async], do: 120_000, else: 300_000
@@ -239,17 +155,13 @@ defmodule Fleetlm.TestCase do
     end)
   end
 
-  defp configure_test_env(temp_dir) do
+  defp configure_test_env do
     previous = %{
-      slot_log_dir: Application.get_env(:fleetlm, :slot_log_dir),
-      skip_terminate_db_ops: Application.get_env(:fleetlm, :skip_terminate_db_ops),
       disable_agent_webhooks: Application.get_env(:fleetlm, :disable_agent_webhooks),
       agent_dispatch_tick_ms: Application.get_env(:fleetlm, :agent_dispatch_tick_ms),
       agent_debounce_window_ms: Application.get_env(:fleetlm, :agent_debounce_window_ms)
     }
 
-    Application.put_env(:fleetlm, :slot_log_dir, temp_dir)
-    Application.put_env(:fleetlm, :skip_terminate_db_ops, true)
     Application.put_env(:fleetlm, :disable_agent_webhooks, true)
     Application.put_env(:fleetlm, :agent_dispatch_tick_ms, 10)
     Application.put_env(:fleetlm, :agent_debounce_window_ms, 0)
@@ -285,29 +197,6 @@ defmodule Fleetlm.TestCase do
         Process.sleep(interval)
         try_eventually(fun, interval, deadline)
       end
-  end
-
-  defp cleanup_slot_logs(temp_dir) do
-    Fleetlm.Storage.Supervisor.active_slots()
-    |> Enum.each(fn slot ->
-      case Fleetlm.Storage.Supervisor.flush_slot(slot) do
-        {:error, reason} ->
-          Logger.warning("Failed to flush slot #{slot} during test cleanup: #{inspect(reason)}")
-
-        _ ->
-          :ok
-      end
-
-      case Fleetlm.Storage.Supervisor.stop_slot(slot) do
-        {:error, reason} ->
-          Logger.warning("Failed to stop slot #{slot} during test cleanup: #{inspect(reason)}")
-
-        _ ->
-          :ok
-      end
-    end)
-
-    File.rm_rf(temp_dir)
   end
 
   defp restore_config(previous) do

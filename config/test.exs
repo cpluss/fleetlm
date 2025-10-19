@@ -31,21 +31,17 @@ config :phoenix, :plug_init_mode, :runtime
 # Use local PubSub for tests to avoid Redis dependency
 config :fleetlm, :pubsub_adapter, :local
 
-# Increase slot flush timeout for tests (slower due to sandbox mode)
-config :fleetlm, :slot_flush_timeout, 15_000
-
 # Disable agent webhooks by default in tests
 config :fleetlm, :disable_agent_webhooks, true
 
-# Skip DB operations in terminate callbacks (avoids ownership errors when test exits)
-config :fleetlm, :skip_terminate_db_ops, true
-
-# Faster flush interval for tests (default is 300ms, but we can make it even faster)
-config :fleetlm, :storage_flush_interval_ms, 100
-
-# Use test mode for slot logs - SlotLogServers are started on-demand per test
-# instead of being globally supervised at application startup
-config :fleetlm, :slot_log_mode, :test
-
 # Eliminate drain grace period in tests to reduce artificial sleeps
-config :fleetlm, Fleetlm.Runtime.DrainCoordinator, drain_grace_period: 0
+config :fleetlm, Fleetlm.Runtime.DrainCoordinator,
+  drain_timeout: :timer.seconds(5),
+  drain_grace_period: 0
+
+# Raft test configuration
+# Use lazy initialization (start groups on-demand, not all 256 upfront)
+config :fleetlm,
+  raft_mode: :test,
+  raft_data_dir: "tmp/test_raft",
+  raft_flush_interval_ms: 100

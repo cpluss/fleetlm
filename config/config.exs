@@ -11,13 +11,14 @@ config :fleetlm,
   ecto_repos: [Fleetlm.Repo],
   generators: [timestamp_type: :utc_datetime]
 
-config :fleetlm, Fleetlm.Runtime.Sharding.HashRing,
-  slot_count: 512,
-  virtual_nodes_per_node: 128
+# Raft configuration
+config :fleetlm,
+  raft_data_dir: "priv/raft",
+  raft_flush_interval_ms: 5000
 
 config :fleetlm, Fleetlm.Runtime.DrainCoordinator,
-  drain_timeout: :timer.seconds(30),
-  drain_grace_period: :timer.seconds(2)
+  drain_timeout: :timer.seconds(5),
+  drain_grace_period: :timer.seconds(1)
 
 # Configures the endpoint
 config :fleetlm, FleetlmWeb.Endpoint,

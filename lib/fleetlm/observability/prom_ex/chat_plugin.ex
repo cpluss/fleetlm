@@ -178,6 +178,118 @@ defmodule Fleetlm.Observability.PromEx.ChatPlugin do
           tags: [:topic_group],
           tag_values: &pubsub_tag/1
         )
+      ]),
+      Event.build(:fleetlm_raft_append_metrics, [
+        distribution(
+          [:fleetlm, :raft, :append, :duration],
+          event_name: [:fleetlm, :raft, :append],
+          measurement: :duration,
+          description: "Raft append latency (ms) - CRITICAL: validates <150ms p99 target.",
+          unit: {:microsecond, :millisecond},
+          reporter_options: [buckets: [1, 2, 5, 10, 20, 50, 100, 150, 200, 500, 1000]],
+          tags: [:status, :group_id, :lane],
+          tag_values: &raft_append_tags/1
+        ),
+        counter(
+          [:fleetlm, :raft, :append, :total],
+          event_name: [:fleetlm, :raft, :append],
+          measurement: :count,
+          description: "Raft append operations.",
+          tags: [:status, :group_id, :lane],
+          tag_values: &raft_append_tags/1
+        )
+      ]),
+      Event.build(:fleetlm_raft_read_metrics, [
+        distribution(
+          [:fleetlm, :raft, :read, :duration],
+          event_name: [:fleetlm, :raft, :read],
+          measurement: :duration,
+          description: "Raft read latency (ms) - tail_only = hot, tail_and_db = cold.",
+          unit: {:microsecond, :millisecond},
+          reporter_options: [buckets: [1, 2, 5, 10, 20, 50, 100, 200]],
+          tags: [:path, :group_id],
+          tag_values: &raft_read_tags/1
+        ),
+        counter(
+          [:fleetlm, :raft, :read, :total],
+          event_name: [:fleetlm, :raft, :read],
+          measurement: :count,
+          description: "Raft read operations.",
+          tags: [:path, :group_id],
+          tag_values: &raft_read_tags/1
+        ),
+        distribution(
+          [:fleetlm, :raft, :read, :message_count],
+          event_name: [:fleetlm, :raft, :read],
+          measurement: :message_count,
+          description: "Messages returned per read operation.",
+          reporter_options: [buckets: [1, 5, 10, 25, 50, 100, 200]],
+          tags: [:path, :group_id],
+          tag_values: &raft_read_tags/1
+        )
+      ]),
+      Event.build(:fleetlm_raft_state_metrics, [
+        last_value(
+          [:fleetlm, :raft, :state, :in_state_count],
+          event_name: [:fleetlm, :raft, :state],
+          measurement: :in_state_count,
+          description: "Messages in Raft ETS ring (not yet flushed to Postgres).",
+          tags: [:group_id, :lane],
+          tag_values: &raft_state_tags/1
+        ),
+        last_value(
+          [:fleetlm, :raft, :state, :pending_flush_count],
+          event_name: [:fleetlm, :raft, :state],
+          measurement: :pending_flush_count,
+          description: "Messages pending flush (>watermark) - CRITICAL: validates flush keeps up.",
+          tags: [:group_id, :lane],
+          tag_values: &raft_state_tags/1
+        ),
+        last_value(
+          [:fleetlm, :raft, :state, :conversation_count],
+          event_name: [:fleetlm, :raft, :state],
+          measurement: :conversation_count,
+          description: "Conversations cached in Raft state (hot metadata).",
+          tags: [:group_id, :lane],
+          tag_values: &raft_state_tags/1
+        ),
+        last_value(
+          [:fleetlm, :raft, :state, :ring_fill_pct],
+          event_name: [:fleetlm, :raft, :state],
+          measurement: :ring_fill_pct,
+          description: "Ring fill percentage (for backpressure detection).",
+          tags: [:group_id, :lane],
+          tag_values: &raft_state_tags/1
+        )
+      ]),
+      Event.build(:fleetlm_raft_flush_metrics, [
+        distribution(
+          [:fleetlm, :raft, :flush, :duration],
+          event_name: [:fleetlm, :raft, :flush],
+          measurement: :duration,
+          description: "Raft flush to Postgres latency (ms).",
+          unit: {:microsecond, :millisecond},
+          reporter_options: [buckets: [50, 100, 200, 500, 1000, 2000, 5000, 10000]],
+          tags: [:status, :group_id],
+          tag_values: &raft_flush_tags/1
+        ),
+        counter(
+          [:fleetlm, :raft, :flush, :total],
+          event_name: [:fleetlm, :raft, :flush],
+          measurement: :count,
+          description: "Raft flush operations.",
+          tags: [:status, :group_id],
+          tag_values: &raft_flush_tags/1
+        ),
+        distribution(
+          [:fleetlm, :raft, :flush, :messages_flushed],
+          event_name: [:fleetlm, :raft, :flush],
+          measurement: :messages_flushed,
+          description: "Messages flushed per flush operation - CRITICAL: high = lag building up.",
+          reporter_options: [buckets: [0, 10, 50, 100, 500, 1000, 5000, 10000]],
+          tags: [:status, :group_id],
+          tag_values: &raft_flush_tags/1
+        )
       ])
     ]
   end
@@ -219,6 +331,35 @@ defmodule Fleetlm.Observability.PromEx.ChatPlugin do
   defp scope_tag(metadata) do
     scope = metadata |> Map.get(:scope, :global) |> stringify_label()
     %{scope: scope}
+  end
+
+  defp raft_append_tags(metadata) do
+    %{
+      status: metadata |> Map.get(:status, :unknown) |> stringify_label(),
+      group_id: metadata |> Map.get(:group_id, -1) |> to_string(),
+      lane: metadata |> Map.get(:lane, -1) |> to_string()
+    }
+  end
+
+  defp raft_read_tags(metadata) do
+    %{
+      path: metadata |> Map.get(:path, :unknown) |> stringify_label(),
+      group_id: metadata |> Map.get(:group_id, -1) |> to_string()
+    }
+  end
+
+  defp raft_state_tags(metadata) do
+    %{
+      group_id: metadata |> Map.get(:group_id, -1) |> to_string(),
+      lane: metadata |> Map.get(:lane, -1) |> to_string()
+    }
+  end
+
+  defp raft_flush_tags(metadata) do
+    %{
+      status: metadata |> Map.get(:status, :unknown) |> stringify_label(),
+      group_id: metadata |> Map.get(:group_id, -1) |> to_string()
+    }
   end
 
   defp stringify_label(value) when is_binary(value), do: value

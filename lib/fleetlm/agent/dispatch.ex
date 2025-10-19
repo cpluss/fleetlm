@@ -11,7 +11,7 @@ defmodule Fleetlm.Agent.Dispatch do
   alias Fleetlm.Agent
   alias Fleetlm.Agent.StreamAssembler
   alias Fleetlm.Observability.Telemetry
-  alias Fleetlm.Runtime.Router
+  alias Fleetlm.Runtime
   alias Fleetlm.Storage
   alias Phoenix.PubSub
 
@@ -108,6 +108,7 @@ defmodule Fleetlm.Agent.Dispatch do
       status: nil,
       session_id: job.session_id,
       agent_id: job.agent_id,
+      user_id: job.user_id,
       assembler: StreamAssembler.new(role: "assistant")
     }
 
@@ -320,14 +321,23 @@ defmodule Fleetlm.Agent.Dispatch do
         finish_chunk -> Map.put(metadata, "_finish_chunk", finish_chunk)
       end
 
-    case Router.append_message(acc.session_id, acc.agent_id, "assistant", content, metadata) do
-      {:ok, appended_message} ->
-        # Logger.info(
-        #  "[agent_dispatch] appended agent=#{acc.agent_id} session=#{acc.session_id} kind=assistant " <>
-        #    "seq=#{Map.get(appended_message, :seq)} preview=#{preview_from_parts(parts)} termination=#{metadata["termination"]}"
-        # )
-
+    case Runtime.append_message(
+           acc.session_id,
+           acc.agent_id,
+           acc.user_id,
+           "assistant",
+           content,
+           metadata
+         ) do
+      {:ok, _seq} ->
         {:ok, %{acc | count: acc.count + 1}}
+
+      {:timeout, _leader} ->
+        Logger.error(
+          "[agent_dispatch] append_timeout agent=#{acc.agent_id} session=#{acc.session_id} kind=assistant"
+        )
+
+        {:error, :timeout, acc}
 
       {:error, reason} ->
         Logger.error(
@@ -384,7 +394,7 @@ defmodule Fleetlm.Agent.Dispatch do
   defp fetch_history(session_id, agent, _job) do
     case agent.message_history_mode do
       "tail" ->
-        Storage.get_messages(session_id, 0, agent.message_history_limit)
+        Runtime.get_messages(session_id, 0, agent.message_history_limit)
 
       "entire" ->
         # this is an expensive operation and should be avoided if possible, however
@@ -394,7 +404,7 @@ defmodule Fleetlm.Agent.Dispatch do
         Storage.get_all_messages(session_id)
 
       "last" ->
-        {:ok, messages} = Storage.get_messages(session_id, 0, 1)
+        {:ok, messages} = Runtime.get_messages(session_id, 0, 1)
         {:ok, Enum.take(messages, -1)}
     end
   end

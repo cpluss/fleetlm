@@ -1,15 +1,28 @@
 defmodule Fleetlm.Runtime.Supervisor do
   @moduledoc """
-  Root supervisor for the session runtime tree.
+  Root supervisor for the Raft-based runtime tree.
 
-  Starts storage layer, registries, and dynamic supervisors that manage
-  SessionServer/InboxServer processes. Also includes DrainCoordinator
-  for graceful SIGTERM handling during deployments.
+  Starts:
+  - RaftManager (256 Raft groups for distributed message storage)
+  - Flusher (write-behind to Postgres every 5s)
+  - InboxSupervisor (user inbox processes - unchanged)
+  - DrainCoordinator (graceful SIGTERM handling)
+
+  ## What Changed from WAL Architecture
+
+  DELETED:
+  - Storage.Supervisor (SlotLogServers) → Replaced by Ra WAL (RAM)
+  - SessionRegistry / SessionSupervisor → No more per-session processes
+  - SessionTracker (CRDT) → Raft membership handles routing
+  - RebalanceManager → Leadership transfer handles rebalancing
+
+  NEW:
+  - RaftManager → Manages 256 Raft groups
+  - Flusher → Background write-behind to Postgres
   """
 
   use Supervisor
 
-  alias Fleetlm.Runtime.SessionSupervisor
   alias Fleetlm.Runtime.InboxSupervisor
 
   def start_link(arg) do
@@ -19,22 +32,15 @@ defmodule Fleetlm.Runtime.Supervisor do
   @impl true
   def init(_arg) do
     children = [
-      # Storage layer (SlotLogServers with disk logs)
-      Fleetlm.Storage.Supervisor,
+      # Raft group manager (starts 256 Raft groups)
+      Fleetlm.Runtime.RaftManager,
 
-      # Registries for process lookup
-      {Registry, keys: :unique, name: Fleetlm.Runtime.SessionRegistry},
+      # Background flusher (write-behind to Postgres)
+      Fleetlm.Runtime.Flusher,
+
+      # Inbox registry and supervisor (unchanged)
       {Registry, keys: :unique, name: Fleetlm.Runtime.InboxRegistry},
-
-      # Distributed session tracker (Phoenix.Tracker with CRDTs)
-      {Fleetlm.Runtime.SessionTracker, [pubsub_server: Fleetlm.PubSub]},
-
-      # Dynamic supervisors for session and inbox servers
-      {SessionSupervisor, []},
       {InboxSupervisor, []},
-
-      # Rebalance manager (listens for topology changes from tracker)
-      Fleetlm.Runtime.RebalanceManager,
 
       # Graceful drain coordinator for SIGTERM handling
       Fleetlm.Runtime.DrainCoordinator

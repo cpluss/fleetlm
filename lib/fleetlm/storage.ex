@@ -1,22 +1,22 @@
 defmodule Fleetlm.Storage do
   @moduledoc """
-  Storage layer for sessions and message logs.
+  Storage layer for sessions and cursors.
 
   Provides high-level operations for:
-  - Session management (DB operations)
-  - Message append (hot-path: disk_log WAL)
-  - Message retrieval (disk_log + DB fallback)
+  - Session management (DB CRUD operations)
   - Read cursor tracking
+
+  ## Note on Architecture Change
+
+  Message append/retrieval is now handled by `Fleetlm.Runtime` (Raft-based).
+  This module only manages session metadata and read cursors.
   """
 
   import Ecto.Query
   require Logger
 
   alias Fleetlm.Storage.Model.{Session, Message, Cursor}
-  alias Fleetlm.Storage.{SlotLogServer, Entry}
   alias Fleetlm.Repo
-
-  @num_storage_slots Application.compile_env(:fleetlm, :num_storage_slots, 64)
 
   ## Session Operations (Database)
 
@@ -26,7 +26,8 @@ defmodule Fleetlm.Storage do
   @spec create_session(String.t(), String.t(), term()) :: {:ok, Session.t()} | {:error, any()}
   def create_session(user_id, agent_id, metadata) do
     session_id = Uniq.UUID.uuid7(:slug)
-    shard_key = storage_slot_for_session(session_id)
+    # Use Raft group as shard_key
+    shard_key = Fleetlm.Runtime.RaftManager.group_for_session(session_id)
 
     %Session{id: session_id}
     |> Session.changeset(%{
@@ -85,127 +86,6 @@ defmodule Fleetlm.Storage do
     end
   end
 
-  @doc """
-  Append a message to the storage layer.
-
-  Fast operation - writes to disk_log WAL, returns immediately.
-  Message is persisted to DB asynchronously by PersistenceWorker.
-
-  Caller must provide seq number (managed upstream by session).
-  """
-  @spec append_message(
-          String.t(),
-          non_neg_integer(),
-          String.t(),
-          String.t(),
-          String.t(),
-          map(),
-          map()
-        ) ::
-          :ok | {:error, term()}
-  def append_message(session_id, seq, sender_id, recipient_id, kind, content, metadata \\ %{})
-      when is_binary(session_id) and is_integer(seq) and is_binary(sender_id) and
-             is_binary(recipient_id) and is_binary(kind) and is_map(content) and is_map(metadata) do
-    # NOTE: this method is on the extreme hot-path and should be optimized as much as possible.
-    # It's called for every message across all sessions in a slot, so it's critical to keep it fast.
-    slot = storage_slot_for_session(session_id)
-    :ok = ensure_slot_server_started(slot)
-
-    message = %Message{
-      id: Uniq.UUID.uuid7(:slug),
-      session_id: session_id,
-      sender_id: sender_id,
-      recipient_id: recipient_id,
-      seq: seq,
-      kind: kind,
-      content: content,
-      metadata: metadata,
-      shard_key: slot,
-      inserted_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
-    }
-
-    entry = Entry.from_message(slot, seq, Uniq.UUID.uuid7(:slug), message)
-    SlotLogServer.append(slot, entry)
-  end
-
-  @doc """
-  Get messages for a session, starting after a sequence number.
-
-  Checks disk_log first (recent messages), falls back to DB for older messages.
-  """
-  @spec get_messages(String.t(), non_neg_integer(), pos_integer()) ::
-          {:ok, [Message.t()]}
-  def get_messages(session_id, after_seq, limit) do
-    start = System.monotonic_time()
-    slot = storage_slot_for_session(session_id)
-    :ok = ensure_slot_server_started(slot)
-
-    # Get the tail of the messages from the slot log, assuming
-    # they may be there.
-    tail =
-      case SlotLogServer.read(slot, session_id, after_seq) do
-        {:ok, entries} ->
-          entries
-          |> Enum.filter(&(&1.seq > after_seq))
-          |> Enum.sort_by(& &1.seq)
-          |> Enum.map(&Entry.to_message/1)
-
-        {:error, _} ->
-          []
-      end
-
-    # If the slot server has enough messages to satisfy the limit,
-    # return them directly without hitting the database.
-    case length(tail) >= limit do
-      true ->
-        result = Enum.take(tail, limit)
-
-        duration_us =
-          System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
-
-        Fleetlm.Observability.Telemetry.emit_storage_read(
-          session_id,
-          slot,
-          :disk_log,
-          length(result),
-          duration_us
-        )
-
-        {:ok, result}
-
-      false ->
-        entry_seqs = tail |> Enum.map(& &1.seq) |> MapSet.new()
-        remaining = max(limit - length(tail), 0)
-        # Over-fetch a bit to safely account for any overlap with slot entries
-        db_limit = remaining + MapSet.size(entry_seqs)
-
-        db_messages =
-          Message
-          |> where([m], m.session_id == ^session_id and m.seq > ^after_seq)
-          |> order_by([m], asc: m.seq)
-          |> limit(^db_limit)
-          |> Repo.all()
-          |> Enum.reject(fn message -> MapSet.member?(entry_seqs, message.seq) end)
-
-        messages =
-          (db_messages ++ tail)
-          |> Enum.sort_by(& &1.seq)
-          |> Enum.take(limit)
-
-        duration_us =
-          System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
-
-        Fleetlm.Observability.Telemetry.emit_storage_read(
-          session_id,
-          slot,
-          :database,
-          length(messages),
-          duration_us
-        )
-
-        {:ok, messages}
-    end
-  end
 
   @doc """
   Get a single session by ID.
@@ -243,7 +123,8 @@ defmodule Fleetlm.Storage do
   @spec update_cursor(String.t(), String.t(), non_neg_integer()) ::
           {:ok, Cursor.t()} | {:error, Ecto.Changeset.t()} | no_return
   def update_cursor(session_id, user_id, last_seq) do
-    shard_key = storage_slot_for_session(session_id)
+    # Use Raft group as shard_key
+    shard_key = Fleetlm.Runtime.RaftManager.group_for_session(session_id)
 
     attrs = %{
       session_id: session_id,
@@ -258,39 +139,5 @@ defmodule Fleetlm.Storage do
       on_conflict: {:replace, [:last_seq, :updated_at]},
       conflict_target: [:session_id, :user_id]
     )
-  end
-
-  @doc """
-  Flush any pending WAL entries for the given session.
-
-  Returns :ok when the flush completes, :already_clean when no entries
-  were pending, or {:error, reason} if the flush could not be performed.
-  """
-  @spec flush_session(String.t()) :: :ok | :already_clean | {:error, term()}
-  def flush_session(session_id) when is_binary(session_id) do
-    slot = storage_slot_for_session(session_id)
-
-    with :ok <- ensure_slot_server_started(slot) do
-      SlotLogServer.flush_now(slot)
-    end
-  end
-
-  # Private helpers
-
-  # Calculate the storage slot for a session (local per-node sharding for disk log I/O).
-  # This is separate from HashRing slots which are for cluster-wide routing.
-  defp storage_slot_for_session(session_id) when is_binary(session_id) do
-    :erlang.phash2(session_id, @num_storage_slots)
-  end
-
-  # Ensure SlotLogServer is started for the given slot.
-  # In production mode (slot_log_mode: :production), servers are pre-started by supervisor - no-op.
-  # In test mode (slot_log_mode: :test), servers are started on-demand with test-specific config.
-  defp ensure_slot_server_started(slot) do
-    case Fleetlm.Storage.Supervisor.ensure_started(slot) do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
   end
 end

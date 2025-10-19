@@ -44,6 +44,12 @@ defmodule Fleetlm.Observability.Telemetry do
 
   @message_throughput_event [:fleetlm, :message, :throughput]
 
+  # Raft telemetry events
+  @raft_append_event [:fleetlm, :raft, :append]
+  @raft_read_event [:fleetlm, :raft, :read]
+  @raft_state_event [:fleetlm, :raft, :state]
+  @raft_flush_event [:fleetlm, :raft, :flush]
+
   @spec measure_session_append(String.t(), %{optional(atom()) => term()}, (-> {term(), map()})) ::
           term()
   def measure_session_append(session_id, metadata \\ %{}, fun) when is_function(fun, 0) do
@@ -127,11 +133,15 @@ defmodule Fleetlm.Observability.Telemetry do
 
   @doc """
   Emit the current number of active conversation processes as a gauge.
+
+  NOTE: In Raft architecture, there are no per-session processes.
+  Conversations live in Raft state (ETS rings). This metric is deprecated.
   """
   @spec publish_conversation_active_count() :: :ok
   def publish_conversation_active_count do
-    count = SessionSupervisor.active_count()
-    :telemetry.execute(@conversation_active_event, %{count: count}, %{scope: :global})
+    # With Raft, no per-session processes exist
+    # Emit 0 to maintain metric compatibility
+    :telemetry.execute(@conversation_active_event, %{count: 0}, %{scope: :global})
   end
 
   @doc """
@@ -464,6 +474,119 @@ defmodule Fleetlm.Observability.Telemetry do
     }
 
     :telemetry.execute(@agent_stream_finalized_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit Raft append telemetry - tracks message append operations to Raft groups.
+
+  Records:
+  - Append latency (time to commit to quorum)
+  - Success/timeout/error status
+  - Group and lane identification
+
+  This is CRITICAL for validating Raft performance meets <150ms p99 target.
+  """
+  @spec emit_raft_append(atom(), non_neg_integer(), non_neg_integer(), non_neg_integer()) :: :ok
+  def emit_raft_append(status, group_id, lane, duration_us)
+      when status in [:ok, :timeout, :error] and is_integer(group_id) and is_integer(lane) and
+             is_integer(duration_us) do
+    measurements = %{
+      duration: duration_us,
+      count: 1
+    }
+
+    metadata = %{
+      status: status,
+      group_id: group_id,
+      lane: lane
+    }
+
+    :telemetry.execute(@raft_append_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit Raft read telemetry - tracks message read operations from Raft state.
+
+  Records:
+  - Read latency
+  - Read path (tail_only = hot path, tail_and_db = cold path)
+  - Message count returned
+
+  This validates the hybrid read strategy (Raft tail + Postgres fallback).
+  """
+  @spec emit_raft_read(atom(), non_neg_integer(), non_neg_integer(), non_neg_integer()) :: :ok
+  def emit_raft_read(path, group_id, message_count, duration_us)
+      when path in [:tail_only, :tail_and_db] and is_integer(group_id) and
+             is_integer(message_count) and is_integer(duration_us) do
+    measurements = %{
+      duration: duration_us,
+      message_count: message_count
+    }
+
+    metadata = %{
+      path: path,
+      group_id: group_id
+    }
+
+    :telemetry.execute(@raft_read_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit Raft state telemetry - tracks in-memory state size and flush metrics.
+
+  Records per-group:
+  - In-state message count (messages in ETS rings, not yet flushed)
+  - Pending flush count (messages > watermark)
+  - Conversation count (hot metadata cached in Raft state)
+  - Ring fill percentage (for backpressure monitoring)
+
+  This is CRITICAL for detecting memory pressure and flush lag.
+  """
+  @spec emit_raft_state(non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()) ::
+          :ok
+  def emit_raft_state(group_id, lane, in_state_count, pending_flush_count, conversation_count)
+      when is_integer(group_id) and is_integer(lane) and is_integer(in_state_count) and
+             is_integer(pending_flush_count) and is_integer(conversation_count) do
+    measurements = %{
+      in_state_count: in_state_count,
+      pending_flush_count: pending_flush_count,
+      conversation_count: conversation_count,
+      ring_fill_pct: min(100, div(in_state_count * 100, 5000))
+    }
+
+    metadata = %{
+      group_id: group_id,
+      lane: lane
+    }
+
+    :telemetry.execute(@raft_state_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit Raft flush telemetry - tracks background flush operations to Postgres.
+
+  Records:
+  - Flush latency
+  - Messages flushed count
+  - Status (ok/error)
+
+  This validates the write-behind strategy is keeping up with ingestion rate.
+  """
+  @spec emit_raft_flush(atom(), non_neg_integer(), non_neg_integer(), non_neg_integer()) :: :ok
+  def emit_raft_flush(status, group_id, messages_flushed, duration_us)
+      when status in [:ok, :error] and is_integer(group_id) and is_integer(messages_flushed) and
+             is_integer(duration_us) do
+    measurements = %{
+      duration: duration_us,
+      messages_flushed: messages_flushed
+    }
+
+    metadata = %{
+      status: status,
+      group_id: group_id
+    }
+
+    :telemetry.execute(@raft_flush_event, measurements, metadata)
   end
 
   defp normalize_drop_reason(nil), do: nil

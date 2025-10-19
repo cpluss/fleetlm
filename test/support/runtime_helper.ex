@@ -1,19 +1,18 @@
 defmodule Fleetlm.Runtime.TestHelper do
   @moduledoc false
 
-  alias Fleetlm.Runtime.SessionSupervisor
   alias Fleetlm.Runtime.InboxSupervisor
-  alias Fleetlm.Storage.Supervisor, as: StorageSupervisor
 
   require ExUnit.CaptureLog
   require Logger
 
   def reset do
     ExUnit.CaptureLog.capture_log(fn ->
-      # Terminate children forcefully but safely
-      terminate_children_forcefully(Fleetlm.Runtime.SessionRegistry, SessionSupervisor)
+      # Terminate InboxServer processes
       terminate_children_forcefully(Fleetlm.Runtime.InboxRegistry, InboxSupervisor)
-      cleanup_slot_servers()
+
+      # Cleanup Raft data directory (test mode only)
+      cleanup_raft_test_data()
 
       # Brief wait to ensure all database operations complete
       Process.sleep(25)
@@ -22,26 +21,11 @@ defmodule Fleetlm.Runtime.TestHelper do
     :ok
   end
 
-  defp cleanup_slot_servers do
-    if Code.ensure_loaded?(StorageSupervisor) and Process.whereis(StorageSupervisor) do
-      StorageSupervisor.active_slots()
-      |> Enum.each(fn slot ->
-        case StorageSupervisor.flush_slot(slot) do
-          {:error, reason} ->
-            Logger.warning("Failed to flush slot #{slot} during test cleanup: #{inspect(reason)}")
+  defp cleanup_raft_test_data do
+    test_data_dir = Application.get_env(:fleetlm, :raft_data_dir, "tmp/test_raft")
 
-          _ ->
-            :ok
-        end
-
-        case StorageSupervisor.stop_slot(slot) do
-          {:error, reason} ->
-            Logger.warning("Failed to stop slot #{slot} during test cleanup: #{inspect(reason)}")
-
-          _ ->
-            :ok
-        end
-      end)
+    if String.contains?(test_data_dir, "test") do
+      File.rm_rf(test_data_dir)
     end
   end
 

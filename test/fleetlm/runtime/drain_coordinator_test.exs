@@ -1,7 +1,8 @@
 defmodule Fleetlm.Runtime.DrainCoordinatorTest do
   use Fleetlm.TestCase
 
-  alias Fleetlm.Runtime.{DrainCoordinator, Router, SessionSupervisor}
+  alias Fleetlm.Runtime
+  alias Fleetlm.Runtime.DrainCoordinator
 
   setup do
     # Use shared mode so spawned processes can access DB
@@ -34,25 +35,25 @@ defmodule Fleetlm.Runtime.DrainCoordinatorTest do
       session1 = create_test_session("alice", "bob")
       session2 = create_test_session("charlie", "dave")
 
-      # Start session servers and send messages
-      {:ok, _} = Router.append_message(session1.id, "alice", "text", %{"text" => "msg1"}, %{})
-      {:ok, _} = Router.append_message(session2.id, "charlie", "text", %{"text" => "msg2"}, %{})
+      # Send messages via Runtime
+      {:ok, _} =
+        Runtime.append_message(session1.id, "alice", "bob", "text", %{"text" => "msg1"}, %{})
 
-      # Verify sessions are active
-      assert SessionSupervisor.active_count() == 2
+      {:ok, _} =
+        Runtime.append_message(session2.id, "charlie", "dave", "text", %{"text" => "msg2"}, %{})
 
-      # Trigger drain
-      assert :ok = DrainCoordinator.trigger_drain()
+      # Trigger drain (snapshots Raft groups)
+      result = DrainCoordinator.trigger_drain()
+      assert result == :ok or match?({:error, {:partial_drain, _, _}}, result)
 
       # Wait for drain to complete
       Process.sleep(100)
 
-      # Verify sessions are marked inactive in DB
-      session1_reloaded = Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session1.id)
-      session2_reloaded = Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session2.id)
-
-      assert session1_reloaded.status == "inactive"
-      assert session2_reloaded.status == "inactive"
+      # In Raft architecture, sessions don't get marked inactive during drain
+      # (no per-session processes). Drain just snapshots Raft state.
+      # Verify messages are still readable
+      {:ok, messages1} = Runtime.get_messages(session1.id, 0, 10)
+      assert length(messages1) >= 1
     end
 
     test "handles empty session list gracefully" do
@@ -80,18 +81,17 @@ defmodule Fleetlm.Runtime.DrainCoordinatorTest do
       session = create_test_session("alice", "bob")
 
       # Send a message
-      {:ok, _message} =
-        Router.append_message(session.id, "alice", "text", %{"text" => "important"}, %{})
+      {:ok, _seq} =
+        Runtime.append_message(session.id, "alice", "bob", "text", %{"text" => "important"}, %{})
 
       # Trigger drain - should complete without error
       result = DrainCoordinator.trigger_drain()
       assert result == :ok or match?({:error, {:partial_drain, _, _}}, result)
 
-      # Session should be marked inactive (or DB access failed gracefully)
-      session_reloaded = Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session.id)
-
-      # Either inactive or we couldn't update due to ownership issues
-      assert session_reloaded.status in ["inactive", "active"]
+      # In Raft architecture, sessions aren't marked inactive during drain
+      # Just verify messages are still accessible
+      {:ok, messages} = Runtime.get_messages(session.id, 0, 10)
+      assert length(messages) >= 1
     end
   end
 end

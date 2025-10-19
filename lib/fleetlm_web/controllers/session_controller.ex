@@ -1,7 +1,7 @@
 defmodule FleetlmWeb.SessionController do
   use FleetlmWeb, :controller
 
-  alias Fleetlm.Runtime.Router
+  alias Fleetlm.Runtime
   alias Fleetlm.Storage
 
   action_fallback FleetlmWeb.FallbackController
@@ -65,29 +65,18 @@ defmodule FleetlmWeb.SessionController do
     last_seq = parse_int(params["after_seq"], 0)
     limit = parse_int(params["limit"], 50)
 
-    # Always join as the user participant for bootstrap hydration
+    # Check session exists
     case Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id) do
       nil ->
         conn
         |> put_status(:not_found)
         |> json(%{error: "Session not found"})
 
-      session ->
-        with {:ok, participant_id} <- session_user_id(session),
-             {:ok, result} <-
-               Router.join(session_id, participant_id, last_seq: last_seq, limit: limit) do
-          json(conn, %{messages: result.messages})
-        else
-          {:error, :missing_user} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: "Session missing user participant"})
-
-          {:error, reason} ->
-            conn
-            |> put_status(:unprocessable_entity)
-            |> json(%{error: inspect(reason)})
-        end
+      _session ->
+        # Get messages via Runtime API
+        {:ok, messages} = Runtime.get_messages(session_id, last_seq, limit)
+        formatted = Enum.map(messages, &render_message/1)
+        json(conn, %{messages: formatted})
     end
   end
 
@@ -95,21 +84,47 @@ defmodule FleetlmWeb.SessionController do
     with {:ok, sender_id} <- resolve_participant(params),
          {:ok, kind} <- resolve_kind(params),
          {:ok, content} <- require_map_param(params, "content"),
-         {:ok, metadata} <- normalize_metadata(Map.get(params, "metadata", %{})) do
-      case Router.append_message(session_id, sender_id, kind, content, metadata) do
-        {:ok, message} ->
+         {:ok, metadata} <- normalize_metadata(Map.get(params, "metadata", %{})),
+         {:ok, session} <- load_session(session_id) do
+      # Determine recipient (flip between user and agent)
+      recipient_id =
+        if sender_id == session.user_id, do: session.agent_id, else: session.user_id
+
+      case Runtime.append_message(session_id, sender_id, recipient_id, kind, content, metadata) do
+        {:ok, seq} ->
+          message = %{
+            id: Uniq.UUID.uuid7(:slug),
+            session_id: session_id,
+            seq: seq,
+            sender_id: sender_id,
+            kind: kind,
+            content: content,
+            metadata: metadata,
+            inserted_at: NaiveDateTime.utc_now()
+          }
+
           json(conn, %{message: render_message(message)})
 
         {:error, reason} ->
           conn
           |> put_status(:unprocessable_entity)
           |> json(%{error: inspect(reason)})
+
+        {:timeout, _} ->
+          conn
+          |> put_status(:request_timeout)
+          |> json(%{error: "Raft timeout"})
       end
     else
       {:error, %ArgumentError{} = error} ->
         conn
         |> put_status(:unprocessable_entity)
         |> json(%{error: Exception.message(error)})
+
+      {:error, :not_found} ->
+        conn
+        |> put_status(:not_found)
+        |> json(%{error: "Session not found"})
 
       {:error, reason} ->
         conn
@@ -263,4 +278,11 @@ defmodule FleetlmWeb.SessionController do
     do: {:ok, user_id}
 
   defp session_user_id(_), do: {:error, :missing_user}
+
+  defp load_session(session_id) do
+    case Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id) do
+      nil -> {:error, :not_found}
+      session -> {:ok, session}
+    end
+  end
 end

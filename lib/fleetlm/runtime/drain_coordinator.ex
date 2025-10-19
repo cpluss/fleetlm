@@ -2,19 +2,27 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
   @moduledoc """
   Coordinates graceful shutdown on SIGTERM.
 
-  Responsibilities:
-  - Listen for SIGTERM signal
-  - Drain all active SessionServer processes
-  - Ensure messages are flushed to database
-  - Mark sessions as inactive
-  - Timeout protection (max 30 seconds)
+  ## Raft Architecture
+
+  Much simpler than old WAL architecture:
+  1. Trigger snapshots for all 256 Raft groups (parallel)
+  2. Wait up to 5s for snapshots to complete
+  3. Shutdown
+
+  No per-session draining needed (Raft handles state persistence).
+  Snapshots contain:
+  - Conversation metadata (hot state)
+  - Unflushed message tails
+  - Flush watermarks
+
+  On restart: Load snapshot → Replay Raft log → Ready
   """
 
   use GenServer
   require Logger
 
-  @drain_timeout Application.compile_env(:fleetlm, :drain_timeout, :timer.seconds(30))
-  @drain_grace_period Application.compile_env(:fleetlm, :drain_grace_period, :timer.seconds(2))
+  @drain_timeout Application.compile_env(:fleetlm, :drain_timeout, :timer.seconds(5))
+  @drain_grace_period Application.compile_env(:fleetlm, :drain_grace_period, :timer.seconds(1))
 
   # Client API
 
@@ -98,21 +106,24 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
   defp perform_drain do
     start_time = System.monotonic_time(:millisecond)
 
-    # Get all active session servers
-    active_sessions = get_active_sessions()
+    Logger.info("DrainCoordinator: Triggering snapshots for local Raft groups")
 
-    Logger.debug("DrainCoordinator: Draining #{length(active_sessions)} active sessions")
-
-    # Drain each session in parallel with timeout
-    tasks =
-      active_sessions
-      |> Enum.map(fn session_id ->
-        Task.async(fn ->
-          drain_session_with_timeout(session_id)
-        end)
+    groups_to_snapshot =
+      0..255
+      |> Enum.filter(fn group_id ->
+        server_id = Fleetlm.Runtime.RaftManager.server_id(group_id)
+        Process.whereis(server_id) != nil
       end)
 
-    # Wait for all drains to complete or timeout
+    total = length(groups_to_snapshot)
+
+    # Trigger snapshots for all 256 Raft groups in parallel
+    tasks =
+      for group_id <- groups_to_snapshot do
+        Task.async(fn -> snapshot_group(group_id) end)
+      end
+
+    # Wait for all snapshots to complete or timeout
     results = Task.yield_many(tasks, @drain_timeout)
 
     # Count successes and failures
@@ -131,17 +142,16 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
     Enum.each(tasks, &Task.shutdown(&1, :brutal_kill))
 
     elapsed = System.monotonic_time(:millisecond) - start_time
-    attempted = length(active_sessions)
 
-    Logger.debug(
+    Logger.info(
       "DrainCoordinator: Completed drain in #{elapsed}ms - " <>
-        "#{successes} succeeded, #{failures} failed/timed out"
+        "#{successes}/#{total} groups snapshotted, #{failures} failures"
     )
 
-    # Emit telemetry - CRITICAL for data loss tracking
+    # Emit telemetry
     Fleetlm.Observability.Telemetry.emit_session_drain(
       :shutdown,
-      attempted,
+      total,
       successes,
       failures,
       elapsed
@@ -159,36 +169,27 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
     end
   end
 
-  defp get_active_sessions do
-    # Get all active session servers from registry
-    case Process.whereis(Fleetlm.Runtime.SessionRegistry) do
-      nil ->
-        []
+  defp snapshot_group(group_id) do
+    server_id = Fleetlm.Runtime.RaftManager.server_id(group_id)
+    raft_ref = {server_id, Node.self()}
 
-      _pid ->
-        Registry.select(Fleetlm.Runtime.SessionRegistry, [{{:"$1", :_, :_}, [], [:"$1"]}])
-    end
-  end
-
-  defp drain_session_with_timeout(session_id) do
-    try do
-      case Fleetlm.Runtime.SessionServer.drain(session_id) do
-        :ok ->
-          Logger.debug("Successfully drained session #{session_id}")
-          :ok
-
-        {:error, _reason} = error ->
-          Logger.error("Failed to drain session #{session_id}: #{inspect(error)}")
-          error
-      end
-    catch
-      :exit, {:noproc, _} ->
-        # Session already stopped
+    case :ra.process_command(raft_ref, :force_snapshot, 5_000) do
+      {:ok, {:reply, :ok}, _leader} ->
+        Logger.debug("Snapshot triggered for group #{group_id}")
         :ok
 
-      kind, reason ->
-        Logger.error("Error draining session #{session_id}: #{kind} #{inspect(reason)}")
-        {:error, {kind, reason}}
+      {:error, :not_leader} ->
+        # Expected on followers, not an error
+        Logger.debug("Group #{group_id}: Not leader, skip snapshot")
+        :ok
+
+      {:timeout, leader} ->
+        Logger.warning("Snapshot command timed out for group #{group_id}: leader=#{inspect(leader)}")
+        {:error, :timeout}
+
+      {:error, reason} ->
+        Logger.warning("Failed to snapshot group #{group_id}: #{inspect(reason)}")
+        {:error, reason}
     end
   end
 end
