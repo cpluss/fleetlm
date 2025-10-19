@@ -121,8 +121,10 @@ defmodule Fleetlm.Runtime.RaftTopology do
     expected_nodes = parse_expected_cluster_size()
     current_cluster = [Node.self() | Node.list()] |> length()
 
+    Logger.info("RaftTopology: cluster check - #{current_cluster}/#{expected_nodes} nodes (list: #{inspect(Node.list())})")
+
     if current_cluster < expected_nodes do
-      Logger.debug("RaftTopology: waiting for cluster (#{current_cluster}/#{expected_nodes} nodes connected)")
+      Logger.warning("RaftTopology: waiting for cluster (#{current_cluster}/#{expected_nodes} nodes connected)")
       Process.send_after(self(), :check_readiness, @readiness_interval_ms)
       {:noreply, state}
     else
@@ -217,12 +219,9 @@ defmodule Fleetlm.Runtime.RaftTopology do
   # Internal helpers
 
   defp compute_my_groups do
-    # Use all_nodes() for placement (joining + ready), not just ready!
-    candidates =
-      case all_nodes() do
-        [] -> fallback_nodes()
-        nodes -> nodes
-      end
+    # Use Node.list() directly during boot (Presence lags behind libcluster!)
+    # After nodes are ready, rebalance will use all_nodes() from Presence
+    candidates = [Node.self() | Node.list()] |> Enum.uniq() |> Enum.sort()
 
     for group_id <- 0..255,
         Node.self() in rendezvous_select(candidates, group_id),
@@ -281,10 +280,21 @@ defmodule Fleetlm.Runtime.RaftTopology do
           Logger.warning("Rebalancing group #{group_id}: +#{length(to_add)} -#{length(to_remove)}")
         end
 
-        Enum.each(to_add, fn member -> add_member(group_id, member) end)
+        # Add members first, then wait for commit, then remove
+        unless Enum.empty?(to_add) do
+          Enum.each(to_add, fn member -> add_member(group_id, member) end)
 
-        unless Enum.empty?(to_add), do: Process.sleep(500)
+          # Poll until adds are committed (no blind sleeps!)
+          case wait_for_membership_change(ref, desired, timeout_ms: 10000) do
+            :ok ->
+              Logger.debug("RaftTopology: adds committed for group #{group_id}")
 
+            :timeout ->
+              Logger.warning("RaftTopology: timeout waiting for adds to commit for group #{group_id}")
+          end
+        end
+
+        # Only remove after adds are fully committed
         Enum.each(to_remove, fn member -> remove_member(group_id, member) end)
 
       {:error, :noproc} ->
@@ -300,14 +310,16 @@ defmodule Fleetlm.Runtime.RaftTopology do
     :ok
   end
 
-  defp add_member(group_id, {_server_id, node} = member) do
+  defp add_member(group_id, {server_id, node} = member) do
+    my_server = {server_id, Node.self()}
+
     Logger.info("RaftTopology: adding #{inspect(node)} to group #{group_id}")
 
     # Ensure the group is started on the target node first
     :rpc.call(node, RaftManager, :start_group, [group_id])
 
     # Use server reference (not cluster name atom)
-    case :ra.add_member(cluster_name(group_id), member) do
+    case :ra.add_member(my_server, member) do
       {:ok, _members, _leader} ->
         Logger.info("RaftTopology: added #{inspect(node)} to group #{group_id}")
         :ok
@@ -327,10 +339,12 @@ defmodule Fleetlm.Runtime.RaftTopology do
   end
 
   defp remove_member(group_id, {server_id, node} = member) do
+    my_server = {server_id, Node.self()}
+
     Logger.info("RaftTopology: removing #{inspect(node)} from group #{group_id}")
 
     # Use server reference (not cluster name atom)
-    case :ra.remove_member(cluster_name(group_id), member) do
+    case :ra.remove_member(my_server, member) do
       {:ok, _members, _leader} ->
         Logger.info("RaftTopology: removed #{inspect(node)} from group #{group_id}")
         :rpc.call(node, :ra, :stop_server, [:default, {server_id, node}])
@@ -401,6 +415,33 @@ defmodule Fleetlm.Runtime.RaftTopology do
   end
 
   defp cluster_name(group_id), do: String.to_atom("raft_cluster_#{group_id}")
+
+  defp wait_for_membership_change(server_ref, desired_members, timeout_ms: timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    poll_membership(server_ref, desired_members, deadline)
+  end
+
+  defp poll_membership(server_ref, desired_members, deadline) do
+    if System.monotonic_time(:millisecond) > deadline do
+      Logger.warning("RaftTopology: Timeout waiting for membership change")
+      :timeout
+    else
+      case :ra.members(server_ref) do
+        {:ok, current, _leader} ->
+          # Check if all desired members are now in current
+          if Enum.all?(desired_members, &(&1 in current)) do
+            :ok
+          else
+            Process.sleep(50)  # Retry backoff
+            poll_membership(server_ref, desired_members, deadline)
+          end
+
+        _ ->
+          Process.sleep(50)
+          poll_membership(server_ref, desired_members, deadline)
+      end
+    end
+  end
 
   defp parse_expected_cluster_size do
     # Parse CLUSTER_NODES env to determine expected cluster size

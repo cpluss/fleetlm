@@ -119,9 +119,8 @@ defmodule Fleetlm.Runtime.RaftManager do
       if am_bootstrap do
         bootstrap_cluster(group_id, cluster_name, machine, server_ids, {server_id, my_node})
       else
-        # Wait for bootstrap node to create cluster
-        Process.sleep(500)
-        join_cluster(group_id, server_id, cluster_name, machine)
+        # Retry join until bootstrap node creates cluster
+        join_cluster_with_retry(group_id, server_id, cluster_name, machine, retries: 10)
       end
     end
   end
@@ -148,6 +147,26 @@ defmodule Fleetlm.Runtime.RaftManager do
 
       {:error, reason} ->
         Logger.error("RaftManager: Failed to bootstrap group #{group_id}: #{inspect(reason)}")
+        {:error, reason}
+    end
+  end
+
+  defp join_cluster_with_retry(group_id, _server_id, _cluster_name, _machine, retries: 0) do
+    Logger.error("RaftManager: Failed to join group #{group_id} after retries")
+    {:error, :join_timeout}
+  end
+
+  defp join_cluster_with_retry(group_id, server_id, cluster_name, machine, retries: n) do
+    case join_cluster(group_id, server_id, cluster_name, machine) do
+      :ok ->
+        :ok
+
+      {:error, :enoent} ->
+        # Cluster doesn't exist yet, retry
+        Process.sleep(100)  # Brief backoff
+        join_cluster_with_retry(group_id, server_id, cluster_name, machine, retries: n - 1)
+
+      {:error, reason} ->
         {:error, reason}
     end
   end

@@ -51,12 +51,12 @@ defmodule Fleetlm.Integration.IntegrationTest do
 
       # Trigger background flush and verify in Postgres
       send(Fleetlm.Runtime.Flusher, :flush)
-      Process.sleep(500)
 
-      db_messages =
-        Repo.all(from(m in Message, where: m.session_id == ^session.id))
-
-      assert length(db_messages) == 1
+      # Poll until messages appear in DB (no sleeps!)
+      eventually(fn ->
+        db_messages = Repo.all(from(m in Message, where: m.session_id == ^session.id))
+        assert length(db_messages) == 1
+      end)
     end
 
     test "multi-party conversation with sequence ordering" do
