@@ -1,7 +1,7 @@
 defmodule Fleetlm.Runtime.FlusherTest do
   use Fleetlm.TestCase
 
-  alias Fleetlm.Runtime.{Flusher, RaftFSM, RaftManager}
+  alias Fleetlm.Runtime.Flusher
   alias Fleetlm.Storage.Model.Message
 
   describe "flush cycle" do

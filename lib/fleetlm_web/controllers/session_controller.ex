@@ -274,11 +274,6 @@ defmodule FleetlmWeb.SessionController do
   defp normalize_metadata(_),
     do: {:error, %ArgumentError{message: "metadata must be a map"}}
 
-  defp session_user_id(%{user_id: user_id}) when is_binary(user_id) and byte_size(user_id) > 0,
-    do: {:ok, user_id}
-
-  defp session_user_id(_), do: {:error, :missing_user}
-
   defp load_session(session_id) do
     case Fleetlm.Repo.get(Fleetlm.Storage.Model.Session, session_id) do
       nil -> {:error, :not_found}

@@ -2,7 +2,7 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
   use Fleetlm.TestCase
 
   alias Fleetlm.Runtime.RaftFSM
-  alias Fleetlm.Storage.Model.{Session, Message}
+  alias Fleetlm.Storage.Model.Message
 
   describe "init/1" do
     test "cold start creates empty lanes" do

@@ -1,14 +1,21 @@
 defmodule Fleetlm.Runtime.RaftTopology do
   @moduledoc """
-  Coordinates Raft membership across the cluster.
+  Coordinates Raft membership across the cluster (Horde-inspired pattern).
 
   ## Responsibilities
 
-  * Track cluster node membership via libcluster (`:net_kernel` monitor events)
-  * Compute desired replicas per group using rendezvous hashing
-  * Add/remove Raft replicas using Ra's membership APIs
-  * Gate traffic to nodes that have actually joined their assigned groups
-  * Replicate the ready-node set across the cluster using Phoenix Presence
+  - Track cluster membership via Presence (CRDT gossip)
+  - Wait for libcluster formation before starting groups
+  - Start assigned Raft groups async via Task.Supervisor
+  - Rebalance groups when nodes join/leave (add_member/remove_member)
+  - Gate traffic: track as :joining, update to :ready when done
+
+  ## Dynamic Membership
+
+  - Presence.list() = all nodes (joining + ready) → used for placement
+  - ready_nodes() = ready only → used for traffic routing
+  - Coordinator election: lowest node in ready_nodes() rebalances
+  - Rebalance: diff Ra.members vs desired, execute adds then removes
   """
 
   use GenServer
@@ -121,10 +128,8 @@ defmodule Fleetlm.Runtime.RaftTopology do
     expected_nodes = parse_expected_cluster_size()
     current_cluster = [Node.self() | Node.list()] |> length()
 
-    Logger.info("RaftTopology: cluster check - #{current_cluster}/#{expected_nodes} nodes (list: #{inspect(Node.list())})")
-
     if current_cluster < expected_nodes do
-      Logger.warning("RaftTopology: waiting for cluster (#{current_cluster}/#{expected_nodes} nodes connected)")
+      Logger.debug("RaftTopology: waiting for cluster (#{current_cluster}/#{expected_nodes} nodes connected)")
       Process.send_after(self(), :check_readiness, @readiness_interval_ms)
       {:noreply, state}
     else
