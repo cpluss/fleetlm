@@ -69,7 +69,7 @@ FleetLM prioritizes **availability and predictable latency** over maximum throug
 
 ### Design Goals
 
-1. **Predictable p99 latency** (<150ms) even under load spikes
+1. **Predictable p99 latency** (under 150ms) even under load spikes
 2. **Zero data loss** during node failures or network partitions
 3. **Horizontal scalability** without manual sharding
 4. **Simple mental model** - no eventually-consistent quirks to debug

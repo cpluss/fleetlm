@@ -15,7 +15,7 @@ Context management is killing your costs. RAG + pub/sub + compaction + persisten
 
 Write stateless REST. Deploy with docker compose. We handle state, ordering, replay.
 
-**[Quick Start]**(./quickstart.md)
+**[Quick Start](./quickstart.md)**
 
 ## The Context Complexity Trap
 
@@ -38,11 +38,11 @@ Write stateless REST. Deploy with docker compose. We handle state, ordering, rep
 - **Automatic failover** – Raft leader election handles crashes (~150ms recovery)
 - **Horizontal scale** – 256 Raft groups shard traffic across nodes
 
-**p99 < 150 ms · Raft + Postgres · Apache 2.0 open source**
-
 > **FleetLM makes LLM infra as boring as it should be.** Run it once, stop thinking about gnarly chat infrastructure.
 
-**[GitHub Repository](https://github.com/cpluss/fleetlm)** · **[FleetLM Homepage](https://fleetlm.com)**
+**[GitHub Repository](https://github.com/cpluss/fleetlm)**
+
+**[FleetLM Homepage](https://fleetlm.com)**
 
 See [Architecture](./architecture.md) for how Raft consensus, Presence, and Postgres work together.
 
