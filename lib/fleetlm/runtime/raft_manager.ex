@@ -65,6 +65,8 @@ defmodule Fleetlm.Runtime.RaftManager do
     # Rendezvous (HRW) hashing for deterministic placement
     nodes
     |> Enum.map(fn node ->
+      # TODO: don't use phash2 - use eg. xxhash for better
+      # distribution if this ever becomes a problem
       score = :erlang.phash2({group_id, node})
       {score, node}
     end)
@@ -163,7 +165,7 @@ defmodule Fleetlm.Runtime.RaftManager do
 
       {:error, :enoent} ->
         # Cluster doesn't exist yet, retry
-        # Brief backoff
+        # Brief backoff, not great to sleep but what can we do
         Process.sleep(100)
         join_cluster_with_retry(group_id, server_id, cluster_name, machine, retries: n - 1)
 
@@ -176,7 +178,8 @@ defmodule Fleetlm.Runtime.RaftManager do
     my_node = Node.self()
     node_name = my_node |> Atom.to_string() |> String.replace(~r/[^a-zA-Z0-9_]/, "_")
 
-    # Per-node Ra data directory (avoid conflicts)
+    # Per-node Ra data directory, which avoid conflicts in case we have
+    # multiple groups & nodes on the same host.
     data_dir_root = Application.get_env(:fleetlm, :raft_data_dir, "priv/raft")
     data_dir = Path.join([data_dir_root, "group_#{group_id}", node_name])
     File.mkdir_p!(data_dir)

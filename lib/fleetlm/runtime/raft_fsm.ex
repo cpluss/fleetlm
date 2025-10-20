@@ -1,16 +1,28 @@
 defmodule Fleetlm.Runtime.RaftFSM do
   @moduledoc """
-  Ra-based finite state machine for message storage and sequencing.
+  Raft issues commands to each node using an FSM to coordinate
+  consistency. We use this to our advantage for message storage and
+  sequencing.
 
-  One FSM per Raft group (256 groups total across cluster).
-  Each group manages 16 lanes for parallel message appends.
+  - One FSM per Raft group (256 groups total across cluster).
+  - Each group manages 16 lanes for parallel message appends.
+  - Each "message append lane" act as a secondary shard layer (beyond groups)
+    to avoid hot-groups that cause contention and act as a bottleneck.
 
   ## State Structure
 
   State lives entirely in RAM (Raft-replicated 3×) and contains:
-  - Conversation metadata (last_seq, user_id, agent_id, etc) - NO DB QUERY!
+  - Conversation metadata (last_seq, user_id, agent_id, etc)
   - Message tail (last 3-5s, ~5000 messages per lane)
   - Flush watermarks (for Raft log compaction)
+
+  It's all optimised to avoid hitting any database while providing a reasonable
+  durability guarantee (replication across nodes). We truncate the state
+  when we flush messages to the database itself.
+
+  Replication will most likely lead to throughput loss but avoids us having to
+  manage everything ourselves, and allows us to lean on battle-tested defaults
+  by RAFT.
 
   ## Write Path
 
@@ -37,15 +49,24 @@ defmodule Fleetlm.Runtime.RaftFSM do
   alias Fleetlm.Storage.Model.{Session, Message}
   alias Fleetlm.Repo
 
+  # TODO: make these configurable, they're hardcoded now for simplicity
   @num_lanes 16
   @ring_capacity 5000
+  # TODO: these MUST be configurable, major memory lever
   @snapshot_interval_ms 250
   @snapshot_bytes_threshold 256 * 1024
   # Evict after 1 hour inactivity
+  # TODO: configurable, major memory lever too
   @conversation_ttl_seconds 3600
 
   defmodule Conversation do
-    @moduledoc "Hot metadata for a session (replicated in Raft state)"
+    @moduledoc """
+    Hot metadata for a session (replicated in Raft state).
+
+    Note that we rebrand this to "conversation" here to avoid conflating sessions <> conversations.
+    They're technically related, but a conversation tracks messaging state necessary to generate
+    messages, and aren't necessarily unique.
+    """
 
     @enforce_keys [:last_seq, :last_sent_seq, :user_id, :agent_id, :last_activity]
     defstruct [:last_seq, :last_sent_seq, :user_id, :agent_id, :last_activity]
@@ -60,7 +81,14 @@ defmodule Fleetlm.Runtime.RaftFSM do
   end
 
   defmodule Lane do
-    @moduledoc "One of 16 parallel message streams within a Raft group"
+    @moduledoc """
+    One of 16 parallel message streams within a Raft group.
+
+    Each lane contains
+     - an ets ring-buffer of messages, keeps memory bounded
+     - metadata about each session / conversation
+     - flush metadata (ie. how much of this is in the database?)
+    """
 
     @enforce_keys [:ring, :capacity, :conversations, :flush_watermark, :last_flushed_index]
     defstruct [:ring, :capacity, :conversations, :flush_watermark, :last_flushed_index]
@@ -110,17 +138,16 @@ defmodule Fleetlm.Runtime.RaftFSM do
           case Map.get(acc_lane.conversations, session_id) do
             nil ->
               # COLD PATH: Bootstrap from DB (only once per session per group lifecycle)
+              # as it's quite expensive.
               bootstrap_conversation_from_db(session_id)
 
             conv ->
-              # HOT PATH: Already in RAM, replicated!
+              # HOT PATH: Already in RAM, replicated and we don't need to mess about
+              # the database.
               conv
           end
 
-        # Assign sequence (NO DB QUERY!)
         next_seq = conversation.last_seq + 1
-
-        # Build message
         message = %{
           id: Uniq.UUID.uuid7(:slug),
           session_id: session_id,
@@ -133,17 +160,14 @@ defmodule Fleetlm.Runtime.RaftFSM do
           inserted_at: NaiveDateTime.utc_now() |> NaiveDateTime.truncate(:second)
         }
 
-        # Append to ETS ring (bounded tail)
+        # Append to the ets ring buffer for this lane
         :ets.insert(acc_lane.ring, {next_seq, message})
-
-        # Update conversation metadata
         updated_conv = %{
           conversation
           | last_seq: next_seq,
             last_activity: message.inserted_at
         }
 
-        # Update lane state
         acc_lane = %{
           acc_lane
           | conversations: Map.put(acc_lane.conversations, session_id, updated_conv)
@@ -151,10 +175,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
         # Trim ring if over capacity
         acc_lane = trim_ring_if_needed(acc_lane)
-
-        # Emit telemetry
         Fleetlm.Observability.Telemetry.emit_message_throughput()
-
         # Return session_id, seq, AND message ID for broadcast
         {{session_id, next_seq, message.id}, acc_lane}
       end)
@@ -187,10 +208,9 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
   @impl true
   def apply(_meta, {:update_sent_seq, lane_id, session_id, seq}, state) do
-    # Update last_sent_seq (for StreamWorker recovery)
+    # Update last_sent_seq
     # Guard: conversation may not exist yet
     lane = state.lanes[lane_id]
-
     case Map.get(lane.conversations, session_id) do
       nil ->
         # Conversation not bootstrapped yet, skip update
@@ -208,7 +228,6 @@ defmodule Fleetlm.Runtime.RaftFSM do
   def apply(meta, :force_snapshot, state) do
     # Force creation of a snapshot at the current Raft index.
     snapshot_index = meta.index
-
     new_state = %{
       state
       | last_snapshot_index: snapshot_index,
@@ -216,7 +235,6 @@ defmodule Fleetlm.Runtime.RaftFSM do
     }
 
     effects = [{:release_cursor, snapshot_index, :snapshot}]
-
     {new_state, {:reply, :ok}, effects}
   end
 
@@ -256,13 +274,11 @@ defmodule Fleetlm.Runtime.RaftFSM do
   @impl true
   def state_enter(:leader, state) do
     Logger.debug("Group #{state.group_id}: Elected leader")
-    # Start StreamWorkers (handled by supervisor)
     []
   end
 
   def state_enter(:follower, state) do
     Logger.debug("Group #{state.group_id}: Stepped down to follower")
-    # Stop StreamWorkers (handled by supervisor)
     []
   end
 
@@ -378,7 +394,8 @@ defmodule Fleetlm.Runtime.RaftFSM do
     import Ecto.Query
 
     # Single query with LEFT JOIN to get session + last_seq in one roundtrip
-    # CRITICAL: Avoid two DB queries under HEAVY load (causes tail latencies)
+    # CRITICAL: Avoid two DB queries under HEAVY load as it causes tail latencies
+    # when multiple queries back-up against a most likely exhausted postgres pool.
     result =
       Repo.one(
         from(s in Session,
@@ -569,12 +586,13 @@ defmodule Fleetlm.Runtime.RaftFSM do
         end
     }
 
-    # Serialize
+    # Serialize, not great to use term to binary compressed in case
+    # the snapshot grows insanely large, but we mitigate that by heavily sharding
+    # everything so it SHOULD be fine.
     binary = :erlang.term_to_binary(snapshot, [:compressed])
 
     # Write to Postgres
     import Ecto.Query
-
     Repo.insert_all("raft_snapshots", [
       %{
         group_id: state.group_id,
@@ -583,7 +601,6 @@ defmodule Fleetlm.Runtime.RaftFSM do
         created_at: NaiveDateTime.utc_now()
       }
     ])
-
     # Cleanup old snapshots (keep last 3)
     Repo.delete_all(
       from(s in "raft_snapshots",

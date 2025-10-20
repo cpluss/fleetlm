@@ -1,6 +1,13 @@
 defmodule Fleetlm.Runtime.RaftTopology do
   @moduledoc """
-  Coordinates Raft membership across the cluster (Horde-inspired pattern).
+  Coordinates Raft membership across the cluster, inspired by Horde.
+
+  Raft is amazing but unfortunately doesn't manage the dynamic membership
+  of a cluster for us, so we have to do that ourselves. As we're most
+  likely running on a dynamic pool of replicas (over 3 nodes) and we
+  want to support rolling releases (one node down, one node up) we
+  need to be elastic. The topology mechanism is exactly how we achieve
+  that.
 
   ## Responsibilities
 
@@ -8,12 +15,12 @@ defmodule Fleetlm.Runtime.RaftTopology do
   - Wait for libcluster formation before starting groups
   - Start assigned Raft groups async via Task.Supervisor
   - Rebalance groups when nodes join/leave (add_member/remove_member)
-  - Gate traffic: track as :joining, update to :ready when done
+  - Gate traffic: track as :joining, update to :ready when done, to
+    avoid premature errors because we're not ready.
 
   ## Dynamic Membership
 
   - Presence.list() = all nodes (joining + ready) → used for placement
-  - ready_nodes() = ready only → used for traffic routing
   - Coordinator election: lowest node in ready_nodes() rebalances
   - Rebalance: diff Ra.members vs desired, execute adds then removes
   """
@@ -24,11 +31,17 @@ defmodule Fleetlm.Runtime.RaftTopology do
   alias Fleetlm.Runtime.RaftManager
 
   @presence_topic "fleetlm:raft_ready_nodes"
+  # TODO: make these configurable
   @rebalance_debounce_ms 5_000
   @readiness_interval_ms 1_000
 
   defmodule Presence do
-    @moduledoc false
+    @moduledoc """
+    We use phoenix presence as a CRDT to maintain a list of nodes available / seen / present
+    in the cluster itself. It allows us to detect when a node is ready and is fully operational
+    such that we can signal this on the health endpoint, and not accept traffic until we are
+    ready for it (joined the cluster).
+    """
     use Phoenix.Presence,
       otp_app: :fleetlm,
       pubsub_server: Fleetlm.PubSub
@@ -136,17 +149,17 @@ defmodule Fleetlm.Runtime.RaftTopology do
         "RaftTopology: waiting for cluster (#{current_cluster}/#{expected_nodes} nodes connected)"
       )
 
+      # Wait for other nodes to start before we accept traffic so we get replication
       Process.send_after(self(), :check_readiness, @readiness_interval_ms)
       {:noreply, state}
     else
       my_groups = compute_my_groups()
 
-      # Start groups async via Task.Supervisor (Horde pattern - non-blocking!)
       not_started = Enum.reject(my_groups, &group_running?/1)
-
       unless Enum.empty?(not_started) do
         Logger.debug("RaftTopology: Starting #{length(not_started)} groups asynchronously...")
 
+        # Start groups async via Task.Supervisor in a non-blocking way
         Task.Supervisor.async_stream_nolink(
           Fleetlm.RaftTaskSupervisor,
           not_started,

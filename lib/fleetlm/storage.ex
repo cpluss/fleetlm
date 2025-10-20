@@ -6,9 +6,6 @@ defmodule Fleetlm.Storage do
   - Session management (DB CRUD operations)
   - Read cursor tracking
 
-  ## Note on Architecture Change
-
-  Message append/retrieval is now handled by `Fleetlm.Runtime` (Raft-based).
   This module only manages session metadata and read cursors.
   """
 
