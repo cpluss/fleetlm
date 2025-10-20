@@ -33,7 +33,9 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       frames = [{session.id, "alice", "bob", "text", %{"text" => "hello"}, %{}}]
 
       meta = %{index: 1, term: 1}
-      {new_state, {:reply, {:ok, results}}, _effects} = RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
+
+      {new_state, {:reply, {:ok, results}}, _effects} =
+        RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
 
       # Should return assigned sequence and message ID
       assert [{session_id, seq, message_id}] = results
@@ -73,7 +75,9 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       frames = [{session.id, "alice", "bob", "text", %{"text" => "new"}, %{}}]
 
       meta = %{index: 1, term: 1}
-      {new_state, {:reply, {:ok, results}}, _} = RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
+
+      {new_state, {:reply, {:ok, results}}, _} =
+        RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
 
       # Should assign seq 2 (bootstrapped from DB: max(seq) = 1)
       assert [{_session_id, seq, _message_id}] = results
@@ -86,7 +90,9 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       # Second append should NOT query DB again (already cached)
       frames2 = [{session.id, "alice", "bob", "text", %{"text" => "third"}, %{}}]
       meta2 = %{index: 2, term: 1}
-      {final_state, {:reply, {:ok, results2}}, _} = RaftFSM.apply(meta2, {:append_batch, lane, frames2}, new_state)
+
+      {final_state, {:reply, {:ok, results2}}, _} =
+        RaftFSM.apply(meta2, {:append_batch, lane, frames2}, new_state)
 
       # Should assign seq 3 (incremented from cached last_seq = 2)
       assert [{_session_id, seq2, _message_id}] = results2
@@ -107,7 +113,9 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       ]
 
       meta = %{index: 1, term: 1}
-      {new_state, {:reply, {:ok, results}}, _} = RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
+
+      {new_state, {:reply, {:ok, results}}, _} =
+        RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
 
       # Should assign consecutive sequences
       assert length(results) == 3
@@ -129,7 +137,10 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
         Enum.reduce(1..5100, state, fn i, acc_state ->
           frames = [{session.id, "alice", "bob", "text", %{"text" => "msg#{i}"}, %{}}]
           meta = %{index: i, term: 1}
-          {new_state, {:reply, {:ok, _}}, _} = RaftFSM.apply(meta, {:append_batch, lane, frames}, acc_state)
+
+          {new_state, {:reply, {:ok, _}}, _} =
+            RaftFSM.apply(meta, {:append_batch, lane, frames}, acc_state)
+
           new_state
         end)
 
@@ -151,6 +162,7 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
 
       # Add some messages to the ring
       lane = 0
+
       frames = [
         {session.id, "alice", "bob", "text", %{"text" => "msg1"}, %{}},
         {session.id, "alice", "bob", "text", %{"text" => "msg2"}, %{}},
@@ -158,7 +170,9 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       ]
 
       meta = %{index: 1, term: 1}
-      {state_with_messages, {:reply, {:ok, _}}, _} = RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
+
+      {state_with_messages, {:reply, {:ok, _}}, _} =
+        RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
 
       %{state: state_with_messages, session: session}
     end
@@ -203,6 +217,7 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
 
       # Add messages
       lane = 0
+
       frames = [
         {session.id, "alice", "bob", "text", %{"text" => "msg1"}, %{}},
         {session.id, "alice", "bob", "text", %{"text" => "msg2"}, %{}},
@@ -210,7 +225,9 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       ]
 
       meta = %{index: 1, term: 1}
-      {state_with_messages, {:reply, {:ok, _}}, _} = RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
+
+      {state_with_messages, {:reply, {:ok, _}}, _} =
+        RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
 
       %{state: state_with_messages, session: session}
     end
@@ -243,6 +260,7 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
 
       # Add messages to lane 0
       lane = 0
+
       frames = [
         {session.id, "alice", "bob", "text", %{"text" => "msg1"}, %{}},
         {session.id, "alice", "bob", "text", %{"text" => "msg2"}, %{}},
@@ -250,7 +268,9 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       ]
 
       meta = %{index: 1, term: 1}
-      {state_with_messages, {:reply, {:ok, _}}, _} = RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
+
+      {state_with_messages, {:reply, {:ok, _}}, _} =
+        RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
 
       %{state: state_with_messages, session: session}
     end

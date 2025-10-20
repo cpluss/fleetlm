@@ -241,7 +241,8 @@ defmodule Fleetlm.Observability.PromEx.ChatPlugin do
           [:fleetlm, :raft, :state, :pending_flush_count],
           event_name: [:fleetlm, :raft, :state],
           measurement: :pending_flush_count,
-          description: "Messages pending flush (>watermark) - CRITICAL: validates flush keeps up.",
+          description:
+            "Messages pending flush (>watermark) - CRITICAL: validates flush keeps up.",
           tags: [:group_id, :lane],
           tag_values: &raft_state_tags/1
         ),

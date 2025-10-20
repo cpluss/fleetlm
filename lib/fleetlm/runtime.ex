@@ -69,12 +69,26 @@ defmodule Fleetlm.Runtime do
 
         # Call Raft
         result =
-          :ra.process_command({server_id, Node.self()}, {:append_batch, lane, frames}, @raft_timeout)
+          :ra.process_command(
+            {server_id, Node.self()},
+            {:append_batch, lane, frames},
+            @raft_timeout
+          )
 
         # Emit telemetry
         duration_us = System.monotonic_time(:microsecond) - start_time
 
-        handle_append_result(result, session_id, sender_id, kind, content, metadata, group_id, lane, duration_us)
+        handle_append_result(
+          result,
+          session_id,
+          sender_id,
+          kind,
+          content,
+          metadata,
+          group_id,
+          lane,
+          duration_us
+        )
 
       {:error, reason} ->
         duration_us = System.monotonic_time(:microsecond) - start_time
@@ -84,7 +98,17 @@ defmodule Fleetlm.Runtime do
     end
   end
 
-  defp handle_append_result(result, session_id, sender_id, kind, content, metadata, group_id, lane, duration_us) do
+  defp handle_append_result(
+         result,
+         session_id,
+         sender_id,
+         kind,
+         content,
+         metadata,
+         group_id,
+         lane,
+         duration_us
+       ) do
     case result do
       # Ra wraps our FSM reply: {:ok, fsm_reply, leader}
       # FSM returns [{session_id, seq, message_id}]
@@ -143,7 +167,11 @@ defmodule Fleetlm.Runtime do
 
       {:timeout, leader} ->
         Fleetlm.Observability.Telemetry.emit_raft_append(:timeout, group_id, lane, duration_us)
-        Logger.warning("Raft append timeout for session #{session_id}, leader: #{inspect(leader)}")
+
+        Logger.warning(
+          "Raft append timeout for session #{session_id}, leader: #{inspect(leader)}"
+        )
+
         {:timeout, leader}
 
       {:error, reason} ->

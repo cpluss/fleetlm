@@ -83,7 +83,6 @@ defmodule Fleetlm.TestCase do
     session
   end
 
-
   @doc """
   Retry the provided assertion until it succeeds or the timeout elapses.
   Re-raises the last assertion error when the timeout is exceeded.
@@ -135,7 +134,6 @@ defmodule Fleetlm.TestCase do
       import Ecto.Query
     end
   end
-
 
   defp setup_database_sandbox(tags) do
     ownership_timeout = if tags[:async], do: 120_000, else: 300_000

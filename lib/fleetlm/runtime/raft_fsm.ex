@@ -41,7 +41,8 @@ defmodule Fleetlm.Runtime.RaftFSM do
   @ring_capacity 5000
   @snapshot_interval_ms 250
   @snapshot_bytes_threshold 256 * 1024
-  @conversation_ttl_seconds 3600  # Evict after 1 hour inactivity
+  # Evict after 1 hour inactivity
+  @conversation_ttl_seconds 3600
 
   defmodule Conversation do
     @moduledoc "Hot metadata for a session (replicated in Raft state)"
@@ -207,6 +208,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
   def apply(meta, :force_snapshot, state) do
     # Force creation of a snapshot at the current Raft index.
     snapshot_index = meta.index
+
     new_state = %{
       state
       | last_snapshot_index: snapshot_index,
@@ -525,9 +527,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
         {lane_data.lane_id, lane}
       end
 
-    Logger.info(
-      "Group #{snapshot.group_id}: Restored from snapshot index #{snapshot.raft_index}"
-    )
+    Logger.info("Group #{snapshot.group_id}: Restored from snapshot index #{snapshot.raft_index}")
 
     %__MODULE__{
       group_id: snapshot.group_id,
@@ -593,7 +593,9 @@ defmodule Fleetlm.Runtime.RaftFSM do
       )
     )
 
-    Logger.debug("Group #{state.group_id}: Snapshot created at index #{state.last_snapshot_index}")
+    Logger.debug(
+      "Group #{state.group_id}: Snapshot created at index #{state.last_snapshot_index}"
+    )
 
     binary
   end

@@ -542,7 +542,13 @@ defmodule Fleetlm.Observability.Telemetry do
 
   This is CRITICAL for detecting memory pressure and flush lag.
   """
-  @spec emit_raft_state(non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()) ::
+  @spec emit_raft_state(
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer(),
+          non_neg_integer()
+        ) ::
           :ok
   def emit_raft_state(group_id, lane, in_state_count, pending_flush_count, conversation_count)
       when is_integer(group_id) and is_integer(lane) and is_integer(in_state_count) and

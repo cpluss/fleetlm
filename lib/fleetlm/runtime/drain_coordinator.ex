@@ -185,7 +185,10 @@ defmodule Fleetlm.Runtime.DrainCoordinator do
         :ok
 
       {:timeout, leader} ->
-        Logger.warning("Snapshot command timed out for group #{group_id}: leader=#{inspect(leader)}")
+        Logger.warning(
+          "Snapshot command timed out for group #{group_id}: leader=#{inspect(leader)}"
+        )
+
         {:error, :timeout}
 
       {:error, reason} ->

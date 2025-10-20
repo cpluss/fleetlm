@@ -163,7 +163,8 @@ defmodule Fleetlm.Runtime.RaftManager do
 
       {:error, :enoent} ->
         # Cluster doesn't exist yet, retry
-        Process.sleep(100)  # Brief backoff
+        # Brief backoff
+        Process.sleep(100)
         join_cluster_with_retry(group_id, server_id, cluster_name, machine, retries: n - 1)
 
       {:error, reason} ->

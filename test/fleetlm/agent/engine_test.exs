@@ -139,8 +139,8 @@ defmodule Fleetlm.Agent.EngineTest do
       :sys.get_state(engine)
 
       [
-        {^key, ^user_id, last_sent, target_seq, persisted_due_at, first_seq, enqueued_at, attempts,
-         status}
+        {^key, ^user_id, last_sent, target_seq, persisted_due_at, first_seq, enqueued_at,
+         attempts, status}
       ] = :ets.lookup(:agent_dispatch_queue, key)
 
       assert last_sent == 3

@@ -49,7 +49,7 @@ defmodule Fleetlm.Runtime.RaftTopology do
     |> Enum.map(fn {_key, %{metas: metas}} -> metas end)
     |> List.flatten()
     |> Enum.filter(&(&1[:status] == :ready))
-    |> Enum.map(&(&1[:node]))
+    |> Enum.map(& &1[:node])
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
     |> Enum.sort()
@@ -63,7 +63,7 @@ defmodule Fleetlm.Runtime.RaftTopology do
     Presence.list(@presence_topic)
     |> Enum.map(fn {_key, %{metas: metas}} -> metas end)
     |> List.flatten()
-    |> Enum.map(&(&1[:node]))
+    |> Enum.map(& &1[:node])
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
     |> Enum.sort()
@@ -129,7 +129,10 @@ defmodule Fleetlm.Runtime.RaftTopology do
     current_cluster = [Node.self() | Node.list()] |> length()
 
     if current_cluster < expected_nodes do
-      Logger.debug("RaftTopology: waiting for cluster (#{current_cluster}/#{expected_nodes} nodes connected)")
+      Logger.debug(
+        "RaftTopology: waiting for cluster (#{current_cluster}/#{expected_nodes} nodes connected)"
+      )
+
       Process.send_after(self(), :check_readiness, @readiness_interval_ms)
       {:noreply, state}
     else
@@ -157,7 +160,10 @@ defmodule Fleetlm.Runtime.RaftTopology do
         schedule_rebalance(state, immediate: true)
         {:noreply, %{state | status: :ready}}
       else
-        Logger.debug("RaftTopology: joined #{Enum.count(my_groups, &joined_group?/1)}/#{length(my_groups)} groups")
+        Logger.debug(
+          "RaftTopology: joined #{Enum.count(my_groups, &joined_group?/1)}/#{length(my_groups)} groups"
+        )
+
         Process.send_after(self(), :check_readiness, @readiness_interval_ms)
         {:noreply, %{state | status: :joining}}
       end
@@ -242,7 +248,9 @@ defmodule Fleetlm.Runtime.RaftTopology do
     my_server = {server_id, Node.self()}
 
     case Process.whereis(server_id) do
-      nil -> false
+      nil ->
+        false
+
       _pid ->
         case :ra.members(my_server) do
           {:ok, members, _leader} -> my_server in members
@@ -282,7 +290,9 @@ defmodule Fleetlm.Runtime.RaftTopology do
         to_remove = current -- desired
 
         unless Enum.empty?(to_add) and Enum.empty?(to_remove) do
-          Logger.warning("Rebalancing group #{group_id}: +#{length(to_add)} -#{length(to_remove)}")
+          Logger.warning(
+            "Rebalancing group #{group_id}: +#{length(to_add)} -#{length(to_remove)}"
+          )
         end
 
         # Add members first, then wait for commit, then remove
@@ -295,7 +305,9 @@ defmodule Fleetlm.Runtime.RaftTopology do
               Logger.debug("RaftTopology: adds committed for group #{group_id}")
 
             :timeout ->
-              Logger.warning("RaftTopology: timeout waiting for adds to commit for group #{group_id}")
+              Logger.warning(
+                "RaftTopology: timeout waiting for adds to commit for group #{group_id}"
+              )
           end
         end
 
@@ -306,7 +318,9 @@ defmodule Fleetlm.Runtime.RaftTopology do
         :ok
 
       {:error, reason} ->
-        Logger.debug("RaftTopology: cannot fetch members for group #{group_id}: #{inspect(reason)}")
+        Logger.debug(
+          "RaftTopology: cannot fetch members for group #{group_id}: #{inspect(reason)}"
+        )
 
       {:timeout, _} ->
         Logger.debug("RaftTopology: timeout fetching members for group #{group_id}")
@@ -334,7 +348,10 @@ defmodule Fleetlm.Runtime.RaftTopology do
         :ok
 
       {:error, reason} ->
-        Logger.warning("RaftTopology: failed to add #{inspect(node)} to group #{group_id}: #{inspect(reason)}")
+        Logger.warning(
+          "RaftTopology: failed to add #{inspect(node)} to group #{group_id}: #{inspect(reason)}"
+        )
+
         {:error, reason}
 
       {:timeout, _} ->
@@ -360,7 +377,10 @@ defmodule Fleetlm.Runtime.RaftTopology do
         :ok
 
       {:error, reason} ->
-        Logger.warning("RaftTopology: failed to remove #{inspect(node)} from group #{group_id}: #{inspect(reason)}")
+        Logger.warning(
+          "RaftTopology: failed to remove #{inspect(node)} from group #{group_id}: #{inspect(reason)}"
+        )
+
         {:error, reason}
 
       {:timeout, _} ->
@@ -389,7 +409,8 @@ defmodule Fleetlm.Runtime.RaftTopology do
 
   defp schedule_rebalance(state, opts \\ [])
 
-  defp schedule_rebalance(%{rebalance_timer: ref} = state, _opts) when is_reference(ref) or ref == :sent do
+  defp schedule_rebalance(%{rebalance_timer: ref} = state, _opts)
+       when is_reference(ref) or ref == :sent do
     state
   end
 
@@ -437,7 +458,8 @@ defmodule Fleetlm.Runtime.RaftTopology do
           if Enum.all?(desired_members, &(&1 in current)) do
             :ok
           else
-            Process.sleep(50)  # Retry backoff
+            # Retry backoff
+            Process.sleep(50)
             poll_membership(server_ref, desired_members, deadline)
           end
 
@@ -451,8 +473,12 @@ defmodule Fleetlm.Runtime.RaftTopology do
   defp parse_expected_cluster_size do
     # Parse CLUSTER_NODES env to determine expected cluster size
     case System.get_env("CLUSTER_NODES") do
-      nil -> 1
-      "" -> 1
+      nil ->
+        1
+
+      "" ->
+        1
+
       nodes_str ->
         nodes_str
         |> String.split(",")

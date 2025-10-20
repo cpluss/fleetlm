@@ -86,7 +86,6 @@ defmodule Fleetlm.Storage do
     end
   end
 
-
   @doc """
   Get a single session by ID.
   """
