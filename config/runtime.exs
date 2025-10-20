@@ -20,6 +20,10 @@ if System.get_env("PHX_SERVER") do
   config :fleetlm, FleetlmWeb.Endpoint, server: true
 end
 
+# Suppress Ra (Raft library) verbose logs
+# Call :logger.set_application_level(:ra, :error) at runtime to filter Ra logs
+# This is set in RaftTopology.init/1
+
 # Cluster configuration (works in all environments, not just prod)
 cluster_nodes = System.get_env("CLUSTER_NODES")
 

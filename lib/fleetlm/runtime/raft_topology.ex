@@ -84,6 +84,9 @@ defmodule Fleetlm.Runtime.RaftTopology do
       {:error, {:already_started, _}} -> :ok
     end
 
+    # Suppress Ra's verbose logs - only show errors
+    :logger.set_application_level(:ra, :error)
+
     :ok = Phoenix.PubSub.subscribe(Fleetlm.PubSub, @presence_topic)
     :ok = :net_kernel.monitor_nodes(true, node_type: :visible)
 
@@ -96,7 +99,7 @@ defmodule Fleetlm.Runtime.RaftTopology do
       {:error, {:already_tracked, _}} -> :ok
     end
 
-    Logger.info("RaftTopology: starting in joining state on #{Node.self()}")
+    Logger.debug("RaftTopology: starting in joining state on #{Node.self()}")
 
     Process.send_after(self(), :check_readiness, @readiness_interval_ms)
 
@@ -142,7 +145,7 @@ defmodule Fleetlm.Runtime.RaftTopology do
       not_started = Enum.reject(my_groups, &group_running?/1)
 
       unless Enum.empty?(not_started) do
-        Logger.info("RaftTopology: Starting #{length(not_started)} groups asynchronously...")
+        Logger.debug("RaftTopology: Starting #{length(not_started)} groups asynchronously...")
 
         Task.Supervisor.async_stream_nolink(
           Fleetlm.RaftTaskSupervisor,
@@ -155,7 +158,7 @@ defmodule Fleetlm.Runtime.RaftTopology do
       end
 
       if Enum.all?(my_groups, &joined_group?/1) do
-        Logger.info("RaftTopology: joined #{length(my_groups)} groups; marking ready")
+        Logger.debug("RaftTopology: joined #{length(my_groups)} groups; marking ready")
         mark_ready()
         schedule_rebalance(state, immediate: true)
         {:noreply, %{state | status: :ready}}
@@ -172,7 +175,7 @@ defmodule Fleetlm.Runtime.RaftTopology do
 
   @impl true
   def handle_info({:nodeup, node, _info}, state) do
-    Logger.info("RaftTopology: node up #{inspect(node)}")
+    Logger.debug("RaftTopology: node up #{inspect(node)}")
     {:noreply, schedule_rebalance(state)}
   end
 
@@ -209,9 +212,9 @@ defmodule Fleetlm.Runtime.RaftTopology do
         Logger.debug("RaftTopology: skipping rebalance (no ready nodes yet)")
 
       coordinator?(ready) ->
-        Logger.info("RaftTopology: coordinating rebalance across #{length(ready)} ready nodes")
+        Logger.debug("RaftTopology: coordinating rebalance across #{length(ready)} ready nodes")
         Enum.each(0..255, &rebalance_group(&1, ready))
-        Logger.info("RaftTopology: rebalance complete")
+        Logger.debug("RaftTopology: rebalance complete")
 
       true ->
         Logger.debug("RaftTopology: skipping rebalance (coordinator is someone else)")
@@ -332,7 +335,7 @@ defmodule Fleetlm.Runtime.RaftTopology do
   defp add_member(group_id, {server_id, node} = member) do
     my_server = {server_id, Node.self()}
 
-    Logger.info("RaftTopology: adding #{inspect(node)} to group #{group_id}")
+    Logger.debug("RaftTopology: adding #{inspect(node)} to group #{group_id}")
 
     # Ensure the group is started on the target node first
     :rpc.call(node, RaftManager, :start_group, [group_id])
@@ -340,7 +343,7 @@ defmodule Fleetlm.Runtime.RaftTopology do
     # Use server reference (not cluster name atom)
     case :ra.add_member(my_server, member) do
       {:ok, _members, _leader} ->
-        Logger.info("RaftTopology: added #{inspect(node)} to group #{group_id}")
+        Logger.debug("RaftTopology: added #{inspect(node)} to group #{group_id}")
         :ok
 
       {:error, :not_leader} ->
@@ -363,12 +366,12 @@ defmodule Fleetlm.Runtime.RaftTopology do
   defp remove_member(group_id, {server_id, node} = member) do
     my_server = {server_id, Node.self()}
 
-    Logger.info("RaftTopology: removing #{inspect(node)} from group #{group_id}")
+    Logger.debug("RaftTopology: removing #{inspect(node)} from group #{group_id}")
 
     # Use server reference (not cluster name atom)
     case :ra.remove_member(my_server, member) do
       {:ok, _members, _leader} ->
-        Logger.info("RaftTopology: removed #{inspect(node)} from group #{group_id}")
+        Logger.debug("RaftTopology: removed #{inspect(node)} from group #{group_id}")
         :rpc.call(node, :ra, :stop_server, [:default, {server_id, node}])
         :ok
 
@@ -424,19 +427,13 @@ defmodule Fleetlm.Runtime.RaftTopology do
     %{state | rebalance_timer: ref}
   end
 
-  defp fallback_nodes do
-    [Node.self() | Node.list()]
-    |> Enum.uniq()
-    |> Enum.sort()
-  end
-
   defp log_presence_diff(%{joins: joins, leaves: leaves}) do
     Enum.each(Map.keys(joins), fn key ->
-      Logger.info("RaftTopology: presence join #{key}")
+      Logger.debug("RaftTopology: presence join #{key}")
     end)
 
     Enum.each(Map.keys(leaves), fn key ->
-      Logger.info("RaftTopology: presence leave #{key}")
+      Logger.debug("RaftTopology: presence leave #{key}")
     end)
   end
 

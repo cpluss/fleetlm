@@ -255,13 +255,13 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
   @impl true
   def state_enter(:leader, state) do
-    Logger.info("Group #{state.group_id}: Elected leader")
+    Logger.debug("Group #{state.group_id}: Elected leader")
     # Start StreamWorkers (handled by supervisor)
     []
   end
 
   def state_enter(:follower, state) do
-    Logger.info("Group #{state.group_id}: Stepped down to follower")
+    Logger.debug("Group #{state.group_id}: Stepped down to follower")
     # Stop StreamWorkers (handled by supervisor)
     []
   end
@@ -364,7 +364,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
          }}
       end
 
-    Logger.info("Group #{group_id}: Cold start (no snapshot found)")
+    Logger.debug("Group #{group_id}: Cold start (no snapshot found)")
 
     %__MODULE__{
       group_id: group_id,
@@ -527,7 +527,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
         {lane_data.lane_id, lane}
       end
 
-    Logger.info("Group #{snapshot.group_id}: Restored from snapshot index #{snapshot.raft_index}")
+    Logger.debug("Group #{snapshot.group_id}: Restored from snapshot index #{snapshot.raft_index}")
 
     %__MODULE__{
       group_id: snapshot.group_id,

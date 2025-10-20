@@ -112,7 +112,7 @@ defmodule Fleetlm.Runtime.RaftManager do
       bootstrap_node = Enum.min(replica_nodes)
       am_bootstrap = my_node == bootstrap_node
 
-      Logger.info(
+      Logger.debug(
         "RaftManager: Starting group #{group_id} with #{length(replica_nodes)} replicas (bootstrap: #{bootstrap_node == my_node})"
       )
 
@@ -130,7 +130,7 @@ defmodule Fleetlm.Runtime.RaftManager do
       {:ok, started, not_started} ->
         cond do
           my_server_id in started ->
-            Logger.info("RaftManager: Bootstrapped group #{group_id}")
+            Logger.debug("RaftManager: Bootstrapped group #{group_id}")
             :ok
 
           my_server_id in not_started ->
@@ -142,7 +142,7 @@ defmodule Fleetlm.Runtime.RaftManager do
         end
 
       {:error, {:already_started, _}} ->
-        Logger.info("RaftManager: Group #{group_id} exists, joining")
+        Logger.debug("RaftManager: Group #{group_id} exists, joining")
         join_cluster(group_id, elem(my_server_id, 0), cluster_name, machine)
 
       {:error, reason} ->
@@ -194,7 +194,7 @@ defmodule Fleetlm.Runtime.RaftManager do
 
     case :ra.start_server(:default, server_conf) do
       :ok ->
-        Logger.info("RaftManager: Joined group #{group_id}")
+        Logger.debug("RaftManager: Joined group #{group_id}")
         :ok
 
       {:ok, _} ->
