@@ -19,7 +19,7 @@ cd fleetlm
 Run the test stack using docker
 
 ```bash
-docker compose up --build
+docker compose up
 ```
 
 The API and WebSocket endpoints are available at `http://localhost:4000` and `ws://localhost:4000/socket`.

@@ -61,22 +61,4 @@ FleetLM trades raw throughput for **predictable, durable behavior** suitable for
 
 ## How to Reproduce
 
-See [bench/aws/README.md](../bench/aws/README.md) for full setup.
-
-Quick start:
-```bash
-cd bench/aws/terraform
-terraform init
-terraform apply -var="ssh_public_key=$(cat ~/.ssh/id_rsa.pub)"
-
-cd ../scripts
-./deploy.sh
-./register-agent.sh
-./run-k6-remote.sh
-```
-
-Test infrastructure tears down cleanly:
-```bash
-cd bench/aws/terraform
-terraform destroy
-```
+See [bench/aws](https://github.com/cpluss/fleetlm/tree/main/bench/aws) for full setup.

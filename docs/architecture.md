@@ -5,20 +5,20 @@ sidebar_position: 5
 
 # FleetLM Architecture
 
-FleetLM is designed to run as a single container without too many moving components by leaning heavily on a clustered architecture.
+FleetLM is built for **predictable latency and zero data loss** in distributed environments. We use Raft consensus for the write path with Postgres as a write-behind cache, trading maximum throughput for operational simplicity and resilience.
 
-This incurs extra network traffic cost but gives us horizontal scalability and a reduced database engagement on the hot-path. It's ultimately faster to distribute session traffic across nodes and maintain a lightweight append-only log that is flushed every 200–300ms than it is to hit a central point of failure (the database) on each message.
+## Core Principles
+
+1. **Remove the database from the critical path** - Raft consensus provides quorum writes, Postgres is a write-behind cache
+2. **Stateless request handling** - No per-session processes, pure message routing
+3. **Horizontal scalability via sharding** - 256 Raft groups distribute load automatically
+4. **Boring, battle-tested technology** - Ra (RabbitMQ's Raft), Phoenix.Presence (CRDT), Postgres
 
 ![](./img/high-level-clustered.png)
 
-We split traffic into two components that runs on each cluster node:
+Every node in the cluster is identical, no designated "edge" or "owner" nodes. Clients connect to any node via WebSocket. That node routes messages to the appropriate Raft group (determined by hash), which replicates to 2-of-3 replicas before acknowledging. PubSub broadcasts the committed message back to subscribed clients.
 
-* **Edge** which is where we receive client traffic. Clients connect with WebSockets that allow us to stream and manage messages for them. This is typically chosen by default to be the closest node to the client itself, such that the entry-point into the cluster is on the edge.
-* **Owner-nodes** which are spread out across the cluster. These nodes are responsible for managing a total-order / canonical message log for each session. These are responsible for session management.
-
-> **Note that this also means that it's not necessarily always the same node that is responsible for a single request.**
-
-![](./img/architecture.png)
+> **Key insight:** Raft leader election is automatic. If the node handling your WebSocket dies, reconnect to any other node. If a Raft group's leader dies, followers elect a new leader within ~150ms. The system self-heals.
 
 ## Inbox & Session Management
 
@@ -39,101 +39,209 @@ Session delivery is at-least-once with sequence numbers. On reconnect the client
 sequenceDiagram
     participant Client
     participant SessionChannel
-    participant Router
-    participant SessionServer
-    participant SlotLogServer
+    participant Runtime
+    participant RaftGroup
     participant AgentEngine
     participant Agent
 
     Client->>SessionChannel: send message
-    SessionChannel->>Router: append_message()
-    Router->>SessionServer: append_message()
-    SessionServer->>SlotLogServer: append(entry)
-    SlotLogServer->>SlotLogServer: write to WAL + fsync
-    SlotLogServer-->>SessionServer: ok
-    SessionServer->>AgentEngine: enqueue dispatch
-    SessionServer-->>Router: {ok, message}
-    Router-->>SessionChannel: {ok, seq}
+    SessionChannel->>Runtime: append_message()
+    Runtime->>RaftGroup: :ra.process_command (quorum write)
+    RaftGroup->>RaftGroup: replicate to 2-of-3 nodes
+    RaftGroup-->>Runtime: {ok, seq, message_id}
+    Runtime->>AgentEngine: enqueue dispatch
+    Runtime->>SessionChannel: broadcast via PubSub
     SessionChannel-->>Client: ack {seq: N}
 
     Note over AgentEngine: Tick (50ms)
     AgentEngine->>Agent: POST /webhook
     Agent-->>AgentEngine: JSONL stream
-    AgentEngine->>Router: append agent responses
-    Router->>SessionServer: append_message()
-    SessionServer->>SlotLogServer: append(entries)
-    SessionServer->>SessionChannel: broadcast messages
+    AgentEngine->>Runtime: append agent responses
+    Runtime->>RaftGroup: :ra.process_command (batch)
+    RaftGroup-->>Runtime: {ok, seqs}
+    Runtime->>SessionChannel: broadcast via PubSub
     SessionChannel->>Client: push agent responses
 ```
 
-## Storage
+## Storage Architecture
 
-FleetLM uses a two-stage write-ahead log (WAL) architecture for flat memory usage under load.
+FleetLM prioritizes **availability and predictable latency** over maximum throughput. We use battle-tested distributed consensus (Raft) instead of custom replication, trading single-node performance for multi-datacenter resilience.
 
-### WAL Commit Log (Primary Storage)
+### Design Goals
 
-Messages append directly to disk in fixed-size segment files (128MB default). Each entry is framed as `<<len::32, crc32::32, payload::binary>>` with CRC validation on read. This provides:
+1. **Predictable p99 latency** (<150ms) even under load spikes
+2. **Zero data loss** during node failures or network partitions
+3. **Horizontal scalability** without manual sharding
+4. **Simple mental model** - no eventually-consistent quirks to debug
 
-- **Constant memory overhead** per session regardless of message volume
-- **Crash recovery** via cursor persistence and segment repair
+### The Trade-Off: Raft vs Custom WAL
 
-Cursors track `{segment, offset}` positions. On SlotLogServer init, invalid or missing cursors default to `{0, 0}` with a warning—no crashes, graceful recovery from the beginning.
+**Why Raft (what we chose):**
+- Proven consensus algorithm (used by etcd, Consul, CockroachDB)
+- RabbitMQ's Ra implementation is battle-tested at massive scale
+- Automatic leader election, log replication, split-brain protection
+- Quorum writes guarantee durability (2-of-3 replicas before ack)
 
-**Commit point:** A message is committed when appended and fsync'd to the WAL (batched every 512KB or 25ms). Publication happens immediately after commit.
+**Cost:**
+- Quorum write latency: ~8-14ms on localhost, 20-50ms cross-AZ
+- Throughput reduction: ~2.5x lower than single-node (network + replication overhead)
+- Network amplification: 1 write becomes 3 (leader + 2 followers)
 
-### Background Flush (Secondary Persistence)
+**Why we accept this:**
+- Chat workloads are latency-sensitive, not throughput-constrained
+- Eliminating unpredictable disk fsync spikes worth the quorum cost
+- No manual failover, no split-brain debugging, no data loss investigations
+- Horizontal scaling via more groups when needed
 
-WAL segments stream to Postgres in 4MB chunks every 300ms (configurable). Flushed entries are removed from disk, keeping WAL size bounded. Database writes are:
+### How It Works
 
-- **Batched** (5000 messages/insert for Postgres param limits)
-- **Non-blocking** (supervised tasks under `SlotLogTaskSupervisor`)
-- **Cursor-tracked** so restarts resume from last flushed position
+**256 Raft groups** distribute load across the cluster. Each group maintains independent consensus:
 
-Database lag is intentional & configurable, making DB load predictable and removing it from the hot path under stress.
+- **3 replicas** spread across nodes (tolerates 1 node failure)
+- **Deterministic placement** via rendezvous hashing (minimal reshuffling on topology changes)
+- **Parallel writes** within each group (16 lanes per group = 4096 total write streams)
 
-> Traditional designs use Postgres/external storage as the source of truth, requiring careful tuning under load. FleetLM's WAL-first approach keeps memory flat, latency low, and tolerates database slowdowns without dropping messages.
+Messages map to groups via hash(session_id), eliminating hotspots. Each group's Raft leader accepts writes, replicates to followers, and only acks after majority commit.
 
-## Sharding & Supervision
+**Conversation state lives in RAM:** Each group caches `{session_id → last_seq}` in the Raft state machine. Sequence assignment is a pure in-memory operation—no database query required. This is the key latency win.
 
-The WAL architecture requires single-writer semantics per session. We distribute sessions across the cluster using consistent hashing (hash ring) to balance load.
+**Hot message tail in ETS:** Recent messages (~5000 per lane, 3-5 seconds) stay in ETS rings for instant replay. Older messages served from Postgres.
 
-### Session Distribution
+### Postgres: The Durable Cache
 
-**Key behaviors:**
-- **Hash ring** maps each session to an owner node deterministically
-- **Sticky routing** keeps active sessions on their current node (ignores hash ring)
-- **SessionTracker** (Phoenix.Tracker CRDT) provides cluster-wide session → node mapping
-- Sessions marked `:draining` reject new appends with backpressure, allowing clean handoff
+Postgres is **not** on the critical path. A background flusher streams committed Raft state to the database every 5 seconds:
 
-### Lifecycle & Isolation
+- **Batched writes** (5000 messages per insert to respect Postgres parameter limits)
+- **Idempotent** (duplicate inserts ignored via unique constraint)
+- **Non-blocking** (flush failures don't stop new appends)
 
-- **SessionServer** (`:transient` restart) crashes are isolated—only that session restarts
-- **SlotLogServer** (`:permanent`) runs independently per storage slot—crashes don't cascade
-- **Runtime.Supervisor** uses `:one_for_one` strategy, preventing cascading restarts
-- Storage, registries, and session processes are fully isolated
+If Postgres goes down, appends continue—messages queue in Raft state until the database recovers. On cold start, the system replays from Postgres then resumes from Raft.
 
-When cluster topology changes (scale up/down):
-1. HashRing recalculates ownership
-2. RebalanceManager marks moved sessions as `:draining`
-3. SessionServer drains (flushes WAL → DB, terminates)
-4. SessionTracker auto-removes on process death
-5. Next request routes to new owner, starts fresh SessionServer
+**Snapshots** compact Raft logs: every 100k appends, the state machine snapshots to Postgres. Ra discards log entries below the watermark, keeping memory bounded.
 
-No split-writes, no data loss—cursor-based recovery handles restarts gracefully.
+> **The philosophy:** Raft handles replication, consensus, and failover. Postgres handles durable archival and analytics. The hot path never waits for the database.
+
+## Cluster Membership & Replica Placement
+
+Operating a Raft cluster introduces a coordination problem: which nodes should host replicas for each of the 256 groups? FleetLM solves this with **rendezvous hashing**—a proven technique from distributed caching.
+
+### Why Rendezvous Hashing?
+
+Traditional consistent hashing (hash rings) requires coordination when nodes join or leave. Rendezvous hashing eliminates this:
+
+- **Zero coordination:** Each node independently computes the same replica assignment
+- **Minimal churn:** Adding a 4th node only reassigns ~25% of groups (1/N), not 100%
+- **Deterministic:** Same inputs always produce same outputs across all nodes
+
+**How it works:** For each group, score all available nodes using hash(group_id, node). Take the top 3 scores. Done. No cluster-wide state sync required.
+
+### Dynamic Membership
+
+Real deployments need rolling updates, autoscaling, and failure recovery. FleetLM handles topology changes automatically using Phoenix.Presence (a CRDT) and Ra's membership APIs.
+
+**Adding a node (e.g., Kubernetes scale-up):**
+
+1. New pod starts, discovers cluster via DNS/service discovery
+2. Announces itself in Presence as "joining"
+3. Waits for cluster connection, then starts assigned Raft groups
+4. Marks itself "ready" once all groups have joined
+5. Coordinator node rebalances affected groups (adds new replica)
+
+**Removing a node (e.g., rolling deploy):**
+
+1. Presence detects node departure (drain signal or crash)
+2. Coordinator computes which groups lost a replica
+3. Removes dead node from Raft membership (Ra handles leadership transfer)
+4. System continues with 2-node replicas until replacement joins
+
+**The coordinator** is elected deterministically (lowest node name) to avoid conflicts. Only the coordinator triggers rebalances. Membership changes go through Raft consensus—Ra rejects concurrent changes automatically.
+
+### Failure Modes & Guarantees
+
+**Single node dies:**
+- Raft groups on that node lose 1-of-3 replicas
+- Remaining 2 nodes still have quorum (2-of-2)
+- Writes continue uninterrupted
+- System degraded until new node joins (no fault tolerance)
+
+**Network partition (1 vs 2 nodes):**
+- Minority side (1 node) cannot achieve quorum
+- Returns `:timeout` to clients—no silent data loss
+- Majority side (2 nodes) continues serving traffic
+- On heal, minority syncs from majority's log
+
+**Split-brain:**
+- Impossible by design—Raft quorum prevents dual leaders
+- Partitioned minority steps down immediately (no acks)
+
+**Leader election:**
+- Automatic on failure (~150ms election timeout)
+- New leader has full replicated log (no data loss)
+- Clients retry failed requests—at-least-once delivery
+
+### Process Isolation
+
+FleetLM has no per-session processes. The only long-lived processes are:
+
+- **Raft state machines** (256 groups × 3 replicas = ~768 processes cluster-wide)
+- **Background flusher** (1 per node, streams to Postgres)
+- **Topology coordinator** (1 per node, monitors cluster changes)
+
+Crashes are localized—Ra supervises state machines internally, OTP supervises the rest with `:one_for_one` strategy. No cascading failures.
+
+## Known Bottlenecks & Mitigation
+
+### 1. Raft Quorum Latency
+
+**Bottleneck:** Every write replicates to 2-of-3 nodes before acknowledgment. Cross-AZ deployments add 5-20ms network RTT.
+
+**Impact:**
+- Single-node: p95 = 6ms
+- 3-node localhost: p95 = 14ms (+8ms quorum cost)
+- 3-node cross-AZ: p95 = 30-50ms (network-bound)
+
+**Mitigation:**
+- Deploy replicas in same AZ (1-3ms RTT) for latency-sensitive workloads
+- 256 groups × 16 lanes provide 4096 parallel write streams for throughput
+
+**When this becomes a problem:** Cross-region deployments where network latency exceeds 50ms. Deploy regional clusters independently in this scenario.
+
+### 2. Postgres Connection Pool Contention on Cold Reads
+
+**Bottleneck:** Replaying old sessions (last_seq far behind) triggers DB queries. If flush lag is high (Postgres slow or down), the ETS ring doesn't have the requested messages.
+
+**Impact:**
+- ETS ring holds ~5000 messages per lane (3-5 seconds)
+- Requests for messages older than ring → Postgres query
+- High concurrency + slow Postgres → pool exhaustion (default: 20 connections)
+- Queries block until connection available → timeout failures
+
+**Mitigation:**
+- Increase `pool_size` in prod (e.g., 50-100 connections for high cold-read workload)
+- Monitor `fleetlm_raft_state_pending_flush_count` metric—if >50k, Postgres is lagging
+- Tune `raft_flush_interval_ms` (default: 5000ms) to reduce lag at cost of more frequent DB writes
+- Consider read replicas for cold reads (separate pool)
+
+**When this becomes a problem:**
+- Users frequently reopening old sessions (weeks/months old)
+- Postgres cannot keep up with flush rate (undersized instance)
+- Memory exhaustion if flush lag grows unbounded
+
+**Operational guidance:** Monitor `fleetlm_raft_state_pending_flush_count` in production. Alert if sustained above 50k messages. Scale Postgres vertically or add read replicas for cold read traffic.
 
 ## Agent Dispatcher
 
-Agents are served by a single per-node dispatch engine. Session servers never talk directly to the engine; they simply place lightweight entries into ETS when a user sends a message. The engine polls the queue at a fixed cadence, spawns supervised tasks for webhook dispatch, and retries with exponential backoff on failure.
+Agents are served by a single per-node dispatch engine. The Runtime API enqueues dispatch requests after committing user messages to Raft. The engine polls the queue at a fixed cadence, spawns supervised tasks for webhook dispatch, and retries with exponential backoff on failure.
 
 ### Dispatch Pipeline
 
-1. **Enqueue:** `SessionServer` calls `Agent.Engine.enqueue/4`. The call upserts a single ETS table (`:agent_dispatch_queue`) with the schema:
+1. **Enqueue:** `Runtime.append_message/6` calls `Agent.Engine.enqueue/4` after Raft commit. The call upserts a single ETS table (`:agent_dispatch_queue`) with the schema:
    ```
    {key, user_id, last_sent, target_seq, due_at, first_seq, enqueued_at, attempts, status}
    ```
    Multiple user messages collapse into a single queue row by updating `target_seq` and `due_at`. Dispatch status (`:pending`, `:inflight`, `nil`) is tracked directly in ETS.
 2. **Scheduler tick:** `Agent.Engine` wakes every `agent_dispatch_tick_ms` (default 50ms) and selects due sessions where `due_at <= now` and `status != :inflight`. At most one dispatch runs per session at a time.
-3. **Async dispatch:** Each session spawns a supervised task under `Agent.Engine.TaskSupervisor`. The task builds the payload, performs the webhook via Finch (HTTP/2 connection pool), streams JSONL responses, and appends agent messages via `Router`. On success it updates `last_sent` and clears dispatch fields. On failure it requeues with exponential backoff capped at `agent_dispatch_retry_backoff_max_ms`.
+3. **Async dispatch:** Each session spawns a supervised task under `Agent.Engine.TaskSupervisor`. The task builds the payload, performs the webhook via Finch (HTTP/2 connection pool), streams JSONL responses, and appends agent messages via `Runtime.append_message`. On success it updates `last_sent` and clears dispatch fields. On failure it requeues with exponential backoff capped at `agent_dispatch_retry_backoff_max_ms`.
 4. **Back-pressure:** When tasks are saturated, sessions remain in the queue. New messages keep extending `target_seq`. No payloads are held in memory, and telemetry tracks queue length for saturation monitoring.
 
 ### Observability
@@ -151,8 +259,8 @@ We deliberately reuse the [AI SDK UI stream protocol](https://ai-sdk.dev/docs/ai
 The BEAM VM was built for telecom systems: fault-tolerant, highly concurrent, excellent at IO. FleetLM leverages:
 
 - **OTP supervision trees** for process isolation (`:one_for_one` prevents cascades)
-- **Phoenix.Tracker CRDTs** for distributed session tracking without coordination
-- **ETS** for lock-free agent dispatch queues
-- **Erlang file I/O** for efficient WAL segment writes
+- **Phoenix.Presence (CRDT)** for cluster-wide ready-node tracking without coordination
+- **ETS** for lock-free agent dispatch queues and Raft message rings
+- **Ra (Erlang Raft)** for distributed consensus (RabbitMQ's battle-tested implementation)
 
-Owner nodes enforce single-writer per session. On failure, the hash ring reassigns ownership, cursor recovery resumes from the last flushed position, and appends continue on the new owner—no fencing required.
+Raft handles replication, leader election, and split-brain protection automatically. On leader failure, followers elect a new leader within ~150ms. All committed writes are replicated to majority (2-of-3 nodes) before acknowledgment—no fencing, no manual failover required.
