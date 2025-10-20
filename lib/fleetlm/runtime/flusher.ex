@@ -115,6 +115,14 @@ defmodule Fleetlm.Runtime.Flusher do
         Logger.warning("Group #{group_id} not started, can not flush")
         :skip
 
+      {:error, :noproc} ->
+        # Expected in case the raft group has not started or crashed, nothing we
+        # can do here and it will be dealt with separately.
+        #
+        # This happens on startup when the flusher for example races with the
+        # raft initialisation itself, during drains, and frequently in tests.
+        :skip
+
       {:error, reason} ->
         duration_us = System.monotonic_time(:microsecond) - start_time
         Fleetlm.Observability.Telemetry.emit_raft_flush(:error, group_id, 0, duration_us)
@@ -177,6 +185,11 @@ defmodule Fleetlm.Runtime.Flusher do
 
         {:error, :not_leader} ->
           # Expected on followers, ignore
+          :ok
+
+        {:error, :noproc} ->
+          # Expected in case the raft group has not started or crashed, nothing we
+          # can do here and it will be dealt with separately.
           :ok
 
         {:error, reason} ->
