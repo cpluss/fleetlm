@@ -11,12 +11,13 @@ Guidance for Claude Code when collaborating on FleetLM.
 
 ## Architecture Cheat Sheet
 
-- **Edge nodes** accept HTTP/WebSocket traffic via `FleetlmWeb.SessionChannel`. Inbox summaries stream through `Fleetlm.Runtime.InboxServer`.
-- **Owner nodes** host `Fleetlm.Runtime.SessionServer` processes. Each SessionServer writes to a WAL-based commit log (`Fleetlm.Storage.SlotLogServer`) that flushes to Postgres every 300ms (configurable).
-- **Sharding** uses `Fleetlm.Runtime.HashRing` (consistent hashing) + `SessionTracker` (Phoenix.Tracker CRDT) for distributed session routing. Ring changes mark sessions as `:draining`, block new appends, flush to DB, then handoff to new owner.
-- **Agents** are external HTTP endpoints. `Fleetlm.Agent.Engine` polls an ETS queue (`:agent_dispatch_queue`) every 50ms, spawns supervised tasks for webhooks, and streams JSONL responses back into sessions.
-- **Inbox model**: one inbox per user, many sessions per user. Runtime keeps inbox snapshots in Cachex, relies on sequence numbers for replay.
-- **Supervision**: `Runtime.Supervisor` uses `:one_for_one` strategy. SessionServer crashes restart individually (`:transient`), SlotLogServer crashes are isolated per slot (`:permanent`). No cascading failures.
+- **Storage:** 256 Raft groups (Ra library) with 3 replicas each. 2-of-3 quorum writes, automatic leader election, split-brain protection built-in.
+- **No per-session processes:** Completely stateless request handling. Raft state machines are the only long-lived processes.
+- **Conversation metadata in RAM:** Last sequence number cached in Raft state—no DB queries on message append.
+- **Postgres as write-behind:** Background flusher streams Raft state to DB every 5s. Batched, idempotent, non-blocking. DB failures don't stop appends.
+- **Cluster membership:** Phoenix.Presence (CRDT) tracks ready nodes. Rendezvous hashing assigns replicas deterministically. Topology coordinator rebalances when nodes join/leave.
+- **Agent dispatch:** ETS queue + polling engine pattern. Webhooks via Finch (HTTP/2 pooling), JSONL streaming back to Raft.
+- **Inbox model:** One inbox per user, subscribed to metadata deltas. Many sessions per user, subscribed to raw message streams.
 
 ## Working Standards
 
@@ -29,10 +30,10 @@ Guidance for Claude Code when collaborating on FleetLM.
 ## Domain Assumptions & Conventions
 
 - Conversations are always human ↔ agent. UI and APIs assume exactly one agent per session.
-- Messages are at-least-once; clients resend `last_seq` on reconnect and expect replay. Keep sequence handling intact when modifying routers or runtime.
-- Session and inbox processes are transient: they boot lazily, drain cleanly, and rebuild from WAL cursors + Postgres on restart. Code must tolerate restarts without data loss.
-- **WAL storage**: Messages append to disk (`Fleetlm.Storage.CommitLog`) in 128MB segments. Cursors track `{segment, offset}` flush positions. Invalid cursors default to `{0, 0}` with a warning—no crashes.
-- **Background flush**: SlotLogServer streams WAL segments to Postgres in 4MB chunks via supervised tasks. Batches up to 5000 messages/insert (Postgres param limit).
+- Messages are at-least-once; clients resend `last_seq` on reconnect and expect replay. Keep sequence handling intact when modifying Runtime API.
+- **Raft storage**: Messages commit to Ra groups (256 groups × 3 replicas). Conversation metadata (last_seq, user_id, agent_id) cached in Raft state - no DB queries on append.
+- **Background flush**: Flusher queries unflushed messages from ETS rings every 5s, batch-inserts to Postgres (5000 msgs/batch for param limits). Idempotent on `[session_id, seq]`.
+- **Snapshots**: Every 100k appends, RaftFSM snapshots to `raft_snapshots` table. Ra compacts log via watermarks.
 - LiveView templates begin with `<Layouts.app ...>`; forms use `<.form>`/`<.input>` combos, icons use `<.icon>`.
 - Tailwind v4 is the styling backbone. Maintain the stock import stanza and craft micro-interactions via utility classes.
 
@@ -46,10 +47,23 @@ Guidance for Claude Code when collaborating on FleetLM.
 
 1. All new/modified modules follow the fail-loud, pattern-matching style.
 2. Telemetry tags remain explicit; no new "unknown" defaults unless product requirements demand it.
-3. Tests cover new code paths, especially LiveView/Channel interactions, agent webhooks, and WAL/cursor recovery.
+3. Tests cover new code paths, especially LiveView/Channel interactions, agent webhooks, and Raft group operations.
 4. Run `mix precommit` and address every warning, formatter diff, and test failure.
-5. Document runtime changes (process lifecycles, sharding, agent flows, storage) in `docs/` if behaviour shifts meaningfully.
+5. Document runtime changes (Raft membership, rebalancing, storage) in `docs/` if behaviour shifts meaningfully.
 
 ## Hot Path Design
 
-Keep the critical path flat: append to WAL, fsync in batches (512KB/25ms), publish immediately. Background tasks flush to Postgres without blocking the write path.
+**The goal:** Sub-150ms p99 latency for message appends, even under load.
+
+**Critical path:**
+1. Client sends message → SessionChannel receives
+2. Runtime API calls Raft group (quorum write to 2-of-3 nodes)
+3. Raft assigns sequence number from cached conversation state (RAM, no DB)
+4. Broadcast via PubSub → client receives ack
+
+**What's NOT on the critical path:**
+- Database writes (background flusher, 5s interval)
+- Agent webhooks (async queue, 50ms polling)
+- Snapshots (triggered at 100k appends, async)
+
+**Key insight:** Conversation metadata (last_seq, user_id, agent_id) lives in Raft state. This eliminates the database query that would otherwise dominate p99 latency. Raft's quorum cost (~10-20ms) is predictable and bounded, unlike database connection pools under contention.
