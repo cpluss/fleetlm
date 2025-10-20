@@ -75,7 +75,3 @@ Apache 2.0 - see [LICENSE](LICENSE)
 ---
 
 **FleetLM makes LLM infra as boring as it should be.**
-
-Run it once, and stop thinking about gnarly chat infra.
-
-© 2025 FleetLM. All rights reserved.
