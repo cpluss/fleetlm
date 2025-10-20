@@ -98,7 +98,7 @@ defmodule Fleetlm.Agent.EngineTest do
 
       [
         {^key, ^user_id, last_sent, target_seq, _due_at, _first_seq, _enqueued_at, attempts,
-         status}
+         status, _user_message_sent_at}
       ] = :ets.lookup(:agent_dispatch_queue, key)
 
       assert last_sent == 0
@@ -124,7 +124,8 @@ defmodule Fleetlm.Agent.EngineTest do
         2,
         now,
         0,
-        :inflight
+        :inflight,
+        now
       })
 
       info = %{
@@ -140,7 +141,7 @@ defmodule Fleetlm.Agent.EngineTest do
 
       [
         {^key, ^user_id, last_sent, target_seq, persisted_due_at, first_seq, enqueued_at,
-         attempts, status}
+         attempts, status, _user_message_sent_at}
       ] = :ets.lookup(:agent_dispatch_queue, key)
 
       assert last_sent == 3
@@ -168,7 +169,8 @@ defmodule Fleetlm.Agent.EngineTest do
         2,
         now,
         0,
-        :inflight
+        :inflight,
+        now
       })
 
       info = %{
@@ -183,7 +185,8 @@ defmodule Fleetlm.Agent.EngineTest do
       :sys.get_state(engine)
 
       [
-        {^key, ^user_id, last_sent, target_seq, due_at, first_seq, enqueued_at, attempts, status}
+        {^key, ^user_id, last_sent, target_seq, due_at, first_seq, enqueued_at, attempts, status,
+         user_message_sent_at}
       ] = :ets.lookup(:agent_dispatch_queue, key)
 
       assert last_sent == 2
@@ -193,6 +196,7 @@ defmodule Fleetlm.Agent.EngineTest do
       assert enqueued_at == nil
       assert attempts == 0
       assert status == nil
+      assert user_message_sent_at == nil
     end
   end
 

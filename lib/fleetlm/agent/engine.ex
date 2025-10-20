@@ -26,8 +26,9 @@ defmodule Fleetlm.Agent.Engine do
   @typedoc "Identifies a session/agent pair"
   @type session_key :: {String.t(), String.t()}
 
-  # Unified ETS schema: {key, user_id, last_sent, target_seq, due_at, first_seq, enqueued_at, attempts, status}
+  # Unified ETS schema: {key, user_id, last_sent, target_seq, due_at, first_seq, enqueued_at, attempts, status, user_message_sent_at}
   # status: nil (idle), :pending (queued), :inflight (dispatching)
+  # user_message_sent_at: timestamp when user message was sent (for TTFT telemetry), nil if not a user-initiated message
   #
   # Tuple field positions (1-indexed for :ets.update_element)
   # @_pos_key 1
@@ -39,6 +40,7 @@ defmodule Fleetlm.Agent.Engine do
   # @pos_enqueued_at 7
   # @pos_attempts 8
   @pos_status 9
+  # @pos_user_message_sent_at 10 - not needed since we don't do targeted updates on this field
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -50,9 +52,12 @@ defmodule Fleetlm.Agent.Engine do
 
   The hot path inserts/updates a single ETS table and returns immediately. Multiple
   messages collapse into a single queue entry via `target_seq` and `due_at`.
+
+  The optional `user_message_sent_at` parameter is a monotonic timestamp (milliseconds)
+  for TTFT (Time To First Token) telemetry tracking. If not provided, defaults to current time.
   """
-  @spec enqueue(String.t(), String.t(), String.t(), non_neg_integer()) :: :ok
-  def enqueue(session_id, agent_id, user_id, seq)
+  @spec enqueue(String.t(), String.t(), String.t(), non_neg_integer(), integer() | nil) :: :ok
+  def enqueue(session_id, agent_id, user_id, seq, user_message_sent_at \\ nil)
       when is_binary(session_id) and is_binary(agent_id) and is_binary(user_id) and
              is_integer(seq) do
     if Application.get_env(:fleetlm, :disable_agent_webhooks, false) do
@@ -63,8 +68,10 @@ defmodule Fleetlm.Agent.Engine do
       key = {agent_id, session_id}
       now = System.monotonic_time(:millisecond)
       due_at = now + debounce_window(agent_id)
+      # Use provided timestamp or current time for TTFT tracking
+      message_sent_at = user_message_sent_at || now
 
-      upsert_queue(key, user_id, seq, due_at, now, 0)
+      upsert_queue(key, user_id, seq, due_at, now, 0, message_sent_at)
 
       :telemetry.execute(
         [:fleetlm, :agent, :queue, :length],
@@ -146,7 +153,8 @@ defmodule Fleetlm.Agent.Engine do
   end
 
   defp maybe_start_dispatch(entry, state) do
-    {key, user_id, _last_sent, target_seq, _due_at, first_seq, enqueued_at, attempts, status} =
+    {key, user_id, _last_sent, target_seq, _due_at, first_seq, enqueued_at, attempts, status,
+     user_message_sent_at} =
       entry
 
     if status == :inflight do
@@ -159,11 +167,29 @@ defmodule Fleetlm.Agent.Engine do
 
       state
     else
-      launch_dispatch(key, user_id, target_seq, first_seq, enqueued_at, attempts, state)
+      launch_dispatch(
+        key,
+        user_id,
+        target_seq,
+        first_seq,
+        enqueued_at,
+        attempts,
+        user_message_sent_at,
+        state
+      )
     end
   end
 
-  defp launch_dispatch(key, user_id, target_seq, first_seq, enqueued_at, attempts, state) do
+  defp launch_dispatch(
+         key,
+         user_id,
+         target_seq,
+         first_seq,
+         enqueued_at,
+         attempts,
+         user_message_sent_at,
+         state
+       ) do
     {agent_id, session_id} = key
     last_sent = lookup_last_sent(key, target_seq)
     scheduler = self()
@@ -181,7 +207,8 @@ defmodule Fleetlm.Agent.Engine do
       first_seq: first_seq,
       enqueued_at: enqueued_at,
       started_at: started_at,
-      attempts: attempts
+      attempts: attempts,
+      user_message_sent_at: user_message_sent_at
     }
 
     task = fn ->
@@ -217,10 +244,10 @@ defmodule Fleetlm.Agent.Engine do
     case :ets.lookup(@table, key) do
       [
         {^key, user_id, _old_last_sent, target_seq, due_at, first_seq, enqueued_at, _attempts,
-         _status}
+         _status, user_message_sent_at}
       ] ->
         if is_nil(target_seq) or target_seq <= new_last_sent do
-          :ets.insert(@table, {key, user_id, new_last_sent, nil, nil, nil, nil, 0, nil})
+          :ets.insert(@table, {key, user_id, new_last_sent, nil, nil, nil, nil, 0, nil, nil})
         else
           {agent_id, _session_id} = key
           now = System.monotonic_time(:millisecond)
@@ -243,7 +270,8 @@ defmodule Fleetlm.Agent.Engine do
             next_first_seq,
             next_enqueued_at,
             0,
-            :pending
+            :pending,
+            user_message_sent_at
           })
         end
 
@@ -260,7 +288,7 @@ defmodule Fleetlm.Agent.Engine do
     case :ets.lookup(@table, key) do
       [
         {^key, user_id, last_sent, _target_seq, _due_at, _first_seq, _enqueued_at, _attempts,
-         _status}
+         _status, _user_message_sent_at}
       ] ->
         # Reset entry to the neutral "idle" state (mirrors complete_dispatch/2). We keep the row
         # so future enqueues retain the last_sent watermark and don't re-send old messages.
@@ -273,6 +301,7 @@ defmodule Fleetlm.Agent.Engine do
           nil,
           nil,
           0,
+          nil,
           nil
         })
 
@@ -292,8 +321,9 @@ defmodule Fleetlm.Agent.Engine do
     target_seq = Map.get(meta, :target_seq, last_sent + 1)
     due_at = System.monotonic_time(:millisecond) + backoff_ms
     enqueued_at = System.monotonic_time(:millisecond)
+    user_message_sent_at = Map.get(meta, :user_message_sent_at)
 
-    upsert_queue(key, user_id, target_seq, due_at, enqueued_at, attempts)
+    upsert_queue(key, user_id, target_seq, due_at, enqueued_at, attempts, user_message_sent_at)
 
     :telemetry.execute(
       [:fleetlm, :agent, :dispatch, :retry],
@@ -304,8 +334,8 @@ defmodule Fleetlm.Agent.Engine do
 
   ## ETS helpers
 
-  # Unified table schema: {key, user_id, last_sent, target_seq, due_at, first_seq, enqueued_at, attempts, status}
-  defp upsert_queue(key, user_id, seq, due_at, enqueued_at, attempts) do
+  # Unified table schema: {key, user_id, last_sent, target_seq, due_at, first_seq, enqueued_at, attempts, status, user_message_sent_at}
+  defp upsert_queue(key, user_id, seq, due_at, enqueued_at, attempts, user_message_sent_at) do
     case :ets.lookup(@table, key) do
       [] ->
         # New entry: initialize with last_sent = seq - 1
@@ -313,15 +343,17 @@ defmodule Fleetlm.Agent.Engine do
 
         :ets.insert(
           @table,
-          {key, user_id, last_sent, seq, due_at, seq, enqueued_at, attempts, :pending}
+          {key, user_id, last_sent, seq, due_at, seq, enqueued_at, attempts, :pending,
+           user_message_sent_at}
         )
 
       [
         {^key, existing_user, last_sent, current_seq, _due, first_seq, _enqueued,
-         current_attempts, status}
+         current_attempts, status, existing_timestamp}
       ]
       when not is_nil(current_seq) ->
         # Existing queue entry: update target_seq and due_at, preserve first_seq
+        # Preserve existing timestamp if this is a batched message
         next_status =
           case status do
             :inflight -> :inflight
@@ -337,12 +369,13 @@ defmodule Fleetlm.Agent.Engine do
           first_seq,
           enqueued_at,
           max(attempts, current_attempts),
-          next_status
+          next_status,
+          existing_timestamp || user_message_sent_at
         })
 
       [
         {^key, existing_user, last_sent, _nil_seq, _nil_due, _nil_first, _nil_enqueued,
-         _zero_attempts, _nil_status}
+         _zero_attempts, _nil_status, _nil_timestamp}
       ] ->
         # Idle entry: start new dispatch
         :ets.insert(@table, {
@@ -354,7 +387,8 @@ defmodule Fleetlm.Agent.Engine do
           seq,
           enqueued_at,
           attempts,
-          :pending
+          :pending,
+          user_message_sent_at
         })
     end
   end
@@ -416,9 +450,9 @@ defmodule Fleetlm.Agent.Engine do
   defp queue_match_spec(now) do
     # Match entries where due_at <= now and status is :pending (not :inflight)
     [
-      {{:"$1", :"$2", :"$3", :"$4", :"$5", :"$6", :"$7", :"$8", :"$9"},
+      {{:"$1", :"$2", :"$3", :"$4", :"$5", :"$6", :"$7", :"$8", :"$9", :"$10"},
        [{:"=<", :"$5", now}, {:"/=", :"$9", :inflight}],
-       [{{:"$1", :"$2", :"$3", :"$4", :"$5", :"$6", :"$7", :"$8", :"$9"}}]}
+       [{{:"$1", :"$2", :"$3", :"$4", :"$5", :"$6", :"$7", :"$8", :"$9", :"$10"}}]}
     ]
   end
 

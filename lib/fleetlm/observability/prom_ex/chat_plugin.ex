@@ -291,6 +291,75 @@ defmodule Fleetlm.Observability.PromEx.ChatPlugin do
           tags: [:status, :group_id],
           tag_values: &raft_flush_tags/1
         )
+      ]),
+      Event.build(:fleetlm_agent_webhook_metrics, [
+        distribution(
+          [:fleetlm, :agent, :webhook, :duration],
+          event_name: [:fleetlm, :agent, :webhook, :dispatch],
+          measurement: :duration,
+          description: "Agent webhook dispatch latency (ms) - full round-trip time.",
+          unit: {:microsecond, :millisecond},
+          reporter_options: [buckets: [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]],
+          tags: [:result, :agent_id],
+          tag_values: &agent_webhook_tags/1
+        ),
+        counter(
+          [:fleetlm, :agent, :webhook, :total],
+          event_name: [:fleetlm, :agent, :webhook, :dispatch],
+          measurement: :count,
+          description: "Agent webhook dispatch operations.",
+          tags: [:result, :agent_id],
+          tag_values: &agent_webhook_tags/1
+        )
+      ]),
+      Event.build(:fleetlm_agent_ttft_metrics, [
+        distribution(
+          [:fleetlm, :agent, :ttft, :duration],
+          event_name: [:fleetlm, :agent, :ttft],
+          measurement: :duration,
+          description:
+            "Time To First Token (TTFT) - CRITICAL perceived responsiveness metric. Measures latency from user message → first agent token streamed.",
+          unit: {:microsecond, :millisecond},
+          reporter_options: [buckets: [100, 250, 500, 750, 1000, 1500, 2000, 3000, 5000, 10000]],
+          tags: [:agent_id],
+          tag_values: &agent_ttft_tags/1
+        ),
+        counter(
+          [:fleetlm, :agent, :ttft, :total],
+          event_name: [:fleetlm, :agent, :ttft],
+          measurement: :count,
+          description: "TTFT measurements recorded.",
+          tags: [:agent_id],
+          tag_values: &agent_ttft_tags/1
+        )
+      ]),
+      Event.build(:fleetlm_agent_stream_metrics, [
+        counter(
+          [:fleetlm, :agent, :stream, :chunks, :total],
+          event_name: [:fleetlm, :agent, :stream, :chunk],
+          measurement: :count,
+          description: "Agent stream chunks processed.",
+          tags: [:result, :chunk_type, :agent_id],
+          tag_values: &agent_stream_chunk_tags/1
+        ),
+        counter(
+          [:fleetlm, :agent, :stream, :finalized, :total],
+          event_name: [:fleetlm, :agent, :stream, :finalized],
+          measurement: :count,
+          description: "Agent stream finalizations.",
+          tags: [:termination, :agent_id],
+          tag_values: &agent_stream_finalized_tags/1
+        )
+      ]),
+      Event.build(:fleetlm_agent_dispatch_drop_metrics, [
+        counter(
+          [:fleetlm, :agent, :dispatch, :drops, :total],
+          event_name: [:fleetlm, :agent, :dispatch, :drop],
+          measurement: :count,
+          description: "Agent dispatches permanently dropped after retries.",
+          tags: [:agent_id],
+          tag_values: &agent_dispatch_drop_tags/1
+        )
       ])
     ]
   end
@@ -360,6 +429,40 @@ defmodule Fleetlm.Observability.PromEx.ChatPlugin do
     %{
       status: metadata |> Map.get(:status, :unknown) |> stringify_label(),
       group_id: metadata |> Map.get(:group_id, -1) |> to_string()
+    }
+  end
+
+  defp agent_webhook_tags(metadata) do
+    %{
+      result: metadata |> Map.get(:result, :unknown) |> stringify_label(),
+      agent_id: metadata |> Map.get(:agent_id, "unknown") |> to_string()
+    }
+  end
+
+  defp agent_ttft_tags(metadata) do
+    %{
+      agent_id: metadata |> Map.get(:agent_id, "unknown") |> to_string()
+    }
+  end
+
+  defp agent_stream_chunk_tags(metadata) do
+    %{
+      result: metadata |> Map.get(:result, :unknown) |> stringify_label(),
+      chunk_type: metadata |> Map.get(:chunk_type, "unknown") |> to_string(),
+      agent_id: metadata |> Map.get(:agent_id, "unknown") |> to_string()
+    }
+  end
+
+  defp agent_stream_finalized_tags(metadata) do
+    %{
+      termination: metadata |> Map.get(:termination, :unknown) |> stringify_label(),
+      agent_id: metadata |> Map.get(:agent_id, "unknown") |> to_string()
+    }
+  end
+
+  defp agent_dispatch_drop_tags(metadata) do
+    %{
+      agent_id: metadata |> Map.get(:agent_id, "unknown") |> to_string()
     }
   end
 

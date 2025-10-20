@@ -96,7 +96,8 @@ defmodule Fleetlm.Runtime.Flusher do
     server_id = RaftManager.server_id(group_id)
 
     case :ra.local_query({server_id, Node.self()}, &RaftFSM.query_unflushed/1) do
-      {:ok, {_index_term, unflushed_by_lane}, _leader_status} when map_size(unflushed_by_lane) > 0 ->
+      {:ok, {_index_term, unflushed_by_lane}, _leader_status}
+      when map_size(unflushed_by_lane) > 0 ->
         flush_unflushed_messages(group_id, server_id, unflushed_by_lane, start_time)
 
       {:ok, {_index_term, _empty_map}, _leader_status} ->

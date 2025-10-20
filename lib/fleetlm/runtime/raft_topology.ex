@@ -156,6 +156,7 @@ defmodule Fleetlm.Runtime.RaftTopology do
       my_groups = compute_my_groups()
 
       not_started = Enum.reject(my_groups, &group_running?/1)
+
       unless Enum.empty?(not_started) do
         Logger.debug("RaftTopology: Starting #{length(not_started)} groups asynchronously...")
 

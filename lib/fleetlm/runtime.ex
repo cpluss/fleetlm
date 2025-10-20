@@ -155,7 +155,8 @@ defmodule Fleetlm.Runtime do
 
             # Dispatch to agent if sender is user
             if sender_id == user_id and agent_id != nil and sender_id != agent_id do
-              Fleetlm.Agent.Engine.enqueue(session_id, agent_id, user_id, seq)
+              # Note: timestamp is nil here since Runtime doesn't have access to original user timestamp
+              Fleetlm.Agent.Engine.enqueue(session_id, agent_id, user_id, seq, nil)
             end
 
           _other ->

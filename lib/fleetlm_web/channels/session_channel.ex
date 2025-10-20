@@ -104,6 +104,9 @@ defmodule FleetlmWeb.SessionChannel do
   end
 
   defp do_send_message(socket, session, user_id, kind, content, metadata) do
+    # Capture timestamp for TTFT telemetry (Time To First Token)
+    user_message_sent_at = System.monotonic_time(:millisecond)
+
     # Determine recipient (flip between user and agent)
     recipient_id =
       if user_id == session.user_id, do: session.agent_id, else: session.user_id
@@ -148,7 +151,13 @@ defmodule FleetlmWeb.SessionChannel do
 
         # Dispatch to agent if sender is user
         if user_id == session.user_id and session.agent_id != nil and user_id != session.agent_id do
-          Fleetlm.Agent.Engine.enqueue(session.id, session.agent_id, session.user_id, seq)
+          Fleetlm.Agent.Engine.enqueue(
+            session.id,
+            session.agent_id,
+            session.user_id,
+            seq,
+            user_message_sent_at
+          )
         end
 
         {:reply, {:ok, %{seq: seq}}, socket}

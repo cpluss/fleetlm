@@ -23,7 +23,8 @@ defmodule Fleetlm.Agent.Dispatch do
           target_seq: non_neg_integer(),
           first_seq: non_neg_integer(),
           enqueued_at: integer(),
-          started_at: integer()
+          started_at: integer(),
+          user_message_sent_at: integer() | nil
         }
 
   @spec run(job()) ::
@@ -107,7 +108,9 @@ defmodule Fleetlm.Agent.Dispatch do
       session_id: job.session_id,
       agent_id: job.agent_id,
       user_id: job.user_id,
-      assembler: StreamAssembler.new(role: "assistant")
+      assembler: StreamAssembler.new(role: "assistant"),
+      user_message_sent_at: job.user_message_sent_at,
+      ttft_emitted: false
     }
 
     request =
@@ -263,6 +266,23 @@ defmodule Fleetlm.Agent.Dispatch do
   end
 
   defp handle_stream_action(acc, {:chunk, chunk}) do
+    # Emit TTFT (Time To First Token) telemetry on first chunk
+    acc =
+      if not acc.ttft_emitted and not is_nil(acc.user_message_sent_at) do
+        now = System.monotonic_time(:millisecond)
+        ttft_ms = now - acc.user_message_sent_at
+
+        Telemetry.emit_ttft(
+          acc.agent_id,
+          acc.session_id,
+          ttft_ms
+        )
+
+        %{acc | ttft_emitted: true}
+      else
+        acc
+      end
+
     PubSub.broadcast(
       Fleetlm.PubSub,
       "session:#{acc.session_id}",

@@ -36,6 +36,7 @@ defmodule Fleetlm.Observability.Telemetry do
   @agent_validation_error_event [:fleetlm, :agent, :validation_error]
   @agent_debounce_event [:fleetlm, :agent, :debounce]
   @agent_e2e_latency_event [:fleetlm, :agent, :e2e_latency]
+  @agent_ttft_event [:fleetlm, :agent, :ttft]
   @agent_dispatch_drop_event [:fleetlm, :agent, :dispatch, :drop]
   @agent_stream_chunk_event [:fleetlm, :agent, :stream, :chunk]
   @agent_stream_finalized_event [:fleetlm, :agent, :stream, :finalized]
@@ -424,6 +425,33 @@ defmodule Fleetlm.Observability.Telemetry do
     }
 
     :telemetry.execute(@agent_e2e_latency_event, measurements, metadata)
+  end
+
+  @doc """
+  Emit TTFT (Time To First Token) telemetry - from user message sent to first agent token streamed.
+
+  This is CRITICAL for measuring perceived responsiveness of the agent.
+  Tracks the full latency from user message → Raft commit → dispatch queue → webhook → first stream chunk.
+
+  Components included in TTFT:
+  - Raft append latency (2-5ms)
+  - Dispatch queue wait + debounce (0-500ms)
+  - Webhook round-trip + agent processing (variable, agent-dependent)
+  - JSONL parsing + first chunk broadcast (~1ms)
+  """
+  @spec emit_ttft(String.t(), String.t(), integer()) :: :ok
+  def emit_ttft(agent_id, session_id, ttft_ms)
+      when is_binary(agent_id) and is_binary(session_id) and is_integer(ttft_ms) do
+    measurements = %{
+      duration: ttft_ms * 1000
+    }
+
+    metadata = %{
+      agent_id: agent_id,
+      session_id: session_id
+    }
+
+    :telemetry.execute(@agent_ttft_event, measurements, metadata)
   end
 
   @doc """

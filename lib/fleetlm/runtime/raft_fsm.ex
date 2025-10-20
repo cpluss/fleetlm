@@ -148,6 +148,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
           end
 
         next_seq = conversation.last_seq + 1
+
         message = %{
           id: Uniq.UUID.uuid7(:slug),
           session_id: session_id,
@@ -162,6 +163,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
         # Append to the ets ring buffer for this lane
         :ets.insert(acc_lane.ring, {next_seq, message})
+
         updated_conv = %{
           conversation
           | last_seq: next_seq,
@@ -211,6 +213,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
     # Update last_sent_seq
     # Guard: conversation may not exist yet
     lane = state.lanes[lane_id]
+
     case Map.get(lane.conversations, session_id) do
       nil ->
         # Conversation not bootstrapped yet, skip update
@@ -228,6 +231,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
   def apply(meta, :force_snapshot, state) do
     # Force creation of a snapshot at the current Raft index.
     snapshot_index = meta.index
+
     new_state = %{
       state
       | last_snapshot_index: snapshot_index,
@@ -544,7 +548,9 @@ defmodule Fleetlm.Runtime.RaftFSM do
         {lane_data.lane_id, lane}
       end
 
-    Logger.debug("Group #{snapshot.group_id}: Restored from snapshot index #{snapshot.raft_index}")
+    Logger.debug(
+      "Group #{snapshot.group_id}: Restored from snapshot index #{snapshot.raft_index}"
+    )
 
     %__MODULE__{
       group_id: snapshot.group_id,
@@ -593,6 +599,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
     # Write to Postgres
     import Ecto.Query
+
     Repo.insert_all("raft_snapshots", [
       %{
         group_id: state.group_id,
@@ -601,6 +608,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
         created_at: NaiveDateTime.utc_now()
       }
     ])
+
     # Cleanup old snapshots (keep last 3)
     Repo.delete_all(
       from(s in "raft_snapshots",
