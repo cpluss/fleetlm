@@ -153,11 +153,7 @@ defmodule Fleetlm.Runtime do
               {:message_notification, notification}
             )
 
-            # Dispatch to agent if sender is user
-            if sender_id == user_id and agent_id != nil and sender_id != agent_id do
-              # Note: timestamp is nil here since Runtime doesn't have access to original user timestamp
-              Fleetlm.Agent.Engine.enqueue(session_id, agent_id, user_id, seq, nil)
-            end
+            # Agent dispatch is now handled by RaftFSM effects (no longer called from here)
 
           _other ->
             # Conversation metadata not cached yet (shouldn't happen after append)
@@ -325,6 +321,86 @@ defmodule Fleetlm.Runtime do
     # Trigger the global Flusher to flush all groups
     # (We don't have per-session flushing anymore - it's all group-based)
     send(Fleetlm.Runtime.Flusher, :flush)
+    :ok
+  end
+
+  @doc """
+  Report agent processing completion to the FSM.
+
+  Called by Agent.Worker when webhook streaming finishes successfully.
+  """
+  @spec processing_complete(String.t(), non_neg_integer()) :: :ok | {:error, term()}
+  def processing_complete(session_id, sent_seq) do
+    group_id = RaftManager.group_for_session(session_id)
+    lane = RaftManager.lane_for_session(session_id)
+    server_id = RaftManager.server_id(group_id)
+
+    :ra.process_command(
+      {server_id, Node.self()},
+      {:processing_complete, lane, session_id, sent_seq},
+      @raft_timeout
+    )
+
+    :ok
+  end
+
+  @doc """
+  Report agent processing failure to the FSM.
+
+  Called by Agent.Worker when webhook call fails.
+  """
+  @spec processing_failed(String.t(), term()) :: :ok | {:error, term()}
+  def processing_failed(session_id, reason) do
+    group_id = RaftManager.group_for_session(session_id)
+    lane = RaftManager.lane_for_session(session_id)
+    server_id = RaftManager.server_id(group_id)
+
+    :ra.process_command(
+      {server_id, Node.self()},
+      {:processing_failed, lane, session_id, reason},
+      @raft_timeout
+    )
+
+    :ok
+  end
+
+  @doc """
+  Report compaction completion to the FSM.
+
+  Called by Compaction.Worker when summarization finishes.
+  """
+  @spec compaction_complete(String.t(), map()) :: :ok | {:error, term()}
+  def compaction_complete(session_id, summary) do
+    group_id = RaftManager.group_for_session(session_id)
+    lane = RaftManager.lane_for_session(session_id)
+    server_id = RaftManager.server_id(group_id)
+
+    :ra.process_command(
+      {server_id, Node.self()},
+      {:compaction_complete, lane, session_id, summary},
+      @raft_timeout
+    )
+
+    :ok
+  end
+
+  @doc """
+  Report compaction failure to the FSM.
+
+  Called by Compaction.Worker when summarization fails.
+  """
+  @spec compaction_failed(String.t(), term()) :: :ok | {:error, term()}
+  def compaction_failed(session_id, reason) do
+    group_id = RaftManager.group_for_session(session_id)
+    lane = RaftManager.lane_for_session(session_id)
+    server_id = RaftManager.server_id(group_id)
+
+    :ra.process_command(
+      {server_id, Node.self()},
+      {:compaction_failed, lane, session_id, reason},
+      @raft_timeout
+    )
+
     :ok
   end
 

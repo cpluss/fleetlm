@@ -1,4 +1,4 @@
-defmodule Fleetlm.Agent.Cache do
+defmodule Fleetlm.Storage.AgentCache do
   @moduledoc """
   ETS-based cache for agent configurations to avoid DB lookups on hot path.
 

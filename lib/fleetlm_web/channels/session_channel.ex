@@ -104,8 +104,7 @@ defmodule FleetlmWeb.SessionChannel do
   end
 
   defp do_send_message(socket, session, user_id, kind, content, metadata) do
-    # Capture timestamp for TTFT telemetry (Time To First Token)
-    user_message_sent_at = System.monotonic_time(:millisecond)
+    # TTFT tracking moved to FSM/Worker (no longer tracked here)
 
     # Determine recipient (flip between user and agent)
     recipient_id =
@@ -149,16 +148,7 @@ defmodule FleetlmWeb.SessionChannel do
           {:message_notification, notification}
         )
 
-        # Dispatch to agent if sender is user
-        if user_id == session.user_id and session.agent_id != nil and user_id != session.agent_id do
-          Fleetlm.Agent.Engine.enqueue(
-            session.id,
-            session.agent_id,
-            session.user_id,
-            seq,
-            user_message_sent_at
-          )
-        end
+        # Agent dispatch is now handled by RaftFSM effects (no longer called from here)
 
         {:reply, {:ok, %{seq: seq}}, socket}
 

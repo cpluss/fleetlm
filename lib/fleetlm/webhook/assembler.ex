@@ -1,4 +1,4 @@
-defmodule Fleetlm.Agent.StreamAssembler do
+defmodule Fleetlm.Webhook.Assembler do
   @moduledoc """
   Minimal state machine for AI SDK UI chunk streams. It accumulates structured
   parts, tracks open segments, and emits actions describing lifecycle events.

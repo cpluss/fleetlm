@@ -9,7 +9,7 @@ defmodule Fleetlm.Agent do
   import Ecto.Query
 
   alias Fleetlm.Repo
-  alias Fleetlm.Agent.Schema
+  alias Fleetlm.Storage.Model.AgentSchema, as: Schema
 
   @type t :: Schema.t()
 
@@ -75,7 +75,7 @@ defmodule Fleetlm.Agent do
              |> Schema.changeset(attrs)
              |> Repo.update() do
           {:ok, _updated_agent} = result ->
-            Fleetlm.Agent.Cache.invalidate(id)
+            Fleetlm.Storage.AgentCache.invalidate(id)
             result
 
           error ->
@@ -100,7 +100,7 @@ defmodule Fleetlm.Agent do
              |> Schema.changeset(%{status: "disabled"})
              |> Repo.update() do
           {:ok, _updated_agent} = result ->
-            Fleetlm.Agent.Cache.invalidate(id)
+            Fleetlm.Storage.AgentCache.invalidate(id)
             result
 
           error ->

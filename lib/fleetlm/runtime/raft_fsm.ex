@@ -66,14 +66,44 @@ defmodule Fleetlm.Runtime.RaftFSM do
     Note that we rebrand this to "conversation" here to avoid conflating sessions <> conversations.
     They're technically related, but a conversation tracks messaging state necessary to generate
     messages, and aren't necessarily unique.
+
+    ## State Machine
+
+    Conversations can be in one of three states:
+    - :idle - awaiting user input
+    - :processing - agent is actively processing messages
+    - :compacting - running context summarization (blocks processing)
     """
 
-    @enforce_keys [:last_seq, :last_sent_seq, :user_id, :agent_id, :last_activity]
-    defstruct [:last_seq, :last_sent_seq, :user_id, :agent_id, :last_activity]
+    @enforce_keys [:last_seq, :user_id, :agent_id, :last_activity]
+    defstruct [
+      # State machine
+      state: :idle,
+      target_seq: 0,
+      last_sent_seq: 0,
+      pending_user_seq: nil,
+
+      # Compaction state
+      tokens_since_summary: 0,
+      last_compacted_seq: 0,
+      summary: nil,
+
+      # Core metadata
+      last_seq: 0,
+      user_id: nil,
+      agent_id: nil,
+      last_activity: nil
+    ]
 
     @type t :: %__MODULE__{
-            last_seq: non_neg_integer(),
+            state: :idle | :processing | :compacting,
+            target_seq: non_neg_integer(),
             last_sent_seq: non_neg_integer(),
+            pending_user_seq: non_neg_integer() | nil,
+            tokens_since_summary: non_neg_integer(),
+            last_compacted_seq: non_neg_integer(),
+            summary: map() | nil,
+            last_seq: non_neg_integer(),
             user_id: String.t(),
             agent_id: String.t() | nil,
             last_activity: NaiveDateTime.t()
@@ -129,8 +159,8 @@ defmodule Fleetlm.Runtime.RaftFSM do
   def apply(meta, {:append_batch, lane_id, frames}, state) do
     lane = Map.fetch!(state.lanes, lane_id)
 
-    {results, new_lane} =
-      Enum.map_reduce(frames, lane, fn frame, acc_lane ->
+    {results, new_lane, worker_effects} =
+      Enum.reduce(frames, {[], lane, []}, fn frame, {results_acc, acc_lane, effects_acc} ->
         {session_id, sender_id, recipient_id, kind, content, metadata} = frame
 
         # Get or bootstrap conversation metadata
@@ -170,6 +200,15 @@ defmodule Fleetlm.Runtime.RaftFSM do
             last_activity: message.inserted_at
         }
 
+        # State machine: trigger agent processing if this is a user message
+        {updated_conv, new_effects} =
+          if sender_id == conversation.user_id and conversation.agent_id != nil and
+               sender_id != conversation.agent_id do
+            handle_user_message(session_id, updated_conv, next_seq)
+          else
+            {updated_conv, []}
+          end
+
         acc_lane = %{
           acc_lane
           | conversations: Map.put(acc_lane.conversations, session_id, updated_conv)
@@ -178,17 +217,22 @@ defmodule Fleetlm.Runtime.RaftFSM do
         # Trim ring if over capacity
         acc_lane = trim_ring_if_needed(acc_lane)
         Fleetlm.Observability.Telemetry.emit_message_throughput()
-        # Return session_id, seq, AND message ID for broadcast
-        {{session_id, next_seq, message.id}, acc_lane}
+
+        # Accumulate results and effects
+        {[{session_id, next_seq, message.id} | results_acc], acc_lane,
+         effects_acc ++ new_effects}
       end)
 
     # Update FSM state
     new_state = put_in(state.lanes[lane_id], new_lane)
 
     # Check if snapshot needed and update tracking
-    {final_state, effects} = maybe_trigger_snapshot(new_state, meta.index)
+    {final_state, snapshot_effects} = maybe_trigger_snapshot(new_state, meta.index)
 
-    {final_state, {:reply, {:ok, results}}, effects}
+    # Combine all effects
+    all_effects = worker_effects ++ snapshot_effects
+
+    {final_state, {:reply, {:ok, Enum.reverse(results)}}, all_effects}
   end
 
   @impl true
@@ -270,6 +314,153 @@ defmodule Fleetlm.Runtime.RaftFSM do
   end
 
   @impl true
+  def apply(_meta, {:processing_complete, lane_id, session_id, sent_seq}, state) do
+    lane = state.lanes[lane_id]
+
+    case Map.get(lane.conversations, session_id) do
+      nil ->
+        # Conversation evicted or never existed
+        {state, :ok}
+
+      conversation ->
+        updated_conv = %{conversation | last_sent_seq: sent_seq}
+
+        # Check if we should compact proactively
+        {updated_conv, effects} =
+          if should_compact?(updated_conv) do
+            updated_conv = %{updated_conv | state: :compacting}
+
+            effects = [
+              {:mod_call, Fleetlm.Webhook.Manager, :ensure_compact_job,
+               [session_id, build_compaction_job(updated_conv)]}
+            ]
+
+            {updated_conv, effects}
+          else
+            {%{updated_conv | state: :idle}, []}
+          end
+
+        new_lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated_conv)}
+        new_state = put_in(state.lanes[lane_id], new_lane)
+
+        {new_state, :ok, effects}
+    end
+  end
+
+  @impl true
+  def apply(_meta, {:processing_failed, lane_id, session_id, reason}, state) do
+    lane = state.lanes[lane_id]
+
+    Logger.error("Processing failed",
+      session_id: session_id,
+      lane: lane_id,
+      reason: inspect(reason)
+    )
+
+    case Map.get(lane.conversations, session_id) do
+      nil ->
+        # Conversation evicted or never existed
+        {state, :ok}
+
+      conversation ->
+        # Transition back to idle on failure
+        updated_conv = %{conversation | state: :idle}
+
+        new_lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated_conv)}
+        new_state = put_in(state.lanes[lane_id], new_lane)
+
+        {new_state, :ok}
+    end
+  end
+
+  @impl true
+  def apply(_meta, {:compaction_complete, lane_id, session_id, summary}, state) do
+    # Stub for PR3
+    lane = state.lanes[lane_id]
+
+    case Map.get(lane.conversations, session_id) do
+      nil ->
+        {state, :ok}
+
+      conversation ->
+        updated_conv = %{
+          conversation
+          | summary: summary,
+            tokens_since_summary: 0,
+            last_compacted_seq: conversation.last_seq
+        }
+
+        # If message was queued, start processing
+        {updated_conv, effects} =
+          if updated_conv.pending_user_seq do
+            updated_conv = %{
+              updated_conv
+              | state: :processing,
+                target_seq: updated_conv.pending_user_seq,
+                pending_user_seq: nil
+            }
+
+            effects = [
+              {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job,
+               [session_id, updated_conv]}
+            ]
+
+            {updated_conv, effects}
+          else
+            {%{updated_conv | state: :idle}, []}
+          end
+
+        new_lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated_conv)}
+        new_state = put_in(state.lanes[lane_id], new_lane)
+
+        {new_state, :ok, effects}
+    end
+  end
+
+  @impl true
+  def apply(_meta, {:compaction_failed, lane_id, session_id, reason}, state) do
+    # Stub for PR3
+    lane = state.lanes[lane_id]
+
+    Logger.error("Compaction failed",
+      session_id: session_id,
+      lane: lane_id,
+      reason: inspect(reason)
+    )
+
+    case Map.get(lane.conversations, session_id) do
+      nil ->
+        {state, :ok}
+
+      conversation ->
+        # Transition back to idle, process pending message if any
+        {updated_conv, effects} =
+          if conversation.pending_user_seq do
+            updated_conv = %{
+              conversation
+              | state: :processing,
+                target_seq: conversation.pending_user_seq,
+                pending_user_seq: nil
+            }
+
+            effects = [
+              {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job,
+               [session_id, updated_conv]}
+            ]
+
+            {updated_conv, effects}
+          else
+            {%{conversation | state: :idle}, []}
+          end
+
+        new_lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated_conv)}
+        new_state = put_in(state.lanes[lane_id], new_lane)
+
+        {new_state, :ok, effects}
+    end
+  end
+
+  @impl true
   def apply(_meta, _unknown_command, state) do
     # Catch-all for internal Ra commands (machine_version, noop, etc.)
     {state, :ok}
@@ -277,12 +468,34 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
   @impl true
   def state_enter(:leader, state) do
-    Logger.debug("Group #{state.group_id}: Elected leader")
+    Logger.info("Group #{state.group_id}: Elected leader, reconciling workers")
+
+    # Reconcile workers for all conversations in active states
+    for {_lane_id, lane} <- state.lanes,
+        {session_id, conversation} <- lane.conversations do
+      case conversation.state do
+        :processing ->
+          Fleetlm.Webhook.Manager.ensure_message_job(session_id, conversation)
+
+        :compacting ->
+          # Restart compaction worker
+          job = build_compaction_job(conversation)
+          Fleetlm.Webhook.Manager.ensure_compact_job(session_id, job)
+
+        :idle ->
+          :ok
+      end
+    end
+
     []
   end
 
   def state_enter(:follower, state) do
-    Logger.debug("Group #{state.group_id}: Stepped down to follower")
+    Logger.info("Group #{state.group_id}: Stepped down to follower, stopping workers")
+
+    # Stop all workers (leader-only execution)
+    Fleetlm.Webhook.Manager.stop_all_jobs()
+
     []
   end
 
@@ -444,6 +657,89 @@ defmodule Fleetlm.Runtime.RaftFSM do
           agent_id: agent_id,
           last_activity: NaiveDateTime.utc_now()
         }
+    end
+  end
+
+  defp handle_user_message(session_id, conversation, seq) do
+    # State machine logic for user messages
+    case conversation.state do
+      :idle ->
+        # Check if we should compact before processing
+        if should_compact?(conversation) do
+          # Queue message and start compaction
+          conversation = %{conversation | state: :compacting, pending_user_seq: seq}
+
+          effects = [
+            {:mod_call, Fleetlm.Webhook.Manager, :ensure_compact_job,
+             [session_id, build_compaction_job(conversation)]}
+          ]
+
+          {conversation, effects}
+        else
+          # Start processing normally
+          conversation = %{conversation | state: :processing, target_seq: seq}
+
+          effects = [
+            {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job, [session_id, conversation]}
+          ]
+
+          {conversation, effects}
+        end
+
+      :processing ->
+        # Batch/interrupt: update target
+        conversation = %{conversation | target_seq: seq}
+
+        effects = [
+          {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job, [session_id, conversation]}
+        ]
+
+        {conversation, effects}
+
+      :compacting ->
+        # Queue message, can't process yet
+        conversation = %{conversation | pending_user_seq: seq}
+        {conversation, []}
+    end
+  end
+
+  defp should_compact?(conversation) do
+    # Hardcoded threshold strategy: compact when tokens exceed 70% of budget
+    case Fleetlm.Storage.AgentCache.get(conversation.agent_id) do
+      {:ok, agent} ->
+        if Map.get(agent, :compaction_enabled, false) do
+          budget = Map.get(agent, :compaction_token_budget, 50_000)
+          ratio = Map.get(agent, :compaction_trigger_ratio, 0.7)
+          threshold = trunc(budget * ratio)
+
+          conversation.tokens_since_summary >= threshold
+        else
+          false
+        end
+
+      _error ->
+        false
+    end
+  end
+
+  defp build_compaction_job(conversation) do
+    case Fleetlm.Storage.AgentCache.get(conversation.agent_id) do
+      {:ok, agent} ->
+        %{
+          session_id: conversation.session_id,
+          webhook_url: Map.get(agent, :compaction_webhook_url),
+          payload: %{
+            range_start: conversation.last_compacted_seq + 1,
+            range_end: conversation.last_seq
+          },
+          context: %{
+            agent_id: conversation.agent_id,
+            user_id: conversation.user_id
+          }
+        }
+
+      _error ->
+        %{}
     end
   end
 

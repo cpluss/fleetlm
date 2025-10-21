@@ -33,6 +33,12 @@ defmodule Fleetlm.Runtime.Supervisor do
       # Task.Supervisor for async Raft group startup (Horde pattern)
       {Task.Supervisor, name: Fleetlm.RaftTaskSupervisor},
 
+      # Task.Supervisor for worker jobs (agent webhooks, compaction)
+      {Task.Supervisor, name: Fleetlm.Webhook.Manager.TaskSupervisor},
+
+      # Job manager (coordinates workers on leader node)
+      Fleetlm.Webhook.Manager,
+
       # Presence replicates ready-node membership across the cluster
       Fleetlm.Runtime.RaftTopology.Presence,
 

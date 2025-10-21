@@ -1,9 +1,6 @@
-defmodule Fleetlm.Agent.Schema do
+defmodule Fleetlm.Storage.Model.AgentSchema do
   @moduledoc """
   Ecto schema for external AI agent endpoints.
-
-  Agents are stateless HTTP endpoints that receive message history
-  and return responses synchronously.
   """
 
   use Ecto.Schema
@@ -31,6 +28,12 @@ defmodule Fleetlm.Agent.Schema do
     # Debouncing configuration
     field :debounce_window_ms, :integer, default: 500
 
+    # Compaction configuration
+    field :compaction_enabled, :boolean, default: false
+    field :compaction_token_budget, :integer, default: 50_000
+    field :compaction_trigger_ratio, :float, default: 0.7
+    field :compaction_webhook_url, :string
+
     timestamps()
   end
 
@@ -49,7 +52,11 @@ defmodule Fleetlm.Agent.Schema do
       :timeout_ms,
       :headers,
       :status,
-      :debounce_window_ms
+      :debounce_window_ms,
+      :compaction_enabled,
+      :compaction_token_budget,
+      :compaction_trigger_ratio,
+      :compaction_webhook_url
     ])
     |> validate_required([:id, :name, :origin_url, :webhook_path])
     |> validate_inclusion(:message_history_mode, ["tail", "entire", "last"])
@@ -57,6 +64,8 @@ defmodule Fleetlm.Agent.Schema do
     |> validate_number(:timeout_ms, greater_than: 0)
     |> validate_number(:message_history_limit, greater_than: 0)
     |> validate_number(:debounce_window_ms, greater_than_or_equal_to: 0)
+    |> validate_number(:compaction_token_budget, greater_than: 0)
+    |> validate_number(:compaction_trigger_ratio, greater_than: 0, less_than_or_equal_to: 1)
     |> unique_constraint(:id, name: :agents_pkey)
   end
 end
