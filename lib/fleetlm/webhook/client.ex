@@ -41,7 +41,7 @@ defmodule Fleetlm.Webhook.Client do
 
     request =
       Finch.build(:post, url, headers, payload_json)
-      |> Finch.stream(Fleetlm.Agent.HTTP, acc, &handle_stream_chunk/2,
+      |> Finch.stream(Fleetlm.Webhook.HTTP, acc, &handle_stream_chunk/2,
         receive_timeout: agent.timeout_ms || 30_000,
         pool_timeout: agent.timeout_ms || 30_000
       )
@@ -54,6 +54,10 @@ defmodule Fleetlm.Webhook.Client do
         end
 
       {:ok, {:error, reason}} ->
+        {:error, reason}
+
+      {:ok, {:error, reason, _acc}} ->
+        # Handler returned error with accumulator
         {:error, reason}
 
       {:ok, other} ->
@@ -82,7 +86,7 @@ defmodule Fleetlm.Webhook.Client do
 
     request =
       Finch.build(:post, url, headers, payload_json)
-      |> Finch.request(Fleetlm.Agent.HTTP, receive_timeout: 60_000)
+      |> Finch.request(Fleetlm.Webhook.HTTP, receive_timeout: 60_000)
 
     case request do
       {:ok, %Finch.Response{status: status, body: body}} when status in 200..299 ->

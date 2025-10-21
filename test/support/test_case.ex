@@ -174,13 +174,13 @@ defmodule Fleetlm.TestCase do
   end
 
   defp cleanup_agent_tasks do
-    # Terminate all agent dispatch tasks
-    Task.Supervisor.children(Fleetlm.Agent.Engine.TaskSupervisor)
-    |> Enum.each(&Task.Supervisor.terminate_child(Fleetlm.Agent.Engine.TaskSupervisor, &1))
+    # Terminate all webhook job tasks
+    Task.Supervisor.children(Fleetlm.Webhook.Manager.TaskSupervisor)
+    |> Enum.each(&Task.Supervisor.terminate_child(Fleetlm.Webhook.Manager.TaskSupervisor, &1))
 
-    # Clear the agent dispatch queue
-    if :ets.whereis(:agent_dispatch_queue) != :undefined do
-      :ets.delete_all_objects(:agent_dispatch_queue)
+    # Clear the webhook jobs table
+    if :ets.whereis(:webhook_jobs) != :undefined do
+      :ets.delete_all_objects(:webhook_jobs)
     end
   end
 

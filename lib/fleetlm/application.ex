@@ -17,9 +17,10 @@ defmodule Fleetlm.Application do
         # PubSub (must start before Runtime.Supervisor for SessionTracker)
         pubsub_spec(),
         dns_cluster_spec(),
-        Fleetlm.Runtime.Supervisor,
-        # Agent dispatch engine
-        Fleetlm.Agent.Supervisor
+        # Storage infrastructure (agent cache, HTTP pool)
+        Fleetlm.Storage.Supervisor,
+        # Runtime infrastructure (Raft, webhooks, inboxes)
+        Fleetlm.Runtime.Supervisor
       ]
       |> Enum.concat(cluster_children(topologies))
       |> Enum.reject(&is_nil/1)

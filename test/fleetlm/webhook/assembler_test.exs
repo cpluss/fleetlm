@@ -1,7 +1,7 @@
-defmodule Fleetlm.Agent.StreamAssemblerTest do
+defmodule Fleetlm.Webhook.AssemblerTest do
   use ExUnit.Case, async: true
 
-  alias Fleetlm.Agent.StreamAssembler
+  alias Fleetlm.Webhook.Assembler, as: StreamAssembler
 
   test "accumulates text chunks and finalizes message" do
     state = StreamAssembler.new()
