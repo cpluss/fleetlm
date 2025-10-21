@@ -9,6 +9,8 @@ sidebar_position: 5
 | Date | Commit | Setup | Throughput | CPU | Memory | Notes |
 |------|--------|-------|------------|-----|--------|-------|
 | 2025-10-17 | `650292e` | 1 node, c5d.large | ~800 msg/s | 40% | 130MB | Durable writes, NVMe WAL |
+| 2025-10-20 | `2e1d8dd` | 3 node, c5d.large | ~7.500 msg/s | 80% | 980MB | New RAFT architecture |
+
 
 ## Methodology
 
