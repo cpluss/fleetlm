@@ -40,25 +40,27 @@ sequenceDiagram
     participant Client
     participant SessionChannel
     participant Runtime
-    participant RaftGroup
-    participant AgentEngine
+    participant RaftFSM
+    participant WebhookManager
     participant Agent
 
     Client->>SessionChannel: send message
     SessionChannel->>Runtime: append_message()
-    Runtime->>RaftGroup: :ra.process_command (quorum write)
-    RaftGroup->>RaftGroup: replicate to 2-of-3 nodes
-    RaftGroup-->>Runtime: {ok, seq, message_id}
-    Runtime->>AgentEngine: enqueue dispatch
+    Runtime->>RaftFSM: :ra.process_command (quorum write)
+    RaftFSM->>RaftFSM: replicate to 2-of-3 nodes
+    RaftFSM->>RaftFSM: state machine: idle → processing
+    RaftFSM->>WebhookManager: :mod_call ensure_message_job()
+    RaftFSM-->>Runtime: {ok, seq, message_id}
     Runtime->>SessionChannel: broadcast via PubSub
     SessionChannel-->>Client: ack {seq: N}
 
-    Note over AgentEngine: Tick (50ms)
-    AgentEngine->>Agent: POST /webhook
-    Agent-->>AgentEngine: JSONL stream
-    AgentEngine->>Runtime: append agent responses
-    Runtime->>RaftGroup: :ra.process_command (batch)
-    RaftGroup-->>Runtime: {ok, seqs}
+    WebhookManager->>Agent: POST /webhook (async task)
+    Agent-->>WebhookManager: JSONL stream
+    WebhookManager->>Runtime: append agent responses
+    Runtime->>RaftFSM: :ra.process_command (batch)
+    RaftFSM-->>Runtime: {ok, seqs}
+    WebhookManager->>RaftFSM: processing_complete()
+    RaftFSM->>RaftFSM: state: processing → idle
     Runtime->>SessionChannel: broadcast via PubSub
     SessionChannel->>Client: push agent responses
 ```
@@ -229,30 +231,83 @@ Crashes are localized—Ra supervises state machines internally, OTP supervises 
 
 **Operational guidance:** Monitor `fleetlm_raft_state_pending_flush_count` in production. Alert if sustained above 50k messages. Scale Postgres vertically or add read replicas for cold read traffic.
 
-## Agent Dispatcher
+## Webhook Job Execution
 
-Agents are served by a single per-node dispatch engine. The Runtime API enqueues dispatch requests after committing user messages to Raft. The engine polls the queue at a fixed cadence, spawns supervised tasks for webhook dispatch, and retries with exponential backoff on failure.
+FleetLM uses a **FSM-first architecture** where the Raft state machine controls all agent interactions. Workers are spawned on-demand by the Raft leader and report back via lifecycle commands.
 
-### Dispatch Pipeline
+### Architecture
 
-1. **Enqueue:** `Runtime.append_message/6` calls `Agent.Engine.enqueue/4` after Raft commit. The call upserts a single ETS table (`:agent_dispatch_queue`) with the schema:
-   ```
-   {key, user_id, last_sent, target_seq, due_at, first_seq, enqueued_at, attempts, status}
-   ```
-   Multiple user messages collapse into a single queue row by updating `target_seq` and `due_at`. Dispatch status (`:pending`, `:inflight`, `nil`) is tracked directly in ETS.
-2. **Scheduler tick:** `Agent.Engine` wakes every `agent_dispatch_tick_ms` (default 50ms) and selects due sessions where `due_at <= now` and `status != :inflight`. At most one dispatch runs per session at a time.
-3. **Async dispatch:** Each session spawns a supervised task under `Agent.Engine.TaskSupervisor`. The task builds the payload, performs the webhook via Finch (HTTP/2 connection pool), streams JSONL responses, and appends agent messages via `Runtime.append_message`. On success it updates `last_sent` and clears dispatch fields. On failure it requeues with exponential backoff capped at `agent_dispatch_retry_backoff_max_ms`.
-4. **Back-pressure:** When tasks are saturated, sessions remain in the queue. New messages keep extending `target_seq`. No payloads are held in memory, and telemetry tracks queue length for saturation monitoring.
+**Three layers:**
+1. **Storage** - Agent config, session/message models, cache
+2. **Runtime** - Raft consensus, state machine, public API
+3. **Webhook** - Async HTTP jobs (message & compaction)
 
-### Observability
+### State Machine
 
-The engine emits telemetry by default, and can be consumed using prometheus.
+Conversations exist in one of three states:
+- **`:idle`** - Awaiting user input
+- **`:processing`** - Agent webhook in flight, streaming responses
+- **`:compacting`** - Summarizing conversation history (blocks processing)
+
+States are **mutually exclusive**. Processing and compaction cannot overlap.
+
+### Message Flow
+
+1. **User sends message** → `SessionChannel.handle_in("send", ...)`
+2. **Raft append** → `Runtime.append_message()` commits to quorum (2-of-3 nodes)
+3. **FSM transition** → RaftFSM detects user message, transitions `:idle → :processing`
+4. **Effect emission** → FSM emits `{:mod_call, Webhook.Manager, :ensure_message_job, [...]}`
+5. **Worker spawn** → Webhook.Manager spawns task via Task.Supervisor (leader-only)
+6. **Webhook call** → Worker fetches messages, POSTs to agent, streams JSONL back
+7. **Stream responses** → Each chunk appended via `Runtime.append_message()`
+8. **Completion** → Worker calls `Runtime.processing_complete(session_id, sent_seq)`
+9. **FSM transition** → RaftFSM transitions `:processing → :idle` (or `:compacting`)
+
+### Batching & Interruption
+
+If user sends another message while agent is processing:
+- FSM updates `conversation.target_seq` to new sequence
+- FSM emits `{:mod_call, Webhook.Manager, :ensure_message_job, [...]}`
+- Manager sends `{:update_target, new_seq}` to running worker
+- Worker checks mailbox, fetches messages up to new target, restarts webhook call
+
+Result: Agent receives single request with full context ("What's the weather in Paris" instead of two separate messages).
+
+### Failover & Recovery
+
+**On leader election:**
+1. New leader calls `RaftFSM.state_enter(:leader, state)`
+2. FSM iterates all conversations in `:processing` or `:compacting` state
+3. Calls `Webhook.Manager.ensure_message_job()` / `ensure_compact_job()` for each
+4. Workers are idempotent by `target_seq` (skip if already processed)
+
+**Guarantees:**
+- Workers are leader-local (die with leader)
+- State is replicated (new leader knows what was happening)
+- Workers restart automatically on new leader
+- No lost work (client retries on timeout)
+
+### Compaction
+
+When conversation exceeds token budget, FSM transitions to `:compacting` state:
+- Queues pending user message in `conversation.pending_user_seq`
+- Spawns compaction worker via `{:mod_call, Webhook.Manager, :ensure_compact_job, [...]}`
+- Worker POSTs message range to compaction webhook
+- Webhook returns summary
+- FSM updates `conversation.summary`, resets token counter
+- If message was queued, transitions to `:processing` and sends to agent
+
+**Compaction strategy:** Hardcoded threshold (70% of token budget). Agent config:
+- `compaction_enabled` - Enable/disable (default: false)
+- `compaction_token_budget` - Total budget (default: 50,000)
+- `compaction_trigger_ratio` - Trigger ratio (default: 0.7)
+- `compaction_webhook_url` - Summarization endpoint
 
 ### Streaming Message Model
 
-We deliberately reuse the [AI SDK UI stream protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) for agent replies. The trade-off is that agents (or their adapters) must speak the same chunk vocabulary (`text-*`, `tool-*`, `finish`, etc.), but the benefit is that the exact payload the assembler sees is the payload the frontend already knows how to render. There is no bespoke translation layer or schema mismatch between webhook responses and the LiveView UI—streamed parts flow straight through.
+We reuse the [AI SDK UI stream protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) for agent replies. Agents must speak the chunk vocabulary (`text-*`, `tool-*`, `finish`, etc.). The assembler (`Fleetlm.Webhook.Assembler`) streams chunks to the session channel while compacting into one persisted assistant message on terminal chunk.
 
-`Fleetlm.Agent.StreamAssembler` keeps streaming a session channel the moment chunks arrive while compacting the sequence into one persisted assistant message when it sees a terminal chunk. That lets us expose true streaming UX (every delta is forwarded as-is) without sacrificing a durable append-only log or message compaction.
+This eliminates translation layers—streamed parts flow straight through to the UI.
 
 ## Why Elixir?
 

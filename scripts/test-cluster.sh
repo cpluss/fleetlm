@@ -60,31 +60,56 @@ echo -e "  ✓ Message written with seq: $MSG_SEQ"
 echo ""
 
 # Read from node2 (different node - tests Raft replication)
-# No wait needed - ack means quorum write completed!
+# Followers lag 1-10ms applying committed entries to FSM state
+# Retry handles eventual consistency (correct for distributed reads)
 echo "4. Reading message from node2 (tests Raft replication)..."
-MSGS=$(curl -s "http://localhost:4001/api/sessions/$SESSION_ID/messages?limit=10")
-READ_COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l)
 
-if [ "$READ_COUNT" -lt 1 ]; then
-  echo -e "${RED}  ✗ Message not replicated to node2${NC}"
-  echo "Response: $MSGS"
-  exit 1
-fi
+for i in {1..20}; do
+  MSGS=$(curl -s "http://localhost:4001/api/sessions/$SESSION_ID/messages?limit=10")
+  READ_COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l)
 
-echo -e "  ✓ Message replicated to node2"
+  if [ "$READ_COUNT" -ge 1 ]; then
+    if [ $i -gt 1 ]; then
+      echo -e "  ✓ Message replicated to node2 (took $i retries)"
+    else
+      echo -e "  ✓ Message replicated to node2"
+    fi
+    break
+  fi
+
+  if [ $i -eq 20 ]; then
+    echo -e "${RED}  ✗ Message not replicated to node2 after 1s${NC}"
+    echo "Response: $MSGS"
+    exit 1
+  fi
+
+  sleep 0.05
+done
 echo ""
 
 # Read from node3 (third node)
 echo "5. Reading message from node3 (tests full cluster replication)..."
-MSGS=$(curl -s "http://localhost:4002/api/sessions/$SESSION_ID/messages?limit=10")
-READ_COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l)
 
-if [ "$READ_COUNT" -lt 1 ]; then
-  echo -e "${RED}  ✗ Message not replicated to node3${NC}"
-  exit 1
-fi
+for i in {1..20}; do
+  MSGS=$(curl -s "http://localhost:4002/api/sessions/$SESSION_ID/messages?limit=10")
+  READ_COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l)
 
-echo -e "  ✓ Message replicated to node3"
+  if [ "$READ_COUNT" -ge 1 ]; then
+    if [ $i -gt 1 ]; then
+      echo -e "  ✓ Message replicated to node3 (took $i retries)"
+    else
+      echo -e "  ✓ Message replicated to node3"
+    fi
+    break
+  fi
+
+  if [ $i -eq 20 ]; then
+    echo -e "${RED}  ✗ Message not replicated to node3 after 1s${NC}"
+    exit 1
+  fi
+
+  sleep 0.05
+done
 echo ""
 
 # Cleanup

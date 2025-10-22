@@ -208,13 +208,21 @@ defmodule Fleetlm.Runtime do
     lane = RaftManager.lane_for_session(session_id)
     server_id = RaftManager.server_id(group_id)
 
+    # Pick a replica node to query (preferring local if we have it)
+    replica_nodes = RaftManager.replicas_for_group(group_id)
+    query_node = if Node.self() in replica_nodes, do: Node.self(), else: hd(replica_nodes)
+
     # Get tail from Raft (hot, in RAM)
+    # Use leader_query for strong consistency (ensures follower lag doesn't cause stale reads)
     tail =
-      case :ra.local_query({server_id, Node.self()}, fn state ->
+      case :ra.leader_query({server_id, query_node}, fn state ->
              RaftFSM.query_messages(state, lane, session_id, after_seq)
            end) do
         {:ok, {_index_term, messages}, _leader_status} ->
           messages
+
+        {:timeout, _leader} ->
+          []
 
         _ ->
           []

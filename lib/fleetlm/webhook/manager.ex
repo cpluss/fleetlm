@@ -156,7 +156,8 @@ defmodule Fleetlm.Webhook.Manager do
         agent_id: conversation.agent_id,
         user_id: conversation.user_id,
         target_seq: conversation.target_seq,
-        last_sent_seq: conversation.last_sent_seq
+        last_sent_seq: conversation.last_sent_seq,
+        user_message_sent_at: conversation.user_message_sent_at
       }
     }
 

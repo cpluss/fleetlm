@@ -88,6 +88,9 @@ defmodule Fleetlm.Runtime.RaftFSM do
       last_compacted_seq: 0,
       summary: nil,
 
+      # Telemetry tracking
+      user_message_sent_at: nil,
+
       # Core metadata
       last_seq: 0,
       user_id: nil,
@@ -103,6 +106,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
             tokens_since_summary: non_neg_integer(),
             last_compacted_seq: non_neg_integer(),
             summary: map() | nil,
+            user_message_sent_at: integer() | nil,
             last_seq: non_neg_integer(),
             user_id: String.t(),
             agent_id: String.t() | nil,
@@ -661,13 +665,21 @@ defmodule Fleetlm.Runtime.RaftFSM do
   end
 
   defp handle_user_message(session_id, conversation, seq) do
+    # Capture timestamp for TTFT tracking
+    now = System.monotonic_time(:millisecond)
+
     # State machine logic for user messages
     case conversation.state do
       :idle ->
         # Check if we should compact before processing
         if should_compact?(conversation) do
           # Queue message and start compaction
-          conversation = %{conversation | state: :compacting, pending_user_seq: seq}
+          conversation = %{
+            conversation
+            | state: :compacting,
+              pending_user_seq: seq,
+              user_message_sent_at: now
+          }
 
           effects = [
             {:mod_call, Fleetlm.Webhook.Manager, :ensure_compact_job,
@@ -677,7 +689,12 @@ defmodule Fleetlm.Runtime.RaftFSM do
           {conversation, effects}
         else
           # Start processing normally
-          conversation = %{conversation | state: :processing, target_seq: seq}
+          conversation = %{
+            conversation
+            | state: :processing,
+              target_seq: seq,
+              user_message_sent_at: now
+          }
 
           effects = [
             {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job, [session_id, conversation]}
@@ -688,6 +705,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
       :processing ->
         # Batch/interrupt: update target
+        # Keep original timestamp (don't reset for batched messages)
         conversation = %{conversation | target_seq: seq}
 
         effects = [
@@ -698,7 +716,8 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
       :compacting ->
         # Queue message, can't process yet
-        conversation = %{conversation | pending_user_seq: seq}
+        # Update timestamp for when we eventually process
+        conversation = %{conversation | pending_user_seq: seq, user_message_sent_at: now}
         {conversation, []}
     end
   end
@@ -824,34 +843,38 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
   defp restore_from_snapshot(snapshot) do
     # Rebuild ETS rings from snapshot
+    # Snapshot is a plain map (from DB), not a struct
     lanes =
-      for lane_data <- snapshot.lanes, into: %{} do
+      for lane_data <- Map.get(snapshot, :lanes, []), into: %{} do
         ring = :ets.new(:ring, [:ordered_set, :public, read_concurrency: true])
 
         # Restore message tail
-        for msg <- lane_data.messages do
+        for msg <- Map.get(lane_data, :messages, []) do
           :ets.insert(ring, {msg.seq, msg})
         end
 
         lane = %Lane{
           ring: ring,
           capacity: @ring_capacity,
-          conversations: lane_data.conversations,
-          flush_watermark: lane_data.flush_watermark,
-          last_flushed_index: lane_data.last_flushed_index
+          conversations: Map.get(lane_data, :conversations, %{}),
+          flush_watermark: Map.get(lane_data, :flush_watermark, 0),
+          last_flushed_index: Map.get(lane_data, :last_flushed_index, 0)
         }
 
-        {lane_data.lane_id, lane}
+        {Map.get(lane_data, :lane_id), lane}
       end
 
+    group_id = Map.get(snapshot, :group_id)
+    raft_index = Map.get(snapshot, :raft_index, 0)
+
     Logger.debug(
-      "Group #{snapshot.group_id}: Restored from snapshot index #{snapshot.raft_index}"
+      "Group #{group_id}: Restored from snapshot index #{raft_index}"
     )
 
     %__MODULE__{
-      group_id: snapshot.group_id,
+      group_id: group_id,
       lanes: lanes,
-      last_snapshot_index: snapshot.raft_index,
+      last_snapshot_index: raft_index,
       last_snapshot_time: monotonic_ms()
     }
   end

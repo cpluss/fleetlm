@@ -36,7 +36,8 @@ defmodule Fleetlm.Webhook.Client do
       count: 0,
       status: nil,
       assembler: Assembler.new(role: "assistant"),
-      handler: handler
+      handler: handler,
+      ttft_emitted: false
     }
 
     request =
