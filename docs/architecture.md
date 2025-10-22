@@ -41,26 +41,26 @@ sequenceDiagram
     participant SessionChannel
     participant Runtime
     participant RaftFSM
-    participant WebhookManager
+    participant WebhookWorker
     participant Agent
 
     Client->>SessionChannel: send message
     SessionChannel->>Runtime: append_message()
     Runtime->>RaftFSM: :ra.process_command (quorum write)
     RaftFSM->>RaftFSM: replicate to 2-of-3 nodes
-    RaftFSM->>RaftFSM: state machine: idle → processing
-    RaftFSM->>WebhookManager: :mod_call ensure_message_job()
+    RaftFSM->>RaftFSM: state machine: idle → catching_up
+    RaftFSM->>WebhookWorker: :mod_call ensure_catch_up()
     RaftFSM-->>Runtime: {ok, seq, message_id}
     Runtime->>SessionChannel: broadcast via PubSub
     SessionChannel-->>Client: ack {seq: N}
 
-    WebhookManager->>Agent: POST /webhook (async task)
-    Agent-->>WebhookManager: JSONL stream
-    WebhookManager->>Runtime: append agent responses
+    WebhookWorker->>Agent: POST /webhook (async task)
+    Agent-->>WebhookWorker: JSONL stream
+    WebhookWorker->>Runtime: append agent responses
     Runtime->>RaftFSM: :ra.process_command (batch)
     RaftFSM-->>Runtime: {ok, seqs}
-    WebhookManager->>RaftFSM: processing_complete()
-    RaftFSM->>RaftFSM: state: processing → idle
+    WebhookWorker->>RaftFSM: agent_caught_up()
+    RaftFSM->>RaftFSM: state: catching_up → idle
     Runtime->>SessionChannel: broadcast via PubSub
     SessionChannel->>Client: push agent responses
 ```
@@ -245,57 +245,48 @@ FleetLM uses a **FSM-first architecture** where the Raft state machine controls 
 ### State Machine
 
 Conversations exist in one of three states:
-- **`:idle`** - Awaiting user input
-- **`:processing`** - Agent webhook in flight, streaming responses
-- **`:compacting`** - Summarizing conversation history (blocks processing)
+- **`:idle`** – Awaiting user input
+- **`:catching_up`** – Agent catch-up worker is streaming responses
+- **`:compacting`** – Summarizing conversation history (blocks catch-up)
 
-States are **mutually exclusive**. Processing and compaction cannot overlap.
+States are **mutually exclusive**. Catch-up and compaction never overlap.
 
 ### Message Flow
 
 1. **User sends message** → `SessionChannel.handle_in("send", ...)`
 2. **Raft append** → `Runtime.append_message()` commits to quorum (2-of-3 nodes)
-3. **FSM transition** → RaftFSM detects user message, transitions `:idle → :processing`
-4. **Effect emission** → FSM emits `{:mod_call, Webhook.Manager, :ensure_message_job, [...]}`
-5. **Worker spawn** → Webhook.Manager spawns task via Task.Supervisor (leader-only)
-6. **Webhook call** → Worker fetches messages, POSTs to agent, streams JSONL back
-7. **Stream responses** → Each chunk appended via `Runtime.append_message()`
-8. **Completion** → Worker calls `Runtime.processing_complete(session_id, sent_seq)`
-9. **FSM transition** → RaftFSM transitions `:processing → :idle` (or `:compacting`)
+3. **FSM transition** → RaftFSM detects user message, increments a `work_epoch`, transitions `:idle → :catching_up`
+4. **Effect emission** → FSM emits `{:mod_call, Webhook.WorkerSupervisor, :ensure_catch_up, [...]}`
+5. **Worker dispatch** → Webhook.WorkerSupervisor owns a single `:gen_statem` per session and starts the epoch
+6. **Webhook call** → Worker fetches conversation history, POSTs to agent, streams JSONL back
+7. **Streaming** → Each chunk publishes via `Phoenix.PubSub`, final messages persist through `Runtime.append_message()`
+8. **Completion** → Worker calls `Runtime.agent_caught_up(session_id, epoch, sent_seq)`
+9. **FSM transition** → RaftFSM moves `:catching_up → :idle` (or `:compacting` when thresholds demand)
 
-### Batching & Interruption
+### New Messages During Catch-up
 
-If user sends another message while agent is processing:
-- FSM updates `conversation.target_seq` to new sequence
-- FSM emits `{:mod_call, Webhook.Manager, :ensure_message_job, [...]}`
-- Manager sends `{:update_target, new_seq}` to running worker
-- Worker checks mailbox, fetches messages up to new target, restarts webhook call
-
-Result: Agent receives single request with full context ("What's the weather in Paris" instead of two separate messages).
+Subsequent user messages bump the `work_epoch` and trigger another `ensure_catch_up` effect. Older workers see the epoch mismatch and exit after reporting completion, keeping sequencing simple and deterministic.
 
 ### Failover & Recovery
 
 **On leader election:**
 1. New leader calls `RaftFSM.state_enter(:leader, state)`
-2. FSM iterates all conversations in `:processing` or `:compacting` state
-3. Calls `Webhook.Manager.ensure_message_job()` / `ensure_compact_job()` for each
-4. Workers are idempotent by `target_seq` (skip if already processed)
+2. FSM iterates conversations in `:catching_up` or `:compacting`
+3. Calls `Webhook.WorkerSupervisor.ensure_catch_up/2` or `ensure_compaction/2` with the stored epoch
+4. Workers resume idempotently from the epoch encoded in FSM state
 
 **Guarantees:**
-- Workers are leader-local (die with leader)
-- State is replicated (new leader knows what was happening)
-- Workers restart automatically on new leader
-- No lost work (client retries on timeout)
+- Workers are leader-local (they terminate when we step down)
+- Epochs live in Raft state, so failover can replay or resume safely
+- No hidden queues—FSM state reflects exactly what work is in flight
 
 ### Compaction
 
-When conversation exceeds token budget, FSM transitions to `:compacting` state:
-- Queues pending user message in `conversation.pending_user_seq`
-- Spawns compaction worker via `{:mod_call, Webhook.Manager, :ensure_compact_job, [...]}`
-- Worker POSTs message range to compaction webhook
-- Webhook returns summary
-- FSM updates `conversation.summary`, resets token counter
-- If message was queued, transitions to `:processing` and sends to agent
+When the conversation exceeds its token budget, the FSM transitions to `:compacting`:
+- Pending user messages are stored in `conversation.pending_user_seq`
+- FSM emits `{:mod_call, Webhook.WorkerSupervisor, :ensure_compaction, [...]}`
+- Worker posts to the compaction webhook and reports via `Runtime.compaction_complete/3`
+- FSM updates `conversation.summary`, resets counters, and if a message was pending starts a fresh catch-up epoch immediately
 
 **Compaction strategy:** Hardcoded threshold (70% of token budget). Agent config:
 - `compaction_enabled` - Enable/disable (default: false)

@@ -174,14 +174,7 @@ defmodule Fleetlm.TestCase do
   end
 
   defp cleanup_agent_tasks do
-    # Terminate all webhook job tasks
-    Task.Supervisor.children(Fleetlm.Webhook.Manager.TaskSupervisor)
-    |> Enum.each(&Task.Supervisor.terminate_child(Fleetlm.Webhook.Manager.TaskSupervisor, &1))
-
-    # Clear the webhook jobs table
-    if :ets.whereis(:webhook_jobs) != :undefined do
-      :ets.delete_all_objects(:webhook_jobs)
-    end
+    Fleetlm.Webhook.WorkerSupervisor.stop_all()
   end
 
   defp try_eventually(fun, interval, deadline) do

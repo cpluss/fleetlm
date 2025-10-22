@@ -1,238 +1,259 @@
 defmodule Fleetlm.Webhook.Executor do
   @moduledoc """
-  Generic webhook executor for all job types.
-
-  Both message and compact jobs follow the same pattern:
-  1. POST JSON payload to webhook URL
-  2. Stream JSONL responses back
-  3. Parse and persist results
-  4. Report completion/failure to FSM
+  Helper utilities used by webhook workers to talk to agents and compaction
+  webhooks. Keeps HTTP/streaming logic out of the state machine.
   """
 
   require Logger
 
+  alias Fleetlm.Observability.Telemetry
   alias Fleetlm.Runtime
-  alias Fleetlm.Storage.AgentCache
   alias Fleetlm.Storage
+  alias Fleetlm.Storage.AgentCache
   alias Phoenix.PubSub
 
-  @doc """
-  Execute a webhook job.
-  """
-  def execute(%{type: :message} = job) do
-    Logger.debug("Executing message job", session_id: job.session_id)
+  @type catch_up_params :: %{
+          session_id: String.t(),
+          agent_id: String.t(),
+          user_id: String.t(),
+          from_seq: non_neg_integer(),
+          to_seq: non_neg_integer(),
+          user_message_sent_at: integer() | nil
+        }
 
+  @spec catch_up(catch_up_params()) ::
+          {:ok, %{last_sent_seq: non_neg_integer(), message_count: non_neg_integer()}}
+          | {:error, term()}
+  def catch_up(%{
+        session_id: session_id,
+        agent_id: agent_id,
+        user_id: user_id,
+        from_seq: from_seq,
+        to_seq: to_seq,
+        user_message_sent_at: user_message_sent_at
+      }) do
     started_at = System.monotonic_time(:millisecond)
 
-    client = webhook_client()
-
-    with {:ok, agent} <- AgentCache.get(job.context.agent_id),
+    with {:ok, agent} <- AgentCache.get(agent_id),
          :ok <- ensure_enabled(agent),
-         {:ok, final_job, total_count} <- process_message_job(job, agent, client) do
+         {:ok, messages} <- select_history(agent, session_id),
+         {:ok, payload} <- build_payload(agent, session_id, user_id, messages),
+         {:ok, count} <-
+           dispatch(agent, payload, session_id, agent_id, user_id, user_message_sent_at) do
       duration_ms = System.monotonic_time(:millisecond) - started_at
 
-      Fleetlm.Observability.Telemetry.emit_agent_webhook(
-        agent.id,
-        job.session_id,
+      Telemetry.emit_agent_webhook(
+        agent_id,
+        session_id,
         :ok,
         duration_ms * 1000,
-        message_count: total_count,
+        message_count: count,
         status_code: 200
       )
 
-      Logger.info("Message job completed",
-        session_id: job.session_id,
+      Logger.info("Agent catch-up completed",
+        session_id: session_id,
         duration_ms: duration_ms,
-        count: total_count
+        from_seq: from_seq,
+        to_seq: to_seq,
+        messages: count
       )
 
-      case Runtime.processing_complete(job.session_id, final_job.context.last_sent_seq) do
-        :ok ->
-          :ok
-
-        {:error, reason} = error ->
-          Logger.error("processing_complete failed",
-            session_id: job.session_id,
-            reason: inspect(reason)
-          )
-
-          Runtime.processing_failed(job.session_id, reason)
-          error
-      end
+      {:ok, %{last_sent_seq: to_seq, message_count: count}}
     else
       {:error, reason} = error ->
         duration_ms = System.monotonic_time(:millisecond) - started_at
 
-        Fleetlm.Observability.Telemetry.emit_agent_webhook(
-          job.context.agent_id,
-          job.session_id,
+        Telemetry.emit_agent_webhook(
+          agent_id,
+          session_id,
           :error,
           duration_ms * 1000,
-          error_type: classify_error(reason),
-          message_count: 0
+          message_count: 0,
+          error_type: classify_error(reason)
         )
 
-        Logger.error("Message job failed", session_id: job.session_id, reason: inspect(reason))
-        Runtime.processing_failed(job.session_id, reason)
+        Logger.error("Agent catch-up failed",
+          session_id: session_id,
+          reason: inspect(reason)
+        )
+
         error
     end
   end
 
-  def execute(%{type: :compact} = job) do
-    Logger.debug("Executing compact job", session_id: job.session_id)
+  @type compaction_params :: %{
+          session_id: String.t(),
+          webhook_url: String.t(),
+          payload: map()
+        }
 
+  @spec compact(compaction_params()) :: {:ok, map()} | {:error, term()}
+  def compact(%{session_id: session_id, webhook_url: url, payload: payload}) do
     started_at = System.monotonic_time(:millisecond)
 
-    # Execute webhook
-    case webhook_client().call_compaction_webhook(job.webhook_url, job.payload) do
+    case webhook_client().call_compaction_webhook(url, payload) do
       {:ok, summary} ->
-        duration = System.monotonic_time(:millisecond) - started_at
-        Logger.info("Compact job completed", session_id: job.session_id, duration_ms: duration)
-        Runtime.compaction_complete(job.session_id, summary)
-        :ok
+        duration_ms = System.monotonic_time(:millisecond) - started_at
+
+        Logger.info("Compaction webhook completed",
+          session_id: session_id,
+          duration_ms: duration_ms
+        )
+
+        {:ok, summary}
 
       {:error, reason} ->
-        Logger.error("Compact job failed", session_id: job.session_id, reason: inspect(reason))
-        Runtime.compaction_failed(job.session_id, reason)
+        Logger.error("Compaction webhook failed",
+          session_id: session_id,
+          reason: inspect(reason)
+        )
+
         {:error, reason}
     end
   end
 
-  ## Private
+  ## Helpers
 
-  defp process_message_job(job, agent, client, total_count \\ 0) do
-    job = drain_target_updates(job)
+  defp ensure_enabled(%{status: "enabled"}), do: :ok
+  defp ensure_enabled(_agent), do: {:error, :agent_disabled}
 
-    if job.context.target_seq <= job.context.last_sent_seq do
-      {:ok, job, total_count}
-    else
-      with {:ok, messages} <- fetch_history(job, agent),
-           {:ok, payload} <- build_message_payload(agent, job, messages),
-           {:ok, iteration_count} <- dispatch_once(agent, payload, job, client) do
-        updated_job =
-          job
-          |> update_last_sent()
-          |> drain_target_updates()
-
-        process_message_job(updated_job, agent, client, total_count + iteration_count)
-      end
-    end
-  end
-
-  defp dispatch_once(agent, payload, job, client) do
-    handler = fn action, acc -> handle_message_action(action, acc, job) end
-
-    case client.call_agent_webhook(agent, payload, handler) do
-      {:ok, count} -> {:ok, count}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp build_message_payload(agent, job, messages) do
-    formatted =
-      Enum.map(messages, &format_message/1)
-
-    {:ok,
-     %{
-       session_id: job.session_id,
-       agent_id: agent.id,
-       user_id: job.context.user_id,
-       messages: formatted
-     }}
-  end
-
-  defp fetch_history(job, agent) do
+  defp select_history(agent, session_id) do
     case agent.message_history_mode do
       "tail" ->
-        Runtime.get_messages(job.session_id, 0, agent.message_history_limit)
+        Runtime.get_messages(session_id, 0, agent.message_history_limit)
 
       "entire" ->
-        Storage.get_all_messages(job.session_id)
+        Storage.get_all_messages(session_id)
 
       "last" ->
-        case Runtime.get_messages(job.session_id, 0, 1) do
+        case Runtime.get_messages(session_id, 0, 1) do
           {:ok, messages} -> {:ok, Enum.take(messages, -1)}
           other -> other
         end
 
       _other ->
-        Runtime.get_messages(job.session_id, 0, agent.message_history_limit)
+        Runtime.get_messages(session_id, 0, agent.message_history_limit)
     end
   end
 
-  defp handle_message_action({:chunk, chunk}, acc, job) do
-    # Emit TTFT on first chunk
+  defp build_payload(agent, session_id, user_id, messages) do
+    formatted =
+      Enum.map(messages, fn message ->
+        %{
+          seq: message.seq,
+          sender_id: message.sender_id,
+          kind: message.kind,
+          content: message.content,
+          inserted_at: NaiveDateTime.to_iso8601(message.inserted_at)
+        }
+      end)
+
+    {:ok,
+     %{
+       session_id: session_id,
+       agent_id: agent.id,
+       user_id: user_id,
+       messages: formatted
+     }}
+  end
+
+  defp dispatch(agent, payload, session_id, agent_id, user_id, user_message_sent_at) do
+    handler = fn action, acc ->
+      handle_action(action, acc, session_id, agent_id, user_id, user_message_sent_at)
+    end
+
+    case webhook_client().call_agent_webhook(agent, payload, handler) do
+      {:ok, count} -> {:ok, count}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp handle_action({:chunk, chunk}, acc, session_id, agent_id, _user_id, sent_at) do
     acc =
-      if not Map.get(acc, :ttft_emitted, false) and not is_nil(job.context.user_message_sent_at) do
-        now = System.monotonic_time(:millisecond)
-        ttft_ms = now - job.context.user_message_sent_at
+      maybe_emit_ttft(acc, agent_id, session_id, sent_at)
 
-        Fleetlm.Observability.Telemetry.emit_ttft(
-          job.context.agent_id,
-          job.session_id,
-          ttft_ms
-        )
-
-        Map.put(acc, :ttft_emitted, true)
-      else
-        acc
-      end
-
-    # Broadcast chunk to live sessions
     PubSub.broadcast(
       Fleetlm.PubSub,
-      "session:#{job.session_id}",
-      {:session_stream_chunk, %{"agent_id" => job.context.agent_id, "chunk" => chunk}}
+      "session:#{session_id}",
+      {:session_stream_chunk, %{"agent_id" => agent_id, "chunk" => chunk}}
     )
 
     {:ok, acc}
   end
 
-  defp handle_message_action({:finalize, message, meta}, acc, job) do
-    # Persist finalized message
+  defp handle_action({:finalize, message, meta}, acc, session_id, agent_id, user_id, _sent_at) do
+    with {:ok, _seq} <-
+           persist_agent_message(session_id, agent_id, user_id, message, meta) do
+      {:ok, acc}
+    end
+  end
+
+  defp maybe_emit_ttft(acc, _agent_id, _session_id, nil), do: acc
+
+  defp maybe_emit_ttft(acc, agent_id, session_id, sent_at) do
+    case Map.get(acc, :ttft_emitted, false) do
+      true ->
+        acc
+
+      false ->
+        now = System.monotonic_time(:millisecond)
+        Telemetry.emit_ttft(agent_id, session_id, now - sent_at)
+        Map.put(acc, :ttft_emitted, true)
+    end
+  end
+
+  defp persist_agent_message(session_id, agent_id, user_id, message, meta) do
     parts = Map.get(message, "parts", [])
-    content = %{"id" => message["id"], "role" => message["role"], "parts" => parts}
 
-    base_metadata =
-      case Map.get(message, "metadata") do
-        %{} = map -> map
-        _ -> %{}
-      end
+    content =
+      %{
+        "id" => message["id"],
+        "role" => message["role"],
+        "parts" => parts
+      }
 
     metadata =
-      base_metadata
+      message
+      |> Map.get("metadata", %{})
       |> Map.put("termination", Atom.to_string(meta.termination))
-
-    metadata =
-      case Map.get(meta, :finish_chunk) do
-        nil -> metadata
-        finish_chunk -> Map.put(metadata, "_finish_chunk", finish_chunk)
-      end
+      |> maybe_put_finish_chunk(meta)
 
     case Runtime.append_message(
-           job.session_id,
-           job.context.agent_id,
-           job.context.user_id,
+           session_id,
+           agent_id,
+           user_id,
            "assistant",
            content,
            metadata
          ) do
-      {:ok, _seq} ->
-        {:ok, acc}
+      {:ok, seq} ->
+        {:ok, seq}
 
-      {:timeout, _leader} ->
-        Logger.error("Message persist timeout", session_id: job.session_id)
-        {:error, :timeout, acc}
+      {:timeout, leader} ->
+        Logger.error("Persisting agent message timed out",
+          session_id: session_id,
+          leader: inspect(leader)
+        )
+
+        {:error, :timeout}
 
       {:error, reason} ->
-        Logger.error("Message persist failed",
-          session_id: job.session_id,
+        Logger.error("Persisting agent message failed",
+          session_id: session_id,
           reason: inspect(reason)
         )
 
-        {:error, reason, acc}
+        {:error, reason}
     end
   end
+
+  defp maybe_put_finish_chunk(metadata, %{finish_chunk: chunk})
+       when not is_nil(chunk) do
+    Map.put(metadata, "_finish_chunk", chunk)
+  end
+
+  defp maybe_put_finish_chunk(metadata, _meta), do: metadata
 
   defp classify_error({:request_failed, reason}), do: {:connection, reason}
   defp classify_error({:http_error, status}), do: {:http_error, status}
@@ -240,65 +261,6 @@ defmodule Fleetlm.Webhook.Executor do
   defp classify_error(:agent_disabled), do: :disabled
   defp classify_error(:receive_timeout), do: :timeout
   defp classify_error(other), do: {:unknown, other}
-
-  defp format_message(message) do
-    %{
-      seq: message.seq,
-      sender_id: message.sender_id,
-      kind: message.kind,
-      content: message.content,
-      inserted_at: NaiveDateTime.to_iso8601(message.inserted_at)
-    }
-  end
-
-  defp ensure_enabled(%{status: "enabled"}), do: :ok
-  defp ensure_enabled(_), do: {:error, :agent_disabled}
-
-  defp update_last_sent(job) do
-    job
-    |> put_in([:context, :last_sent_seq], job.context.target_seq)
-    |> put_in([:context, :user_message_sent_at], nil)
-  end
-
-  defp drain_target_updates(job) do
-    receive do
-      {:update_target, new_target, new_sent_at} ->
-        current_target = job.context.target_seq || 0
-
-        next_target =
-          case new_target do
-            value when is_integer(value) -> max(current_target, value)
-            _ -> current_target
-          end
-
-        job
-        |> put_in([:context, :target_seq], next_target)
-        |> update_user_timestamp(new_sent_at)
-        |> drain_target_updates()
-
-      {:update_target, new_target} ->
-        current_target = job.context.target_seq || 0
-
-        next_target =
-          case new_target do
-            value when is_integer(value) -> max(current_target, value)
-            _ -> current_target
-          end
-
-        job
-        |> put_in([:context, :target_seq], next_target)
-        |> drain_target_updates()
-    after
-      0 ->
-        job
-    end
-  end
-
-  defp update_user_timestamp(job, nil), do: job
-
-  defp update_user_timestamp(job, timestamp) do
-    put_in(job, [:context, :user_message_sent_at], timestamp)
-  end
 
   defp webhook_client do
     Application.get_env(:fleetlm, :webhook_client, Fleetlm.Webhook.Client)

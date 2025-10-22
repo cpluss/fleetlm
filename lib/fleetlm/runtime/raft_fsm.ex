@@ -71,7 +71,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
     Conversations can be in one of three states:
     - :idle - awaiting user input
-    - :processing - agent is actively processing messages
+    - :catching_up - agent is actively processing messages
     - :compacting - running context summarization (blocks processing)
     """
 
@@ -79,9 +79,10 @@ defmodule Fleetlm.Runtime.RaftFSM do
     defstruct [
       # State machine
       state: :idle,
-      target_seq: 0,
+      work_epoch: 0,
       last_sent_seq: 0,
       pending_user_seq: nil,
+      pending_epoch: nil,
 
       # Compaction state
       tokens_since_summary: 0,
@@ -99,10 +100,11 @@ defmodule Fleetlm.Runtime.RaftFSM do
     ]
 
     @type t :: %__MODULE__{
-            state: :idle | :processing | :compacting,
-            target_seq: non_neg_integer(),
+            state: :idle | :catching_up | :compacting,
+            work_epoch: non_neg_integer(),
             last_sent_seq: non_neg_integer(),
             pending_user_seq: non_neg_integer() | nil,
+            pending_epoch: non_neg_integer() | nil,
             tokens_since_summary: non_neg_integer(),
             last_compacted_seq: non_neg_integer(),
             summary: map() | nil,
@@ -299,112 +301,85 @@ defmodule Fleetlm.Runtime.RaftFSM do
   end
 
   @impl true
-  def apply(_meta, {:processing_complete, lane_id, session_id, sent_seq}, state) do
+  def apply(_meta, {:agent_caught_up, lane_id, session_id, epoch, sent_seq}, state) do
     lane = state.lanes[lane_id]
 
     case Map.get(lane.conversations, session_id) do
-      nil ->
-        # Conversation evicted or never existed
-        {state, :ok}
+      %Conversation{work_epoch: ^epoch, state: :catching_up} = conversation ->
+        updated =
+          conversation
+          |> Map.put(:state, :idle)
+          |> Map.put(:last_sent_seq, max(conversation.last_sent_seq, sent_seq))
+          |> Map.put(:user_message_sent_at, nil)
 
-      conversation ->
-        updated_conv = %{conversation | last_sent_seq: sent_seq}
+        {updated, effects} = maybe_start_compaction(session_id, updated)
+        {updated, effects} = maybe_process_pending_after_idle(session_id, updated, effects)
 
-        # Check if we should compact proactively
-        {updated_conv, effects} =
-          if should_compact?(updated_conv) do
-            updated_conv = %{updated_conv | state: :compacting}
-
-            effects = [
-              {:mod_call, Fleetlm.Webhook.Manager, :ensure_compact_job,
-               [session_id, build_compaction_job(session_id, updated_conv)]}
-            ]
-
-            {updated_conv, effects}
-          else
-            {%{updated_conv | state: :idle}, []}
-          end
-
-        new_lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated_conv)}
-        new_state = put_in(state.lanes[lane_id], new_lane)
+        lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated)}
+        new_state = put_in(state.lanes[lane_id], lane)
 
         {new_state, :ok, effects}
+
+      _ ->
+        {state, :ok}
     end
   end
 
   @impl true
-  def apply(_meta, {:processing_failed, lane_id, session_id, reason}, state) do
+  def apply(_meta, {:agent_catchup_failed, lane_id, session_id, epoch, reason}, state) do
     lane = state.lanes[lane_id]
 
-    Logger.error("Processing failed",
+    Logger.error("Agent catch-up failed",
       session_id: session_id,
       lane: lane_id,
       reason: inspect(reason)
     )
 
     case Map.get(lane.conversations, session_id) do
-      nil ->
-        # Conversation evicted or never existed
-        {state, :ok}
+      %Conversation{work_epoch: ^epoch, state: :catching_up} = conversation ->
+        updated = %{
+          conversation
+          | state: :idle,
+            user_message_sent_at: nil
+        }
 
-      conversation ->
-        # Transition back to idle on failure
-        updated_conv = %{conversation | state: :idle}
-
-        new_lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated_conv)}
-        new_state = put_in(state.lanes[lane_id], new_lane)
+        lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated)}
+        new_state = put_in(state.lanes[lane_id], lane)
 
         {new_state, :ok}
+
+      _ ->
+        {state, :ok}
     end
   end
 
   @impl true
-  def apply(_meta, {:compaction_complete, lane_id, session_id, summary}, state) do
-    # Stub for PR3
+  def apply(_meta, {:compaction_complete, lane_id, session_id, epoch, summary}, state) do
     lane = state.lanes[lane_id]
 
     case Map.get(lane.conversations, session_id) do
-      nil ->
-        {state, :ok}
-
-      conversation ->
-        updated_conv = %{
+      %Conversation{work_epoch: ^epoch, state: :compacting} = conversation ->
+        updated =
           conversation
-          | summary: summary,
-            tokens_since_summary: 0,
-            last_compacted_seq: conversation.last_seq
-        }
+          |> Map.put(:state, :idle)
+          |> Map.put(:summary, summary)
+          |> Map.put(:tokens_since_summary, 0)
+          |> Map.put(:last_compacted_seq, conversation.last_seq)
 
-        # If message was queued, start processing
-        {updated_conv, effects} =
-          if updated_conv.pending_user_seq do
-            updated_conv = %{
-              updated_conv
-              | state: :processing,
-                target_seq: updated_conv.pending_user_seq,
-                pending_user_seq: nil
-            }
+        {updated, effects} = maybe_process_pending_after_idle(session_id, updated, [])
 
-            effects = [
-              {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job,
-               [session_id, updated_conv]}
-            ]
-
-            {updated_conv, effects}
-          else
-            {%{updated_conv | state: :idle}, []}
-          end
-
-        new_lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated_conv)}
-        new_state = put_in(state.lanes[lane_id], new_lane)
+        lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated)}
+        new_state = put_in(state.lanes[lane_id], lane)
 
         {new_state, :ok, effects}
+
+      _ ->
+        {state, :ok}
     end
   end
 
   @impl true
-  def apply(_meta, {:compaction_failed, lane_id, session_id, reason}, state) do
-    # Stub for PR3
+  def apply(_meta, {:compaction_failed, lane_id, session_id, epoch, reason}, state) do
     lane = state.lanes[lane_id]
 
     Logger.error("Compaction failed",
@@ -414,34 +389,20 @@ defmodule Fleetlm.Runtime.RaftFSM do
     )
 
     case Map.get(lane.conversations, session_id) do
-      nil ->
-        {state, :ok}
+      %Conversation{work_epoch: ^epoch, state: :compacting} = conversation ->
+        updated =
+          conversation
+          |> Map.put(:state, :idle)
 
-      conversation ->
-        # Transition back to idle, process pending message if any
-        {updated_conv, effects} =
-          if conversation.pending_user_seq do
-            updated_conv = %{
-              conversation
-              | state: :processing,
-                target_seq: conversation.pending_user_seq,
-                pending_user_seq: nil
-            }
+        {updated, effects} = maybe_process_pending_after_idle(session_id, updated, [])
 
-            effects = [
-              {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job,
-               [session_id, updated_conv]}
-            ]
-
-            {updated_conv, effects}
-          else
-            {%{conversation | state: :idle}, []}
-          end
-
-        new_lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated_conv)}
-        new_state = put_in(state.lanes[lane_id], new_lane)
+        lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated)}
+        new_state = put_in(state.lanes[lane_id], lane)
 
         {new_state, :ok, effects}
+
+      _ ->
+        {state, :ok}
     end
   end
 
@@ -459,13 +420,26 @@ defmodule Fleetlm.Runtime.RaftFSM do
     for {_lane_id, lane} <- state.lanes,
         {session_id, conversation} <- lane.conversations do
       case conversation.state do
-        :processing ->
-          Fleetlm.Webhook.Manager.ensure_message_job(session_id, conversation)
+        :catching_up ->
+          if conversation.agent_id do
+            Fleetlm.Webhook.WorkerSupervisor.ensure_catch_up(session_id, %{
+              epoch: conversation.work_epoch,
+              agent_id: conversation.agent_id,
+              user_id: conversation.user_id,
+              target_seq: conversation.last_seq,
+              last_sent_seq: conversation.last_sent_seq,
+              user_message_sent_at: conversation.user_message_sent_at
+            })
+          end
 
         :compacting ->
           # Restart compaction worker
           job = build_compaction_job(session_id, conversation)
-          Fleetlm.Webhook.Manager.ensure_compact_job(session_id, job)
+
+          Fleetlm.Webhook.WorkerSupervisor.ensure_compaction(session_id, %{
+            epoch: conversation.work_epoch,
+            job: job
+          })
 
         :idle ->
           :ok
@@ -479,7 +453,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
     Logger.info("Group #{state.group_id}: Stepped down to follower, stopping workers")
 
     # Stop all workers (leader-only execution)
-    Fleetlm.Webhook.Manager.stop_all_jobs()
+    Fleetlm.Webhook.WorkerSupervisor.stop_all()
 
     []
   end
@@ -650,68 +624,149 @@ defmodule Fleetlm.Runtime.RaftFSM do
       updated_conversation =
         conversation
         |> Map.put(:state, :idle)
-        |> Map.put(:target_seq, seq)
+        |> Map.put(:work_epoch, conversation.work_epoch + 1)
         |> Map.put(:last_sent_seq, seq)
         |> Map.put(:user_message_sent_at, nil)
 
       {updated_conversation, []}
     else
-      # Capture timestamp for TTFT tracking
       now = System.monotonic_time(:millisecond)
 
-      # State machine logic for user messages
       case conversation.state do
         :idle ->
-          # Check if we should compact before processing
           if should_compact?(conversation) do
-            # Queue message and start compaction
-            conversation = %{
+            epoch = conversation.work_epoch + 1
+
+            conversation =
               conversation
-              | state: :compacting,
-                pending_user_seq: seq,
-                user_message_sent_at: now
-            }
+              |> Map.put(:state, :compacting)
+              |> Map.put(:work_epoch, epoch)
+              |> Map.put(:pending_user_seq, seq)
+              |> Map.put(:pending_epoch, epoch + 1)
+              |> Map.put(:user_message_sent_at, now)
+
+            job = build_compaction_job(session_id, conversation)
 
             effects = [
-              {:mod_call, Fleetlm.Webhook.Manager, :ensure_compact_job,
-               [session_id, build_compaction_job(session_id, conversation)]}
+              {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_compaction,
+               [session_id, %{epoch: epoch, job: job}]}
             ]
 
             {conversation, effects}
           else
-            # Start processing normally
-            conversation = %{
+            epoch = conversation.work_epoch + 1
+
+            conversation =
               conversation
-              | state: :processing,
-                target_seq: seq,
-                user_message_sent_at: now
-            }
+              |> Map.put(:state, :catching_up)
+              |> Map.put(:work_epoch, epoch)
+              |> Map.put(:user_message_sent_at, now)
 
-            effects = [
-              {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job,
-               [session_id, conversation]}
-            ]
+            Logger.debug("Starting catch-up worker",
+              session_id: session_id,
+              state: :idle,
+              target_seq: seq
+            )
 
+            effects = catch_up_effects(session_id, conversation, seq)
             {conversation, effects}
           end
 
-        :processing ->
-          # Batch/interrupt: update target
-          # Keep original timestamp (don't reset for batched messages)
-          conversation = %{conversation | target_seq: seq}
+        :catching_up ->
+          epoch = conversation.work_epoch + 1
 
-          effects = [
-            {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job, [session_id, conversation]}
-          ]
+          conversation =
+            conversation
+            |> Map.put(:work_epoch, epoch)
+            |> Map.update(:user_message_sent_at, now, & &1)
 
+          Logger.debug("Updating catch-up worker",
+            session_id: session_id,
+            state: :catching_up,
+            target_seq: seq
+          )
+
+          effects = catch_up_effects(session_id, conversation, seq)
           {conversation, effects}
 
         :compacting ->
-          # Queue message, can't process yet
-          # Update timestamp for when we eventually process
-          conversation = %{conversation | pending_user_seq: seq, user_message_sent_at: now}
+          conversation =
+            conversation
+            |> Map.put(:pending_user_seq, seq)
+            |> Map.put(:pending_epoch, conversation.pending_epoch || conversation.work_epoch + 1)
+            |> Map.put(:user_message_sent_at, now)
+
           {conversation, []}
       end
+    end
+  end
+
+  defp catch_up_effects(_session_id, %{agent_id: nil}, _target_seq), do: []
+
+  defp catch_up_effects(session_id, conversation, target_seq) do
+    [
+      {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_catch_up,
+       [
+         session_id,
+         %{
+           epoch: conversation.work_epoch,
+           agent_id: conversation.agent_id,
+           user_id: conversation.user_id,
+           target_seq: target_seq,
+           last_sent_seq: conversation.last_sent_seq,
+           user_message_sent_at: conversation.user_message_sent_at
+         }
+       ]}
+    ]
+  end
+
+  defp maybe_start_compaction(_session_id, %{agent_id: nil} = conversation) do
+    {conversation, []}
+  end
+
+  defp maybe_start_compaction(session_id, conversation) do
+    if should_compact?(conversation) do
+      epoch = conversation.work_epoch + 1
+
+      conversation =
+        conversation
+        |> Map.put(:state, :compacting)
+        |> Map.put(:work_epoch, epoch)
+
+      job = build_compaction_job(session_id, conversation)
+
+      effects = [
+        {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_compaction,
+         [session_id, %{epoch: epoch, job: job}]}
+      ]
+
+      {conversation, effects}
+    else
+      {conversation, []}
+    end
+  end
+
+  defp maybe_process_pending_after_idle(_session_id, %{state: state} = conversation, effects)
+       when state != :idle do
+    {conversation, effects}
+  end
+
+  defp maybe_process_pending_after_idle(session_id, conversation, effects) do
+    case conversation.pending_user_seq do
+      nil ->
+        {%{conversation | pending_epoch: nil}, effects}
+
+      seq ->
+        epoch = conversation.pending_epoch || conversation.work_epoch + 1
+
+        conversation =
+          conversation
+          |> Map.put(:state, :catching_up)
+          |> Map.put(:work_epoch, epoch)
+          |> Map.put(:pending_user_seq, nil)
+          |> Map.put(:pending_epoch, nil)
+
+        {conversation, effects ++ catch_up_effects(session_id, conversation, seq)}
     end
   end
 

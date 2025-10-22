@@ -279,22 +279,120 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       assert [{^session_id, 1, _message_id}] = results
 
       assert Enum.any?(effects, fn
-               {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job, [^session_id, conv]} ->
-                 conv.state == :processing and conv.target_seq == 1
+               {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_catch_up,
+                [^session_id, payload]} ->
+                 payload.epoch == 1 and payload.target_seq == 1
 
                _ ->
                  false
              end)
 
       conversation = new_state.lanes[lane].conversations[session_id]
-      assert conversation.state == :processing
-      assert conversation.target_seq == 1
+      assert conversation.state == :catching_up
+      assert conversation.work_epoch == 1
       assert conversation.last_sent_seq == 0
 
       # Snapshot effect should trigger when index jumps beyond threshold
       assert Enum.any?(effects, fn
                {:release_cursor, 260, :snapshot} -> true
                _ -> false
+             end)
+    end
+
+    test "restarts webhook job after processing completes", %{state: state, session: session} do
+      previous = Application.get_env(:fleetlm, :disable_agent_webhooks)
+      Application.put_env(:fleetlm, :disable_agent_webhooks, false)
+
+      on_exit(fn ->
+        Application.put_env(:fleetlm, :disable_agent_webhooks, previous)
+      end)
+
+      lane = 0
+      session_id = session.id
+
+      frames = [
+        {session_id, session.user_id, session.agent_id, "text", %{"text" => "first"}, %{}}
+      ]
+
+      meta = %{index: 1, term: 1}
+
+      {state_after_first, {:reply, {:ok, _}}, _effects} =
+        RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
+
+      conversation_after_first = state_after_first.lanes[lane].conversations[session_id]
+
+      {state_idle, :ok, _} =
+        RaftFSM.apply(
+          %{index: 2, term: 1},
+          {:agent_caught_up, lane, session_id, conversation_after_first.work_epoch, 1},
+          state_after_first
+        )
+
+      frames2 = [
+        {session_id, session.user_id, session.agent_id, "text", %{"text" => "second"}, %{}}
+      ]
+
+      meta2 = %{index: 3, term: 1}
+
+      {_state_final, {:reply, {:ok, _}}, effects2} =
+        RaftFSM.apply(meta2, {:append_batch, lane, frames2}, state_idle)
+
+      assert Enum.any?(effects2, fn
+               {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_catch_up,
+                [^session_id, payload]} ->
+                 payload.epoch == 2 and payload.target_seq == 2
+
+               _ ->
+                 false
+             end)
+    end
+
+    test "restarts webhook job after processing failure", %{state: state, session: session} do
+      previous = Application.get_env(:fleetlm, :disable_agent_webhooks)
+      Application.put_env(:fleetlm, :disable_agent_webhooks, false)
+
+      on_exit(fn ->
+        Application.put_env(:fleetlm, :disable_agent_webhooks, previous)
+      end)
+
+      lane = 0
+      session_id = session.id
+
+      frames = [
+        {session_id, session.user_id, session.agent_id, "text", %{"text" => "first"}, %{}}
+      ]
+
+      meta = %{index: 1, term: 1}
+
+      {state_after_first, {:reply, {:ok, _}}, _effects} =
+        RaftFSM.apply(meta, {:append_batch, lane, frames}, state)
+
+      conversation_after_first = state_after_first.lanes[lane].conversations[session_id]
+
+      {state_idle, :ok} =
+        RaftFSM.apply(
+          %{index: 2, term: 1},
+          {:agent_catchup_failed, lane, session_id, conversation_after_first.work_epoch,
+           :timeout},
+          state_after_first
+        )
+
+      frames2 = [
+        {session_id, session.user_id, session.agent_id, "text", %{"text" => "second"}, %{}}
+      ]
+
+      meta2 = %{index: 3, term: 1}
+
+      {_state_final, {:reply, {:ok, _}}, effects2} =
+        RaftFSM.apply(meta2, {:append_batch, lane, frames2}, state_idle)
+
+      assert Enum.any?(effects2, fn
+               {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_catch_up,
+                [^session_id, payload]} ->
+                 payload.epoch == 2 and payload.target_seq == 2
+
+               _ ->
+                 false
              end)
     end
   end
@@ -464,7 +562,7 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       assert new_state == state
     end
 
-    test "processing_failed resets conversation state to idle" do
+    test "agent_catchup_failed resets conversation state to idle" do
       now = NaiveDateTime.utc_now()
       session_id = "session-failed"
       lane_id = 0
@@ -478,7 +576,8 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
         user_id: "alice",
         agent_id: "agent:bob",
         last_activity: now,
-        state: :processing
+        state: :catching_up,
+        work_epoch: 1
       }
 
       lane = %{lane | conversations: Map.put(lane.conversations, session_id, conversation)}
@@ -487,14 +586,14 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       {new_state, :ok} =
         RaftFSM.apply(
           %{index: 5, term: 1},
-          {:processing_failed, lane_id, session_id, :timeout},
+          {:agent_catchup_failed, lane_id, session_id, 1, :timeout},
           state
         )
 
       assert new_state.lanes[lane_id].conversations[session_id].state == :idle
     end
 
-    test "processing_complete triggers compaction when thresholds met" do
+    test "agent_caught_up triggers compaction when thresholds met" do
       now = NaiveDateTime.utc_now()
       agent_id = "agent:compact"
 
@@ -517,8 +616,8 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       session_id = "session-compact"
 
       conversation = %Conversation{
-        state: :processing,
-        target_seq: 3,
+        state: :catching_up,
+        work_epoch: 1,
         last_seq: 3,
         last_sent_seq: 1,
         user_id: "alice",
@@ -533,14 +632,19 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       state = put_in(state.lanes[lane_id], lane)
 
       {new_state, :ok, effects} =
-        RaftFSM.apply(%{index: 6, term: 1}, {:processing_complete, lane_id, session_id, 3}, state)
+        RaftFSM.apply(
+          %{index: 6, term: 1},
+          {:agent_caught_up, lane_id, session_id, 1, 3},
+          state
+        )
 
       updated = new_state.lanes[lane_id].conversations[session_id]
       assert updated.state == :compacting
       assert updated.last_sent_seq == 3
 
       assert Enum.any?(effects, fn
-               {:mod_call, Fleetlm.Webhook.Manager, :ensure_compact_job, [^session_id, job]} ->
+               {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_compaction,
+                [^session_id, %{epoch: 2, job: job}]} ->
                  job[:payload][:range_end] == 3
 
                _ ->
@@ -558,8 +662,9 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
 
       conversation = %Conversation{
         state: :compacting,
-        target_seq: 5,
+        work_epoch: 1,
         pending_user_seq: 5,
+        pending_epoch: 2,
         last_seq: 5,
         last_sent_seq: 4,
         user_id: "alice",
@@ -573,18 +678,19 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       {new_state, :ok, effects} =
         RaftFSM.apply(
           %{index: 7, term: 1},
-          {:compaction_failed, lane_id, session_id, :timeout},
+          {:compaction_failed, lane_id, session_id, 1, :timeout},
           state
         )
 
       updated = new_state.lanes[lane_id].conversations[session_id]
-      assert updated.state == :processing
+      assert updated.state == :catching_up
       assert updated.pending_user_seq == nil
-      assert updated.target_seq == 5
+      assert updated.work_epoch == 2
 
       assert Enum.any?(effects, fn
-               {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job, [^session_id, conv]} ->
-                 conv.target_seq == 5
+               {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_catch_up,
+                [^session_id, payload]} ->
+                 payload.target_seq == 5 and payload.epoch == 2
 
                _ ->
                  false

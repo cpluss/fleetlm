@@ -42,4 +42,6 @@ config :fleetlm, Fleetlm.Runtime.DrainCoordinator,
 # Raft test configuration
 config :fleetlm,
   raft_data_dir: "tmp/test_raft",
-  raft_flush_interval_ms: 100
+  raft_flush_interval_ms: 100,
+  runtime_flusher_enabled: false,
+  flusher_async: false

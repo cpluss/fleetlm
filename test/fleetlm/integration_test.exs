@@ -50,7 +50,7 @@ defmodule Fleetlm.Integration.IntegrationTest do
       assert hd(messages).content["text"] == "hello bob"
 
       # Trigger background flush and verify in Postgres
-      send(Fleetlm.Runtime.Flusher, :flush)
+      Fleetlm.Runtime.Flusher.flush_sync()
 
       # Poll until messages appear in DB (no sleeps!)
       eventually(fn ->

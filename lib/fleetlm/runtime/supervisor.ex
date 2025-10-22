@@ -29,32 +29,35 @@ defmodule Fleetlm.Runtime.Supervisor do
 
   @impl true
   def init(_arg) do
-    children = [
-      # Task.Supervisor for async Raft group startup (Horde pattern)
-      {Task.Supervisor, name: Fleetlm.RaftTaskSupervisor},
+    flusher_children =
+      if Application.get_env(:fleetlm, :runtime_flusher_enabled, true) do
+        [Fleetlm.Runtime.Flusher]
+      else
+        []
+      end
 
-      # Task.Supervisor for worker jobs (agent webhooks, compaction)
-      {Task.Supervisor, name: Fleetlm.Webhook.Manager.TaskSupervisor},
+    children =
+      [
+        # Task.Supervisor for async Raft group startup (Horde pattern)
+        {Task.Supervisor, name: Fleetlm.RaftTaskSupervisor},
 
-      # Job manager (coordinates workers on leader node)
-      Fleetlm.Webhook.Manager,
+        # Registry + supervisor for webhook workers
+        {Registry, keys: :unique, name: Fleetlm.Webhook.WorkerRegistry},
+        Fleetlm.Webhook.WorkerSupervisor,
 
-      # Presence replicates ready-node membership across the cluster
-      Fleetlm.Runtime.RaftTopology.Presence,
+        # Presence replicates ready-node membership across the cluster
+        Fleetlm.Runtime.RaftTopology.Presence,
 
-      # Topology coordinator (monitors cluster, manages Raft membership)
-      Fleetlm.Runtime.RaftTopology,
+        # Topology coordinator (monitors cluster, manages Raft membership)
+        Fleetlm.Runtime.RaftTopology,
 
-      # Background flusher (write-behind to Postgres)
-      Fleetlm.Runtime.Flusher,
+        # Inbox registry and supervisor (unchanged)
+        {Registry, keys: :unique, name: Fleetlm.Runtime.InboxRegistry},
+        {InboxSupervisor, []},
 
-      # Inbox registry and supervisor (unchanged)
-      {Registry, keys: :unique, name: Fleetlm.Runtime.InboxRegistry},
-      {InboxSupervisor, []},
-
-      # Graceful drain coordinator for SIGTERM handling
-      Fleetlm.Runtime.DrainCoordinator
-    ]
+        # Graceful drain coordinator for SIGTERM handling
+        Fleetlm.Runtime.DrainCoordinator
+      ] ++ flusher_children
 
     Supervisor.init(children, strategy: :one_for_one)
   end

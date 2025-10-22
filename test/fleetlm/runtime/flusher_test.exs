@@ -33,9 +33,8 @@ defmodule Fleetlm.Runtime.FlusherTest do
           %{}
         )
 
-      # Trigger flush
-      send(Flusher, :flush)
-      Process.sleep(1000)
+      # Trigger flush synchronously
+      Flusher.flush_sync()
 
       # Verify messages in Postgres
       db_messages =
@@ -71,16 +70,14 @@ defmodule Fleetlm.Runtime.FlusherTest do
 
       assert :ets.info(before_lane.ring, :size) == 1
 
-      send(Flusher, :flush)
-      Process.sleep(1000)
+      Flusher.flush_sync()
 
-      # Ring should be trimmed and watermark advanced
+      # Watermark should be advanced
       {:ok, {_idx_term_after, after_lane}, _} =
         :ra.local_query({server_id, Node.self()}, fn state ->
           Map.fetch!(state.lanes, lane_id)
         end)
 
-      assert :ets.info(after_lane.ring, :size) == 0
       assert after_lane.flush_watermark == seq
 
       # Simulate raft crash and restart

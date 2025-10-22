@@ -33,7 +33,7 @@ defmodule Fleetlm.Runtime.Flusher do
   alias Fleetlm.Runtime.{RaftManager, RaftFSM}
   alias Fleetlm.Repo
 
-  @flush_interval Application.compile_env(:fleetlm, :raft_flush_interval_ms, 5000)
+  @default_flush_interval 5_000
 
   # Client API
 
@@ -45,26 +45,44 @@ defmodule Fleetlm.Runtime.Flusher do
 
   @impl true
   def init(_opts) do
-    Logger.info("Flusher started, interval: #{@flush_interval}ms")
-    schedule_flush()
+    interval = flush_interval()
+    Logger.info("Flusher started, interval: #{interval}ms")
+    schedule_flush(interval)
     {:ok, %{}}
   end
 
   @impl true
   def handle_info(:flush, state) do
+    perform_flush()
+    schedule_flush(flush_interval())
+    {:noreply, state}
+  end
+
+  @doc """
+  Flush all pending messages synchronously in the caller process. Useful for
+  tests where the background flusher is disabled.
+  """
+  def flush_sync do
+    perform_flush()
+  end
+
+  # Private helpers
+
+  defp schedule_flush(interval) do
+    Process.send_after(self(), :flush, interval)
+  end
+
+  defp perform_flush do
+    async? = Application.get_env(:fleetlm, :flusher_async, true)
     start_time = System.monotonic_time(:millisecond)
 
-    # Flush all groups in parallel
-    # TODO: don't hardcode 256 groups
-    tasks =
-      for group_id <- 0..255 do
-        Task.async(fn -> flush_group(group_id) end)
+    results =
+      if async? do
+        async_flush()
+      else
+        Enum.map(0..255, &flush_group/1)
       end
 
-    # Wait for all flushes (with timeout)
-    results = Task.await_many(tasks, :timer.seconds(10))
-
-    # Count successes and failures
     {total_messages, failed_groups} =
       Enum.reduce(results, {0, 0}, fn
         {:ok, count}, {total, fails} -> {total + count, fails}
@@ -80,15 +98,17 @@ defmodule Fleetlm.Runtime.Flusher do
       )
     end
 
-    schedule_flush()
-    {:noreply, state}
+    {total_messages, failed_groups}
   end
 
-  # Private helpers
+  defp async_flush do
+    0..255
+    |> Enum.map(fn group_id -> Task.async(fn -> flush_group(group_id) end) end)
+    |> Task.await_many(:timer.seconds(10))
+  end
 
-  defp schedule_flush do
-    interval = Application.get_env(:fleetlm, :raft_flush_interval_ms, @flush_interval)
-    Process.send_after(self(), :flush, interval)
+  defp flush_interval do
+    Application.get_env(:fleetlm, :raft_flush_interval_ms, @default_flush_interval)
   end
 
   defp flush_group(group_id) do
