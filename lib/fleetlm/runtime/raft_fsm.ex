@@ -290,30 +290,12 @@ defmodule Fleetlm.Runtime.RaftFSM do
   end
 
   @impl true
+  def apply(_meta, {:evict_inactive_conversations}, state) do
+    evict_inactive_conversations(state)
+  end
+
   def apply(_meta, :evict_inactive_conversations, state) do
-    cutoff = NaiveDateTime.add(NaiveDateTime.utc_now(), -@conversation_ttl_seconds, :second)
-
-    new_lanes =
-      for {lane_id, lane} <- state.lanes, into: %{} do
-        conversations =
-          lane.conversations
-          |> Enum.reject(fn {_id, conv} ->
-            NaiveDateTime.compare(conv.last_activity, cutoff) == :lt
-          end)
-          |> Map.new()
-
-        evicted_count = map_size(lane.conversations) - map_size(conversations)
-
-        if evicted_count > 0 do
-          Logger.debug(
-            "Group #{state.group_id} lane #{lane_id}: Evicted #{evicted_count} inactive conversations"
-          )
-        end
-
-        {lane_id, %{lane | conversations: conversations}}
-      end
-
-    {%{state | lanes: new_lanes}, :ok}
+    evict_inactive_conversations(state)
   end
 
   @impl true
@@ -679,57 +661,91 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
       # State machine logic for user messages
       case conversation.state do
-      :idle ->
-        # Check if we should compact before processing
-        if should_compact?(conversation) do
-          # Queue message and start compaction
-          conversation = %{
-            conversation
-            | state: :compacting,
-              pending_user_seq: seq,
-              user_message_sent_at: now
-          }
+        :idle ->
+          # Check if we should compact before processing
+          if should_compact?(conversation) do
+            # Queue message and start compaction
+            conversation = %{
+              conversation
+              | state: :compacting,
+                pending_user_seq: seq,
+                user_message_sent_at: now
+            }
 
-          effects = [
-            {:mod_call, Fleetlm.Webhook.Manager, :ensure_compact_job,
-             [session_id, build_compaction_job(session_id, conversation)]}
-          ]
+            effects = [
+              {:mod_call, Fleetlm.Webhook.Manager, :ensure_compact_job,
+               [session_id, build_compaction_job(session_id, conversation)]}
+            ]
 
-          {conversation, effects}
-        else
-          # Start processing normally
-          conversation = %{
-            conversation
-            | state: :processing,
-              target_seq: seq,
-              user_message_sent_at: now
-          }
+            {conversation, effects}
+          else
+            # Start processing normally
+            conversation = %{
+              conversation
+              | state: :processing,
+                target_seq: seq,
+                user_message_sent_at: now
+            }
+
+            effects = [
+              {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job,
+               [session_id, conversation]}
+            ]
+
+            {conversation, effects}
+          end
+
+        :processing ->
+          # Batch/interrupt: update target
+          # Keep original timestamp (don't reset for batched messages)
+          conversation = %{conversation | target_seq: seq}
 
           effects = [
             {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job, [session_id, conversation]}
           ]
 
           {conversation, effects}
+
+        :compacting ->
+          # Queue message, can't process yet
+          # Update timestamp for when we eventually process
+          conversation = %{conversation | pending_user_seq: seq, user_message_sent_at: now}
+          {conversation, []}
+      end
+    end
+  end
+
+  defp evict_inactive_conversations(state) do
+    cutoff = NaiveDateTime.add(NaiveDateTime.utc_now(), -@conversation_ttl_seconds, :second)
+
+    new_lanes =
+      Enum.reduce(state.lanes, %{}, fn {lane_id, lane}, acc ->
+        {kept, evicted_count} =
+          Enum.reduce(lane.conversations, {%{}, 0}, fn {session_id, conversation},
+                                                       {keep_acc, count_acc} ->
+            if inactive_conversation?(conversation, cutoff) do
+              {keep_acc, count_acc + 1}
+            else
+              {Map.put(keep_acc, session_id, conversation), count_acc}
+            end
+          end)
+
+        if evicted_count > 0 do
+          Logger.debug(
+            "Group #{state.group_id} lane #{lane_id}: Evicted #{evicted_count} inactive conversations"
+          )
         end
 
-      :processing ->
-        # Batch/interrupt: update target
-        # Keep original timestamp (don't reset for batched messages)
-        conversation = %{conversation | target_seq: seq}
+        Map.put(acc, lane_id, %{lane | conversations: kept})
+      end)
 
-        effects = [
-          {:mod_call, Fleetlm.Webhook.Manager, :ensure_message_job, [session_id, conversation]}
-        ]
+    {%{state | lanes: new_lanes}, :ok}
+  end
 
-        {conversation, effects}
+  defp inactive_conversation?(%{last_activity: nil}, _cutoff), do: true
 
-      :compacting ->
-        # Queue message, can't process yet
-        # Update timestamp for when we eventually process
-        conversation = %{conversation | pending_user_seq: seq, user_message_sent_at: now}
-        {conversation, []}
-    end
-    end
+  defp inactive_conversation?(%{last_activity: last_activity}, cutoff) do
+    NaiveDateTime.compare(last_activity, cutoff) == :lt
   end
 
   defp should_compact?(conversation) do
