@@ -42,7 +42,7 @@ defmodule Fleetlm.Webhook.Client do
 
     request =
       Finch.build(:post, url, headers, payload_json)
-      |> Finch.stream(Fleetlm.Webhook.HTTP, acc, &handle_stream_chunk/2,
+      |> Finch.stream_while(Fleetlm.Webhook.HTTP, acc, &handle_stream_chunk/2,
         receive_timeout: agent.timeout_ms || 30_000,
         pool_timeout: agent.timeout_ms || 30_000
       )
@@ -104,12 +104,62 @@ defmodule Fleetlm.Webhook.Client do
     end
   end
 
+  ## Internal helpers
+
+  @doc false
+  def build_agent_url(agent) do
+    origin_uri = URI.parse(agent.origin_url)
+    webhook_path = agent.webhook_path || "/webhook"
+
+    case URI.parse(webhook_path) do
+      %URI{scheme: nil, host: nil} = relative ->
+        base_path =
+          case origin_uri.path do
+            nil -> "/"
+            "" -> "/"
+            path -> path
+          end
+
+        relative_path =
+          case relative.path do
+            nil -> ""
+            path -> String.trim_leading(path, "/")
+          end
+
+        joined_path =
+          case relative_path do
+            "" -> base_path
+            other -> Path.join(base_path, other)
+          end
+
+        normalized_path =
+          if String.starts_with?(joined_path, "/"), do: joined_path, else: "/" <> joined_path
+
+        origin_uri
+        |> Map.put(:path, normalized_path)
+        |> Map.put(:query, relative.query)
+        |> Map.put(:fragment, relative.fragment)
+        |> URI.to_string()
+
+      %URI{} = absolute ->
+        URI.to_string(absolute)
+    end
+  end
+
   ## Private
 
-  defp handle_stream_chunk({:status, status}, acc), do: %{acc | status: status}
-  defp handle_stream_chunk({:headers, _headers}, acc), do: acc
+  defp handle_stream_chunk({:status, status}, acc), do: {:cont, %{acc | status: status}}
+  defp handle_stream_chunk({:headers, _headers}, acc), do: {:cont, acc}
+  defp handle_stream_chunk({:trailers, _trailers}, acc), do: {:cont, acc}
 
   defp handle_stream_chunk({:data, data}, acc) when is_map(acc) and is_map_key(acc, :assembler) do
+    case ingest_data_chunk(acc, data) do
+      {:ok, updated} -> {:cont, updated}
+      {:error, reason, updated} -> {:halt, {:error, reason, updated}}
+    end
+  end
+
+  defp ingest_data_chunk(acc, data) do
     new_buffer = acc.buffer <> data
     lines = String.split(new_buffer, "\n")
     {complete_lines, [remaining]} = Enum.split(lines, -1)
@@ -123,8 +173,11 @@ defmodule Fleetlm.Webhook.Client do
       end)
 
     case result do
-      {:ok, acc} -> %{acc | buffer: remaining}
-      {:error, reason} -> {:error, reason}
+      {:ok, acc} ->
+        {:ok, %{acc | buffer: remaining}}
+
+      {:error, reason, acc} ->
+        {:error, reason, acc}
     end
   end
 
@@ -225,18 +278,8 @@ defmodule Fleetlm.Webhook.Client do
     {:error, {:request_failed, :missing_status}}
   end
 
-  defp build_agent_url(agent) do
-    uri = URI.parse(agent.origin_url)
-    base_path = uri.path || "/"
-    webhook_path = agent.webhook_path || "/webhook"
-    path = Path.join(base_path, webhook_path)
-
-    %{uri | path: path}
-    |> URI.to_string()
-  end
-
   defp custom_headers(agent) do
-    agent.headers
+    (agent.headers || %{})
     |> Map.new(fn {k, v} -> {String.downcase(to_string(k)), v} end)
     |> Enum.to_list()
   end

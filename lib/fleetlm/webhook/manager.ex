@@ -47,7 +47,7 @@ defmodule Fleetlm.Webhook.Manager do
     case :ets.lookup(@table, session_id) do
       [{^session_id, pid, _ref, :message}] when is_pid(pid) ->
         # Job exists, push target update (batching/interruption)
-        send(pid, {:update_target, conversation.target_seq})
+        send(pid, {:update_target, conversation.target_seq, conversation.user_message_sent_at})
         :ok
 
       [{^session_id, _pid, _ref, :compact}] ->
@@ -148,10 +148,8 @@ defmodule Fleetlm.Webhook.Manager do
     job = %{
       type: :message,
       session_id: session_id,
-      webhook_url: nil,  # Fetched by executor from agent config
-      payload: %{
-        messages: []  # Fetched by executor
-      },
+      webhook_url: nil,
+      payload: %{},
       context: %{
         agent_id: conversation.agent_id,
         user_id: conversation.user_id,
@@ -190,13 +188,35 @@ defmodule Fleetlm.Webhook.Manager do
   end
 
   defp check_mailbox_for_updates(job) do
+    receive_updates(job)
+  end
+
+  defp receive_updates(job) do
     receive do
+      {:update_target, new_target, new_sent_at} ->
+        Logger.debug("Job received target update", new_target: new_target)
+
+        job
+        |> put_in([:context, :target_seq], new_target)
+        |> update_user_timestamp(new_sent_at)
+        |> receive_updates()
+
       {:update_target, new_target} ->
         Logger.debug("Job received target update", new_target: new_target)
-        put_in(job, [:context, :target_seq], new_target)
+
+        job
+        |> put_in([:context, :target_seq], new_target)
+        |> receive_updates()
     after
-      0 -> job
+      0 ->
+        job
     end
+  end
+
+  defp update_user_timestamp(job, nil), do: job
+
+  defp update_user_timestamp(job, timestamp) do
+    put_in(job, [:context, :user_message_sent_at], timestamp)
   end
 
   defp ensure_table do

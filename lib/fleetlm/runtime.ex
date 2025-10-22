@@ -153,7 +153,7 @@ defmodule Fleetlm.Runtime do
               {:message_notification, notification}
             )
 
-            # Agent dispatch is now handled by RaftFSM effects (no longer called from here)
+          # Agent dispatch is now handled by RaftFSM effects (no longer called from here)
 
           _other ->
             # Conversation metadata not cached yet (shouldn't happen after append)
@@ -343,13 +343,9 @@ defmodule Fleetlm.Runtime do
     lane = RaftManager.lane_for_session(session_id)
     server_id = RaftManager.server_id(group_id)
 
-    :ra.process_command(
-      {server_id, Node.self()},
-      {:processing_complete, lane, session_id, sent_seq},
-      @raft_timeout
-    )
-
-    :ok
+    {server_id, Node.self()}
+    |> :ra.process_command({:processing_complete, lane, session_id, sent_seq}, @raft_timeout)
+    |> handle_raft_result()
   end
 
   @doc """
@@ -363,13 +359,9 @@ defmodule Fleetlm.Runtime do
     lane = RaftManager.lane_for_session(session_id)
     server_id = RaftManager.server_id(group_id)
 
-    :ra.process_command(
-      {server_id, Node.self()},
-      {:processing_failed, lane, session_id, reason},
-      @raft_timeout
-    )
-
-    :ok
+    {server_id, Node.self()}
+    |> :ra.process_command({:processing_failed, lane, session_id, reason}, @raft_timeout)
+    |> handle_raft_result()
   end
 
   @doc """
@@ -383,13 +375,9 @@ defmodule Fleetlm.Runtime do
     lane = RaftManager.lane_for_session(session_id)
     server_id = RaftManager.server_id(group_id)
 
-    :ra.process_command(
-      {server_id, Node.self()},
-      {:compaction_complete, lane, session_id, summary},
-      @raft_timeout
-    )
-
-    :ok
+    {server_id, Node.self()}
+    |> :ra.process_command({:compaction_complete, lane, session_id, summary}, @raft_timeout)
+    |> handle_raft_result()
   end
 
   @doc """
@@ -403,16 +391,18 @@ defmodule Fleetlm.Runtime do
     lane = RaftManager.lane_for_session(session_id)
     server_id = RaftManager.server_id(group_id)
 
-    :ra.process_command(
-      {server_id, Node.self()},
-      {:compaction_failed, lane, session_id, reason},
-      @raft_timeout
-    )
-
-    :ok
+    {server_id, Node.self()}
+    |> :ra.process_command({:compaction_failed, lane, session_id, reason}, @raft_timeout)
+    |> handle_raft_result()
   end
 
   # Private helpers
+
+  defp handle_raft_result({:ok, _reply, _leader}), do: :ok
+  defp handle_raft_result({:timeout, leader}), do: {:error, {:timeout, leader}}
+  defp handle_raft_result({:error, reason}), do: {:error, reason}
+  defp handle_raft_result(:ok), do: :ok
+  defp handle_raft_result(other), do: {:error, other}
 
   defp ensure_group_started(group_id) do
     # RaftManager.start_group is idempotent (checks if already running)

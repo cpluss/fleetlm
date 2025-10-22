@@ -223,8 +223,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
         Fleetlm.Observability.Telemetry.emit_message_throughput()
 
         # Accumulate results and effects
-        {[{session_id, next_seq, message.id} | results_acc], acc_lane,
-         effects_acc ++ new_effects}
+        {[{session_id, next_seq, message.id} | results_acc], acc_lane, effects_acc ++ new_effects}
       end)
 
     # Update FSM state
@@ -336,7 +335,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
             effects = [
               {:mod_call, Fleetlm.Webhook.Manager, :ensure_compact_job,
-               [session_id, build_compaction_job(updated_conv)]}
+               [session_id, build_compaction_job(session_id, updated_conv)]}
             ]
 
             {updated_conv, effects}
@@ -483,7 +482,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
         :compacting ->
           # Restart compaction worker
-          job = build_compaction_job(conversation)
+          job = build_compaction_job(session_id, conversation)
           Fleetlm.Webhook.Manager.ensure_compact_job(session_id, job)
 
         :idle ->
@@ -665,11 +664,21 @@ defmodule Fleetlm.Runtime.RaftFSM do
   end
 
   defp handle_user_message(session_id, conversation, seq) do
-    # Capture timestamp for TTFT tracking
-    now = System.monotonic_time(:millisecond)
+    if Application.get_env(:fleetlm, :disable_agent_webhooks, false) do
+      updated_conversation =
+        conversation
+        |> Map.put(:state, :idle)
+        |> Map.put(:target_seq, seq)
+        |> Map.put(:last_sent_seq, seq)
+        |> Map.put(:user_message_sent_at, nil)
 
-    # State machine logic for user messages
-    case conversation.state do
+      {updated_conversation, []}
+    else
+      # Capture timestamp for TTFT tracking
+      now = System.monotonic_time(:millisecond)
+
+      # State machine logic for user messages
+      case conversation.state do
       :idle ->
         # Check if we should compact before processing
         if should_compact?(conversation) do
@@ -683,7 +692,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
           effects = [
             {:mod_call, Fleetlm.Webhook.Manager, :ensure_compact_job,
-             [session_id, build_compaction_job(conversation)]}
+             [session_id, build_compaction_job(session_id, conversation)]}
           ]
 
           {conversation, effects}
@@ -720,6 +729,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
         conversation = %{conversation | pending_user_seq: seq, user_message_sent_at: now}
         {conversation, []}
     end
+    end
   end
 
   defp should_compact?(conversation) do
@@ -741,11 +751,11 @@ defmodule Fleetlm.Runtime.RaftFSM do
     end
   end
 
-  defp build_compaction_job(conversation) do
+  defp build_compaction_job(session_id, conversation) do
     case Fleetlm.Storage.AgentCache.get(conversation.agent_id) do
       {:ok, agent} ->
         %{
-          session_id: conversation.session_id,
+          session_id: session_id,
           webhook_url: Map.get(agent, :compaction_webhook_url),
           payload: %{
             range_start: conversation.last_compacted_seq + 1,
@@ -836,8 +846,18 @@ defmodule Fleetlm.Runtime.RaftFSM do
         :not_found
 
       row ->
-        snapshot = :erlang.binary_to_term(row.snapshot_data)
-        {:ok, snapshot}
+        try do
+          snapshot = :erlang.binary_to_term(row.snapshot_data)
+          {:ok, snapshot}
+        rescue
+          e ->
+            Logger.error("Failed to deserialize snapshot for group #{group_id}",
+              error: Exception.message(e),
+              hint: "Stale snapshot format - will cold start instead"
+            )
+
+            :not_found
+        end
     end
   end
 
@@ -853,10 +873,21 @@ defmodule Fleetlm.Runtime.RaftFSM do
           :ets.insert(ring, {msg.seq, msg})
         end
 
+        # Restore conversations, handling both old and new formats
+        conversations =
+          case Map.get(lane_data, :conversations, %{}) do
+            convs when is_map(convs) ->
+              convs
+
+            _ ->
+              Logger.warning("Invalid conversations format in snapshot, using empty map")
+              %{}
+          end
+
         lane = %Lane{
           ring: ring,
           capacity: @ring_capacity,
-          conversations: Map.get(lane_data, :conversations, %{}),
+          conversations: conversations,
           flush_watermark: Map.get(lane_data, :flush_watermark, 0),
           last_flushed_index: Map.get(lane_data, :last_flushed_index, 0)
         }
@@ -867,9 +898,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
     group_id = Map.get(snapshot, :group_id)
     raft_index = Map.get(snapshot, :raft_index, 0)
 
-    Logger.debug(
-      "Group #{group_id}: Restored from snapshot index #{raft_index}"
-    )
+    Logger.debug("Group #{group_id}: Restored from snapshot index #{raft_index}")
 
     %__MODULE__{
       group_id: group_id,
@@ -945,7 +974,18 @@ defmodule Fleetlm.Runtime.RaftFSM do
   end
 
   def restore(snapshot_binary) do
-    snapshot = :erlang.binary_to_term(snapshot_binary)
-    restore_from_snapshot(snapshot)
+    try do
+      snapshot = :erlang.binary_to_term(snapshot_binary)
+      restore_from_snapshot(snapshot)
+    rescue
+      e ->
+        Logger.error("Failed to restore snapshot from binary",
+          error: Exception.message(e),
+          hint: "Incompatible snapshot format detected"
+        )
+
+        # Fall back to cold start with group_id 0 (Ra will provide context)
+        cold_start(0)
+    end
   end
 end
