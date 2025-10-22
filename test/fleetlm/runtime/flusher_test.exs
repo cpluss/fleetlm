@@ -2,6 +2,7 @@ defmodule Fleetlm.Runtime.FlusherTest do
   use Fleetlm.TestCase
 
   alias Fleetlm.Runtime.Flusher
+  alias Fleetlm.Runtime.RaftManager
   alias Fleetlm.Storage.Model.Message
 
   describe "flush cycle" do
@@ -43,6 +44,86 @@ defmodule Fleetlm.Runtime.FlusherTest do
       assert length(db_messages) == 2
       assert Enum.at(db_messages, 0).content["text"] == "msg1"
       assert Enum.at(db_messages, 1).content["text"] == "msg2"
+    end
+
+    test "advances watermarks and preserves data across raft restart" do
+      session = create_test_session("dave", "agent")
+
+      {:ok, seq} =
+        Fleetlm.Runtime.append_message(
+          session.id,
+          session.user_id,
+          session.agent_id,
+          "text",
+          %{"text" => "durable"},
+          %{}
+        )
+
+      group_id = RaftManager.group_for_session(session.id)
+      lane_id = RaftManager.lane_for_session(session.id)
+      server_id = RaftManager.server_id(group_id)
+
+      # Ensure message present in ring prior to flush
+      {:ok, {_idx_term, before_lane}, _} =
+        :ra.local_query({server_id, Node.self()}, fn state ->
+          Map.fetch!(state.lanes, lane_id)
+        end)
+
+      assert :ets.info(before_lane.ring, :size) == 1
+
+      send(Flusher, :flush)
+      Process.sleep(1000)
+
+      # Ring should be trimmed and watermark advanced
+      {:ok, {_idx_term_after, after_lane}, _} =
+        :ra.local_query({server_id, Node.self()}, fn state ->
+          Map.fetch!(state.lanes, lane_id)
+        end)
+
+      assert :ets.info(after_lane.ring, :size) == 0
+      assert after_lane.flush_watermark == seq
+
+      # Simulate raft crash and restart
+      pid = Process.whereis(server_id)
+      assert is_pid(pid)
+
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 2000
+
+      eventually(
+        fn ->
+          assert is_nil(Process.whereis(server_id))
+        end,
+        timeout: 2_000
+      )
+
+      start_result = RaftManager.start_group(group_id)
+      assert start_result == :ok or start_result == {:error, :cluster_not_formed}
+
+      eventually(
+        fn ->
+          assert Process.whereis(server_id)
+        end,
+        timeout: 2_000
+      )
+
+      {:ok, seq2} =
+        Fleetlm.Runtime.append_message(
+          session.id,
+          session.user_id,
+          session.agent_id,
+          "text",
+          %{"text" => "after-restart"},
+          %{}
+        )
+
+      assert seq2 >= seq + 1
+
+      {:ok, messages} = Fleetlm.Runtime.get_messages(session.id, 0, seq2)
+      assert hd(messages).content["text"] == "durable"
+      assert Enum.any?(messages, &(&1.content["text"] == "after-restart"))
     end
   end
 
