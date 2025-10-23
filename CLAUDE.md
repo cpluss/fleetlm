@@ -4,16 +4,16 @@ Guidance for Claude Code when collaborating on FleetLM.
 
 ## Quick Start
 
-- `mix setup` — bootstrap deps, DB, and assets
-- `mix phx.server` — run the dev server
-- `mix test` / `mix test path/to/file.exs` — execute test suites
-- `mix precommit` — final gate before handing work back (compile + format + tests)
+- `mix setup` - bootstrap deps, DB, and assets
+- `mix phx.server` - run the dev server
+- `mix test` / `mix test path/to/file.exs` - execute test suites
+- `mix precommit` - final gate before handing work back (compile + format + tests)
 
 ## Architecture Cheat Sheet
 
 - **Storage:** 256 Raft groups (Ra library) with 3 replicas each. 2-of-3 quorum writes, automatic leader election, split-brain protection built-in.
 - **No per-session processes:** Completely stateless request handling. Raft state machines are the only long-lived processes.
-- **Conversation metadata in RAM:** Last sequence number cached in Raft state—no DB queries on message append.
+- **Conversation metadata in RAM:** Last sequence number cached in Raft state-no DB queries on message append.
 - **Postgres as write-behind:** Background flusher streams Raft state to DB every 5s. Batched, idempotent, non-blocking. DB failures don't stop appends.
 - **Cluster membership:** Phoenix.Presence (CRDT) tracks ready nodes. Rendezvous hashing assigns replicas deterministically. Topology coordinator rebalances when nodes join/leave.
 - **Agent dispatch:** ETS queue + polling engine pattern. Webhooks via Finch (HTTP/2 pooling), JSONL streaming back to Raft.
@@ -23,8 +23,8 @@ Guidance for Claude Code when collaborating on FleetLM.
 
 - Pattern-match required input (controller params, channel payloads, webhook data); return descriptive errors when the shape is wrong. Do not mask missing keys with `Map.get(..., default)`.
 - Make telemetry strict. Add clauses like `defp message_tags(%{role: role})` and treat everything else as the fallback path that highlights anomalies.
-- When serialising structs/maps, destructure once and build the response. Avoid peppering `Map.get` across atom/string variants—normalise at the boundary.
-- Use the shared agent engine for outbound HTTP. It uses Finch with HTTP/2 connection pooling—avoid reintroducing ad-hoc HTTP clients on the hot path.
+- When serialising structs/maps, destructure once and build the response. Avoid peppering `Map.get` across atom/string variants-normalise at the boundary.
+- Use the shared agent engine for outbound HTTP. It uses Finch with HTTP/2 connection pooling-avoid reintroducing ad-hoc HTTP clients on the hot path.
 - Lint, format, and test locally. Every PR should pass `mix precommit`.
 
 ## Domain Assumptions & Conventions
@@ -41,7 +41,7 @@ Guidance for Claude Code when collaborating on FleetLM.
 
 - `mix ecto.migrate` / `mix ecto.rollback` for schema changes
 - `mix assets.build` for rebuilding Tailwind + JS bundles
-- `mix phx.gen.html` / `mix phx.gen.live` are unused—prefer handcrafted components consistent with the design language
+- `mix phx.gen.html` / `mix phx.gen.live` are unused-prefer handcrafted components consistent with the design language
 
 ## Checklist Before You Finish
 

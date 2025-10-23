@@ -13,7 +13,7 @@ FleetLM is a clustered Phoenix application that delivers real-time conversations
 
 - Fail loudly on bad input. Prefer function-head pattern matching or `with` pipelines that enforce required keys. Only provide defaults when the product intentionally supports omissions.
 - Validate telemetry metadata in explicit clauses. Treat unexpected or missing labels as an error path so instrumentation stays trustworthy.
-- Destructure known structs/maps and coerce once. Avoid chaining `Map.get/3` with defaults—trust shape where it’s guaranteed, and guard upstream.
+- Destructure known structs/maps and coerce once. Avoid chaining `Map.get/3` with defaults-trust shape where it’s guaranteed, and guard upstream.
 - Honour immutability: produce new assigns/state rather than mutating in place, and prefer small pure helpers for transformations.
 - Design for back-pressure. The runtime assumes at-least-once delivery and sequence numbers; handle drains and retries with clear status signaling.
 

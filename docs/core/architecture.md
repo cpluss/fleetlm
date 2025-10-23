@@ -1,6 +1,6 @@
 ---
 title: Architecture
-sidebar_position: 5
+sidebar_position: 2
 ---
 
 # FleetLM Architecture
@@ -14,7 +14,7 @@ FleetLM is built for **predictable latency and zero data loss** in distributed e
 3. **Horizontal scalability via sharding** - 256 Raft groups distribute load automatically
 4. **Boring, battle-tested technology** - Ra (RabbitMQ's Raft), Phoenix.Presence (CRDT), Postgres
 
-![](./img/high-level-clustered.png)
+![](../img/high-level-clustered.png)
 
 Every node in the cluster is identical, no designated "edge" or "owner" nodes. Clients connect to any node via WebSocket. That node routes messages to the appropriate Raft group (determined by hash), which replicates to 2-of-3 replicas before acknowledging. PubSub broadcasts the committed message back to subscribed clients.
 
@@ -105,7 +105,7 @@ FleetLM prioritizes **availability and predictable latency** over maximum throug
 
 Messages map to groups via hash(session_id), eliminating hotspots. Each group's Raft leader accepts writes, replicates to followers, and only acks after majority commit.
 
-**Conversation state lives in RAM:** Each group caches `{session_id → last_seq}` in the Raft state machine. Sequence assignment is a pure in-memory operation—no database query required. This is the key latency win.
+**Conversation state lives in RAM:** Each group caches `{session_id → last_seq}` in the Raft state machine. Sequence assignment is a pure in-memory operation-no database query required. This is the key latency win.
 
 **Hot message tail in ETS:** Recent messages (~5000 per lane, 3-5 seconds) stay in ETS rings for instant replay. Older messages served from Postgres.
 
@@ -117,7 +117,7 @@ Postgres is **not** on the critical path. A background flusher streams committed
 - **Idempotent** (duplicate inserts ignored via unique constraint)
 - **Non-blocking** (flush failures don't stop new appends)
 
-If Postgres goes down, appends continue—messages queue in Raft state until the database recovers. On cold start, the system replays from Postgres then resumes from Raft.
+If Postgres goes down, appends continue-messages queue in Raft state until the database recovers. On cold start, the system replays from Postgres then resumes from Raft.
 
 **Snapshots** compact Raft logs: every 100k appends, the state machine snapshots to Postgres. Ra discards log entries below the watermark, keeping memory bounded.
 
@@ -125,7 +125,7 @@ If Postgres goes down, appends continue—messages queue in Raft state until the
 
 ## Cluster Membership & Replica Placement
 
-Operating a Raft cluster introduces a coordination problem: which nodes should host replicas for each of the 256 groups? FleetLM solves this with **rendezvous hashing**—a proven technique from distributed caching.
+Operating a Raft cluster introduces a coordination problem: which nodes should host replicas for each of the 256 groups? FleetLM solves this with **rendezvous hashing**-a proven technique from distributed caching.
 
 ### Why Rendezvous Hashing?
 
@@ -156,7 +156,7 @@ Real deployments need rolling updates, autoscaling, and failure recovery. FleetL
 3. Removes dead node from Raft membership (Ra handles leadership transfer)
 4. System continues with 2-node replicas until replacement joins
 
-**The coordinator** is elected deterministically (lowest node name) to avoid conflicts. Only the coordinator triggers rebalances. Membership changes go through Raft consensus—Ra rejects concurrent changes automatically.
+**The coordinator** is elected deterministically (lowest node name) to avoid conflicts. Only the coordinator triggers rebalances. Membership changes go through Raft consensus-Ra rejects concurrent changes automatically.
 
 ### Failure Modes & Guarantees
 
@@ -168,18 +168,18 @@ Real deployments need rolling updates, autoscaling, and failure recovery. FleetL
 
 **Network partition (1 vs 2 nodes):**
 - Minority side (1 node) cannot achieve quorum
-- Returns `:timeout` to clients—no silent data loss
+- Returns `:timeout` to clients-no silent data loss
 - Majority side (2 nodes) continues serving traffic
 - On heal, minority syncs from majority's log
 
 **Split-brain:**
-- Impossible by design—Raft quorum prevents dual leaders
+- Impossible by design-Raft quorum prevents dual leaders
 - Partitioned minority steps down immediately (no acks)
 
 **Leader election:**
 - Automatic on failure (~150ms election timeout)
 - New leader has full replicated log (no data loss)
-- Clients retry failed requests—at-least-once delivery
+- Clients retry failed requests-at-least-once delivery
 
 ### Process Isolation
 
@@ -189,7 +189,7 @@ FleetLM has no per-session processes. The only long-lived processes are:
 - **Background flusher** (1 per node, streams to Postgres)
 - **Topology coordinator** (1 per node, monitors cluster changes)
 
-Crashes are localized—Ra supervises state machines internally, OTP supervises the rest with `:one_for_one` strategy. No cascading failures.
+Crashes are localized-Ra supervises state machines internally, OTP supervises the rest with `:one_for_one` strategy. No cascading failures.
 
 ## Known Bottlenecks & Mitigation
 
@@ -220,7 +220,7 @@ Crashes are localized—Ra supervises state machines internally, OTP supervises 
 
 **Mitigation:**
 - Increase `pool_size` in prod (e.g., 50-100 connections for high cold-read workload)
-- Monitor `fleetlm_raft_state_pending_flush_count` metric—if >50k, Postgres is lagging
+- Monitor `fleetlm_raft_state_pending_flush_count` metric-if >50k, Postgres is lagging
 - Tune `raft_flush_interval_ms` (default: 5000ms) to reduce lag at cost of more frequent DB writes
 - Consider read replicas for cold reads (separate pool)
 
@@ -245,9 +245,9 @@ FleetLM uses a **FSM-first architecture** where the Raft state machine controls 
 ### State Machine
 
 Conversations exist in one of three states:
-- **`:idle`** – Awaiting user input
-- **`:catching_up`** – Agent catch-up worker is streaming responses
-- **`:compacting`** – Summarizing conversation history (blocks catch-up)
+- **`:idle`** - Awaiting user input
+- **`:catching_up`** - Agent catch-up worker is streaming responses
+- **`:compacting`** - Summarizing conversation history (blocks catch-up)
 
 States are **mutually exclusive**. Catch-up and compaction never overlap.
 
@@ -278,7 +278,7 @@ Subsequent user messages bump the `work_epoch` and trigger another `ensure_catch
 **Guarantees:**
 - Workers are leader-local (they terminate when we step down)
 - Epochs live in Raft state, so failover can replay or resume safely
-- No hidden queues—FSM state reflects exactly what work is in flight
+- No hidden queues-FSM state reflects exactly what work is in flight
 
 ### Compaction
 
@@ -298,7 +298,7 @@ When the conversation exceeds its token budget, the FSM transitions to `:compact
 
 We reuse the [AI SDK UI stream protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) for agent replies. Agents must speak the chunk vocabulary (`text-*`, `tool-*`, `finish`, etc.). The assembler (`Fleetlm.Webhook.Assembler`) streams chunks to the session channel while compacting into one persisted assistant message on terminal chunk.
 
-This eliminates translation layers—streamed parts flow straight through to the UI.
+This eliminates translation layers-streamed parts flow straight through to the UI.
 
 ## Why Elixir?
 
@@ -309,4 +309,4 @@ The BEAM VM was built for telecom systems: fault-tolerant, highly concurrent, ex
 - **ETS** for lock-free agent dispatch queues and Raft message rings
 - **Ra (Erlang Raft)** for distributed consensus (RabbitMQ's battle-tested implementation)
 
-Raft handles replication, leader election, and split-brain protection automatically. On leader failure, followers elect a new leader within ~150ms. All committed writes are replicated to majority (2-of-3 nodes) before acknowledgment—no fencing, no manual failover required.
+Raft handles replication, leader election, and split-brain protection automatically. On leader failure, followers elect a new leader within ~150ms. All committed writes are replicated to majority (2-of-3 nodes) before acknowledgment-no fencing, no manual failover required.
