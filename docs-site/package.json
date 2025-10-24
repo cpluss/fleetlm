@@ -1,12 +1,12 @@
 {
-  "name": "fleetlm-docs",
+  "name": "fastpaca-docs",
   "private": true,
   "version": "0.1.0",
   "scripts": {
     "start": "docusaurus start",
     "build": "docusaurus build",
     "serve": "docusaurus serve",
-    "deploy": "npm run build && wrangler pages deploy build --project-name=fleetlm-docs"
+    "deploy": "npm run build && wrangler pages deploy build --project-name=fastpaca-docs"
   },
   "dependencies": {
     "@docusaurus/core": "^3.9.1",

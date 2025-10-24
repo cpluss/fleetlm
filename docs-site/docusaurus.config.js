@@ -1,18 +1,18 @@
 // @ts-check
 
-const siteUrl = process.env.DOCUSAURUS_SITE_URL || "https://docs.fleetlm.com";
+const siteUrl = process.env.DOCUSAURUS_SITE_URL || "https://docs.fastpaca.com";
 const baseUrl = process.env.DOCUSAURUS_BASE_URL || "/";
 
 const config = {
-  title: "FleetLM Docs",
-  tagline: "Self-host FleetLM with confidence",
+  title: "fastpaca Docs",
+  tagline: "Self-host fastpaca with confidence",
   url: siteUrl,
   baseUrl,
   onBrokenLinks: "throw",
   onBrokenMarkdownLinks: "warn",
   favicon: "https://docusaurus.io/favicon.ico",
-  organizationName: "cpluss",
-  projectName: "fleetlm",
+  organizationName: "fastpaca",
+  projectName: "fastpaca",
   trailingSlash: false,
   i18n: {
     defaultLocale: "en",
@@ -25,7 +25,7 @@ const config = {
     announcementBar: {
       id: "wip-banner",
       content:
-        "<strong>Early access:</strong> FleetLM is an active work in progress. Expect rapid changes and review carefully before running in production.",
+        "<strong>Early access:</strong> fastpaca is an active work in progress. Expect rapid changes and review carefully before running in production.",
       backgroundColor: "#f97316",
       textColor: "#1f2937",
       isCloseable: false
@@ -40,7 +40,7 @@ const config = {
           path: "../docs",
           routeBasePath: "/",
           sidebarPath: require.resolve("./sidebars.js"),
-          editUrl: "https://github.com/cpluss/fleetlm/tree/main/docs/"
+          editUrl: "https://github.com/fastpaca/fastpaca/tree/main/docs/"
         },
         blog: false,
         theme: {

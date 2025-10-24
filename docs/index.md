@@ -1,107 +1,97 @@
 ---
-title: FleetLM
+title: Fastpaca
 slug: /
 sidebar_position: 0
 ---
 
-# FleetLM
+# Fastpaca
 
-**Context infra for LLM apps.** FleetLM collapses the datastore + pub/sub + stream orchestration stack into one layer so you can build conversational products without stitching infrastructure together.
+**Context infra for LLM apps.** Fastpaca keeps full history and maintains your LLM context window in one backend service. 
 
-- **[Quick Start](./getting-started/quickstart.md)** - spin up FleetLM locally.
-- **[Example Next.js App](./getting-started/nextjs-example.md)** - see streaming + compaction end to end.
-- **[Architecture](./core/architecture.md)** & **[Benchmarks](./operations/benchmarks.md)** - understand internals and performance.
+- **[Quick Start](./usage/quickstart.md)** – ship a conversation endpoint in minutes  
+- **[Getting Started](./usage/getting-started.md)** – understand how the pieces fit  
+- **[API Reference](./api/rest.md)** – REST & websocket surfaces
 
-## The Context Trap
+---
 
-1. Simple LLM calls → works great  
-2. Add persistence → need database  
-3. Multi-device sync → need pub/sub  
-4. Context limits hit → need compaction  
-5. Debug sessions → need event log  
-6. **Five systems. Distributed nightmare.**
+## Why it matters
 
-FleetLM does all of this out of the box. Write stateless webhooks. Deploy with Docker Compose (or Kubernetes). FleetLM handles state, ordering, replay, and compaction.
+- **Users need to see every message.**
+- **LLMs can only see a limited context window.**
 
-![](./img/high-level-clustered.png)
+Fastpaca bridges that gap with an append-only history, context compaction, and streaming — all inside one backend service. You stay focused on prompts, tools, UI, and business logic. 
 
-FleetLM calls your webhooks when messages arrive. You own the LLM logic. FleetLM guarantees durability, fan-out, and context management.
+*(Curious how it’s built? See the [architecture](./architecture.md).)*
 
-## How FleetLM Works
+---
 
-1. **Send from your frontend** - join the session channel and push messages with the TypeScript client or REST.  
+## How Fastpaca Works
+
+1. **Choose a budget & strategy** – every context sets its token budget and compaction policy up front. Use built-ins (`last_n`, `strip_tool_results`, `budget`, time-aware) or register your own module.  
    ```ts
-   import { FleetLMClient } from "@fleetlm/client";
-
-   const client = new FleetLMClient({ userId: "alice", agentId: "support-bot" });
-   client.on("message", (msg) => console.log(msg));
-   client.sendMessage("Hello!");
+   const ctx = await fastpaca.context('chat_42')
+     .budget(1_000_000)
+     .trigger(0.7 /* 70% */)
+     .policy({ strategy: 'last_n', config: { limit: 400 } });
    ```
-2. **FleetLM calls your webhook** - the runtime persists the message, then POSTs the latest transcript to your API route. Stream the agent response back using AI SDK chunks.  
+2. **Append from your backend** – Fastpaca stores every event in an append-only log (Raft, idempotent writes).  
    ```ts
-   export async function POST(req: Request) {
-     const payload = await req.json();
-     const { messages } = payload;
+   await ctx.append({
+     role: 'user',
+     content: 'What changed in the latest release?'
+   });
+   ```
+3. **Fetch the window & call your LLM** – ask for the token-budgeted transcript and hand it to ai-sdk, LangChain, or raw SDKs.  
+   ```ts
+   const stream = ctx.stream((messages) => streamText({
+     model: openai('gpt-4o-mini'),
+     messages: messages
+   }));
 
-     const stream = streamText({
-       model: openai("gpt-4o-mini"),
+   return stream.toResponse();
+   ```
+4. (optional) **Compact on your terms** – `needCompaction` indicates we hit the budget, and you can rewrite history whenever you want.
+   ```ts
+   if (window.needsCompaction) {
+     await ctx.compact({
        messages: [
-         { role: "system", content: "You are a helpful assistant." },
+         { role: 'system', content: summarize(messages) }, 
          ...messages
        ]
      });
-
-     return stream.toUIMessageStream();
    }
    ```
-3. **Compaction keeps context bounded** - configure a token budget per agent. When usage crosses the threshold, FleetLM invokes your compaction webhook so you can summarise or extract key facts.  
-   ```ts
-   export async function POST(req: Request) {
-     const payload = await req.json();
 
-     const summary = await generateText({
-       model: openai("gpt-4o-mini"),
-       messages: [
-         { role: "system", content: "Summarize this conversation." },
-         ...payload.messages
-       ]
-     });
+Fastpaca never sits between your frontend and model. It’s backend-only: append, window, compact, replay, stream.
 
-     return Response.json({
-       compacted: [{ role: "assistant", content: summary.text }]
-     });
-   }
-   ```
-   Summaries replace old transcripts in the sliding window while the full history stays replayable for audits.
+Need the mental model? Go to [Context Management](./usage/context-management.md). Want to hack now? Hit [Quick Start](./usage/quickstart.md).
 
-## What FleetLM Handles vs Your App
+---
 
-| FleetLM | You |
-| --- | --- |
-| Sequenced, durable log backed by Raft + Postgres | Decide when to send user input and how to render responses |
-| Webhook orchestration, retries, chunk assembly, compaction triggers | Implement webhook logic (LLM calls, tools, summaries) |
-| PubSub fan-out + replay from `last_seq` | Build UIs (web, mobile, CLI) and manage user auth |
-| Telemetry hooks for dispatch latency, chunk volume, compaction events | Set alerts, monitor agent health, tune budgets |
+## Why Teams Pick Fastpaca
 
-Need the high-level system design? Jump to [Architecture](./core/architecture.md). Want to plug in your webhook right away? Start with [Agent Webhooks](./integrations/agents.md).
+- **Stack agnostic** – works with ai-sdk, LangChain, raw OpenAI/Anthropic calls.  
+- **Durable by default** – distributed system consensus, idempotent appends, zero silent drops.  
+- **Token-smart** – enforce token budgets with plug and play compaction strategies.
+- **Self-hosted** – single container, add nodes to cluster with automatic failover, optional Postgres write-behind.  
 
-## Why Teams Pick FleetLM
+No agents. No RAG. No model proxy. Only context conversation state that doesn’t fall over.
 
-- **Framework freedom** - agents are plain webhooks (Next.js, FastAPI, Phoenix, Go).  
-- **Durable ordering** - Raft consensus, at-least-once delivery, zero silent drops.  
-- **Realtime delivery** - WebSockets stream every chunk; REST and inbox endpoints cover polling needs.  
-- **Automatic failover** - leader election recovers from node loss in ~150ms.  
-- **Scales horizontally** - add nodes to handle more concurrent sessions; 256 Raft groups shard traffic.  
-- **Easy to evaluate** - Docker Compose for local play and release images for Kubernetes.
+---
 
-## Self-Host
+## What fastpaca is not
 
-FleetLM ships under Apache 2.0 and is production-ready to run in your own infrastructure. Bring Postgres, deploy to your preferred environment (Kubernetes, ECS, bare metal), and keep full control. See [Deployment](./operations/deployment.md) for patterns and checklists.
+- **Not a vector DB** - bring your own to complement your LLM.
+- **Not generic chat infrastructure** - built specifically for LLMs.
+- **Not an agent framework** - use it alongside whichever one you prefer.
+
+---
 
 ## Where to Go Next
 
-- Follow the [Quick Start](./getting-started/quickstart.md) to spin up FleetLM locally.  
-- Fork the [Next.js example](./getting-started/nextjs-example.md) and see streaming + compaction end to end.  
-- Dive into [Concepts](./core/concepts.md) for the mental model, then explore [Clients](./integrations/client.md) and [Agent Webhooks](./integrations/agents.md).
+- Ship the basics: [Quick Start](./usage/quickstart.md)  
+- Understand policies: [Context Management](./usage/context-management.md)  
+- Call the API from code: [TypeScript SDK](./usage/typescript-sdk.md) & [Examples](./usage/examples.md)  
+- Learn the internals: [Architecture](./architecture.md) • [API Reference](./api/rest.md)
 
-**[GitHub Repository](https://github.com/cpluss/fleetlm)**
+**Use ai-sdk for inference. Use Fastpaca for conversation state. Bring your own model, framework, and frontend.**
