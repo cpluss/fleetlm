@@ -34,6 +34,8 @@ config :fleetlm, :pubsub_adapter, :local
 # Disable agent webhooks by default in tests
 config :fleetlm, :disable_agent_webhooks, true
 
+config :fleetlm, :persist_context_snapshots, false
+
 # Eliminate drain grace period in tests to reduce artificial sleeps
 config :fleetlm, Fleetlm.Runtime.DrainCoordinator,
   drain_timeout: :timer.seconds(5),

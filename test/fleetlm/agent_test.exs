@@ -10,8 +10,8 @@ defmodule Fleetlm.AgentTest do
         name: "GPT-4 Mini",
         origin_url: "http://localhost:3000",
         webhook_path: "/webhook",
-        message_history_mode: "tail",
-        message_history_limit: 50,
+        context_strategy: "last_n",
+        context_strategy_config: %{"limit" => 40},
         timeout_ms: 30_000
       }
 
@@ -20,8 +20,8 @@ defmodule Fleetlm.AgentTest do
       assert agent.name == "GPT-4 Mini"
       assert agent.origin_url == "http://localhost:3000"
       assert agent.webhook_path == "/webhook"
-      assert agent.message_history_mode == "tail"
-      assert agent.message_history_limit == 50
+      assert agent.context_strategy == "last_n"
+      assert agent.context_strategy_config == %{"limit" => 40}
       assert agent.timeout_ms == 30_000
       assert agent.status == "enabled"
     end
@@ -35,8 +35,8 @@ defmodule Fleetlm.AgentTest do
 
       assert {:ok, agent} = Agent.create(attrs)
       assert agent.webhook_path == "/webhook"
-      assert agent.message_history_mode == "tail"
-      assert agent.message_history_limit == 50
+      assert agent.context_strategy == "last_n"
+      assert agent.context_strategy_config == %{}
       assert agent.timeout_ms == 30_000
       assert agent.status == "enabled"
       assert agent.debounce_window_ms == 500
@@ -49,16 +49,29 @@ defmodule Fleetlm.AgentTest do
       assert "can't be blank" in errors_on(changeset).origin_url
     end
 
-    test "validates message_history_mode" do
+    test "validates context strategy" do
       attrs = %{
         id: "test-agent",
         name: "Test",
         origin_url: "http://localhost:3000",
-        message_history_mode: "invalid"
+        context_strategy: "invalid"
       }
 
       assert {:error, changeset} = Agent.create(attrs)
-      assert "is invalid" in errors_on(changeset).message_history_mode
+      assert "is not registered" in errors_on(changeset).context_strategy
+    end
+
+    test "validates context strategy config" do
+      attrs = %{
+        id: "test-agent",
+        name: "Test",
+        origin_url: "http://localhost:3000",
+        context_strategy: "last_n",
+        context_strategy_config: %{"limit" => -1}
+      }
+
+      assert {:error, changeset} = Agent.create(attrs)
+      assert ":invalid_limit" in errors_on(changeset).context_strategy_config
     end
 
     test "validates status" do
@@ -146,22 +159,24 @@ defmodule Fleetlm.AgentTest do
       assert updated.id == agent.id
     end
 
-    test "can update message history mode" do
+    test "can update context strategy" do
       agent = create_agent("test-agent")
 
-      assert {:ok, updated} = Agent.update(agent.id, %{message_history_mode: "entire"})
-      assert updated.message_history_mode == "entire"
+      assert {:ok, updated} =
+               Agent.update(agent.id, %{context_strategy: "strip_tool_results"})
+
+      assert updated.context_strategy == "strip_tool_results"
     end
 
     test "returns error for non-existent agent" do
       assert {:error, :not_found} = Agent.update("non-existent", %{name: "Test"})
     end
 
-    test "validates updated values" do
+    test "validates updated context strategy" do
       agent = create_agent("test-agent")
 
-      assert {:error, changeset} = Agent.update(agent.id, %{message_history_mode: "invalid"})
-      assert "is invalid" in errors_on(changeset).message_history_mode
+      assert {:error, changeset} = Agent.update(agent.id, %{context_strategy: "invalid"})
+      assert "is not registered" in errors_on(changeset).context_strategy
     end
   end
 
@@ -199,43 +214,44 @@ defmodule Fleetlm.AgentTest do
     end
   end
 
-  describe "message history modes" do
-    test "tail mode with custom limit" do
+  describe "context strategies" do
+    test "last_n strategy with custom limit" do
       attrs = %{
         id: "tail-agent",
         name: "Tail Agent",
         origin_url: "http://localhost:3000",
-        message_history_mode: "tail",
-        message_history_limit: 100
+        context_strategy: "last_n",
+        context_strategy_config: %{"limit" => 100}
       }
 
       assert {:ok, agent} = Agent.create(attrs)
-      assert agent.message_history_mode == "tail"
-      assert agent.message_history_limit == 100
+      assert agent.context_strategy == "last_n"
+      assert agent.context_strategy_config == %{"limit" => 100}
     end
 
-    test "entire mode" do
+    test "strip_tool_results strategy" do
       attrs = %{
-        id: "entire-agent",
-        name: "Entire Agent",
+        id: "strip-agent",
+        name: "Stripper",
         origin_url: "http://localhost:3000",
-        message_history_mode: "entire"
+        context_strategy: "strip_tool_results"
       }
 
       assert {:ok, agent} = Agent.create(attrs)
-      assert agent.message_history_mode == "entire"
+      assert agent.context_strategy == "strip_tool_results"
     end
 
-    test "last mode" do
+    test "webhook strategy requires url" do
       attrs = %{
-        id: "last-agent",
-        name: "Last Agent",
+        id: "webhook-agent",
+        name: "Webhook Agent",
         origin_url: "http://localhost:3000",
-        message_history_mode: "last"
+        context_strategy: "webhook",
+        context_strategy_config: %{}
       }
 
-      assert {:ok, agent} = Agent.create(attrs)
-      assert agent.message_history_mode == "last"
+      assert {:error, changeset} = Agent.create(attrs)
+      assert ":missing_url" in errors_on(changeset).context_strategy_config
     end
   end
 

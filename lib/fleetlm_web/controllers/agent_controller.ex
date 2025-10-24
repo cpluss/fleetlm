@@ -38,6 +38,8 @@ defmodule FleetlmWeb.AgentController do
   Create a new agent.
   """
   def create(conn, %{"agent" => agent_params}) do
+    agent_params = normalize_agent_params(agent_params)
+
     case Agent.create(agent_params) do
       {:ok, agent} ->
         conn
@@ -55,6 +57,8 @@ defmodule FleetlmWeb.AgentController do
   Update an existing agent.
   """
   def update(conn, %{"id" => id, "agent" => agent_params}) do
+    agent_params = normalize_agent_params(agent_params)
+
     case Agent.update(id, agent_params) do
       {:ok, agent} ->
         json(conn, %{agent: format_agent(agent)})
@@ -93,14 +97,43 @@ defmodule FleetlmWeb.AgentController do
       name: agent.name,
       origin_url: agent.origin_url,
       webhook_path: agent.webhook_path,
-      message_history_mode: agent.message_history_mode,
-      message_history_limit: agent.message_history_limit,
+      context: %{
+        strategy: agent.context_strategy,
+        config: agent.context_strategy_config
+      },
       timeout_ms: agent.timeout_ms,
       headers: agent.headers,
       status: agent.status,
       inserted_at: agent.inserted_at,
       updated_at: agent.updated_at
     }
+  end
+
+  defp normalize_agent_params(params) do
+    context_params = Map.get(params, "context", %{})
+
+    context_strategy =
+      context_params["strategy"] ||
+        context_params[:strategy] ||
+        Map.get(params, "context_strategy", Map.get(params, :context_strategy)) ||
+        "last_n"
+
+    context_config =
+      context_params["config"] ||
+        context_params[:config] ||
+        Map.get(params, "context_strategy_config", Map.get(params, :context_strategy_config)) ||
+        %{}
+
+    normalized_config =
+      case context_config do
+        %{} = map -> map
+        _ -> %{}
+      end
+
+    params
+    |> Map.drop(["context"])
+    |> Map.put("context_strategy", context_strategy)
+    |> Map.put("context_strategy_config", normalized_config)
   end
 
   # Helper to translate changeset errors to JSON

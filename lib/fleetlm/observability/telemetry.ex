@@ -45,6 +45,11 @@ defmodule Fleetlm.Observability.Telemetry do
 
   @message_throughput_event [:fleetlm, :message, :throughput]
 
+  @context_build_event [:fleetlm, :context, :build]
+  @context_decision_event [:fleetlm, :context, :decision]
+  @context_compaction_event [:fleetlm, :context, :compaction]
+  @context_snapshot_event [:fleetlm, :context, :snapshot]
+
   # Raft telemetry events
   @raft_append_event [:fleetlm, :raft, :append]
   @raft_read_event [:fleetlm, :raft, :read]
@@ -205,6 +210,69 @@ defmodule Fleetlm.Observability.Telemetry do
     metadata = %{cache: cache_name, key: key}
 
     :telemetry.execute(@cache_events ++ [event], measurements, metadata)
+  end
+
+  @doc """
+  Emit telemetry for context bundle construction.
+  """
+  @spec emit_context_build(:ok | :error, String.t() | atom(), non_neg_integer(), map()) :: :ok
+  def emit_context_build(status, strategy, duration_us, metadata \\ %{})
+      when status in [:ok, :error] and is_integer(duration_us) and duration_us >= 0 do
+    meta =
+      metadata
+      |> Map.put(:strategy, normalize_strategy(strategy))
+      |> Map.put(:status, status)
+
+    :telemetry.execute(@context_build_event, %{duration: duration_us}, meta)
+  end
+
+  @doc """
+  Emit telemetry for context lifecycle decisions (e.g. should compact?).
+  """
+  @spec emit_context_decision(atom(), String.t() | atom(), map()) :: :ok
+  def emit_context_decision(decision_type, strategy, metadata \\ %{})
+      when is_atom(decision_type) do
+    meta =
+      metadata
+      |> Map.put(:strategy, normalize_strategy(strategy))
+      |> Map.put(:decision, decision_type)
+
+    :telemetry.execute(@context_decision_event, %{count: 1}, meta)
+  end
+
+  @doc """
+  Emit telemetry for context compaction outcomes.
+  """
+  @spec emit_context_compaction(String.t(), String.t() | atom(), atom(), map()) :: :ok
+  def emit_context_compaction(session_id, strategy, status, metadata \\ %{})
+      when is_atom(status) do
+    meta =
+      metadata
+      |> Map.put(:session_id, session_id)
+      |> Map.put(:strategy, normalize_strategy(strategy))
+      |> Map.put(:status, status)
+
+    :telemetry.execute(@context_compaction_event, %{count: 1}, meta)
+  end
+
+  @doc """
+  Emit telemetry describing the size of a context snapshot.
+  """
+  @spec emit_context_snapshot(String.t(), Fleetlm.Context.Snapshot.t(), non_neg_integer()) :: :ok
+  def emit_context_snapshot(session_id, snapshot, size_bytes) do
+    measurements = %{
+      token_count: snapshot.token_count,
+      summary_count: length(snapshot.summary_messages || []),
+      pending_count: length(snapshot.pending_messages || []),
+      size_bytes: size_bytes
+    }
+
+    metadata = %{
+      session_id: session_id,
+      strategy: normalize_strategy(snapshot.strategy_id)
+    }
+
+    :telemetry.execute(@context_snapshot_event, measurements, metadata)
   end
 
   @doc """
@@ -649,6 +717,11 @@ defmodule Fleetlm.Observability.Telemetry do
   defp normalize_role(%{role: role}) when is_binary(role) or is_atom(role), do: to_string(role)
   defp normalize_role(%{"role" => role}) when is_binary(role), do: role
   defp normalize_role(_), do: raise(ArgumentError, "missing or invalid :role in metadata")
+
+  defp normalize_strategy(strategy) when is_binary(strategy), do: strategy
+  defp normalize_strategy(strategy) when is_atom(strategy), do: Atom.to_string(strategy)
+  defp normalize_strategy(nil), do: "unknown"
+  defp normalize_strategy(other), do: inspect(other)
 
   defp format_reason(%_{} = value) do
     if function_exported?(value.__struct__, :message, 1) do

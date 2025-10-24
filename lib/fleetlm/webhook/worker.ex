@@ -1,8 +1,8 @@
 defmodule Fleetlm.Webhook.Worker do
   @moduledoc """
-  Per-session state machine that orchestrates agent catch-up and compaction
-  work. The Raft FSM owns the authoritative state and instructs this process
-  via `ensure_*` calls.
+  Per-session state machine that orchestrates agent catch-up work. The worker
+  holds any cached context snapshot between dispatches so we can avoid
+  rebuilding transient summaries from scratch on every message.
   """
 
   @behaviour :gen_statem
@@ -19,6 +19,7 @@ defmodule Fleetlm.Webhook.Worker do
             target_seq: 0,
             last_sent_seq: 0,
             user_message_sent_at: nil,
+            context_snapshot: nil,
             compaction_job: nil
 
   @type state_data :: %__MODULE__{}
@@ -63,10 +64,7 @@ defmodule Fleetlm.Webhook.Worker do
   end
 
   def idle(:cast, {:compact, params}, data) do
-    data =
-      data
-      |> assign_compaction(params)
-
+    data = assign_compaction(data, params)
     {:next_state, :compacting, data, {:next_event, :internal, :run}}
   end
 
@@ -107,11 +105,14 @@ defmodule Fleetlm.Webhook.Worker do
            user_id: data.user_id,
            from_seq: data.last_sent_seq,
            to_seq: data.target_seq,
-           user_message_sent_at: data.user_message_sent_at
+           user_message_sent_at: data.user_message_sent_at,
+           context_snapshot: data.context_snapshot
          }) do
-      {:ok, %{last_sent_seq: new_seq}} ->
+      {:ok, %{last_sent_seq: new_seq, snapshot: snapshot}} ->
         Runtime.agent_caught_up(data.session_id, data.epoch, new_seq)
-        {:next_state, :idle, reset_after_catch_up(%{data | last_sent_seq: new_seq})}
+
+        {:next_state, :idle,
+         reset_after_catch_up(%{data | last_sent_seq: new_seq, context_snapshot: snapshot})}
 
       {:error, reason} ->
         Runtime.agent_catchup_failed(data.session_id, data.epoch, reason)
@@ -132,26 +133,23 @@ defmodule Fleetlm.Webhook.Worker do
 
   def compacting(:cast, {:compact, params}, data) do
     data = assign_compaction(data, params)
-    {:next_state, :compacting, data, {:next_event, :internal, :run}}
+    {:keep_state, data}
   end
 
   def compacting(:internal, :run, %{compaction_job: nil} = data) do
     {:next_state, :idle, data}
   end
 
-  def compacting(:internal, :run, data) do
-    Logger.debug("Webhook worker compaction run",
-      session_id: data.session_id,
-      epoch: data.epoch
-    )
+  def compacting(:internal, :run, %{compaction_job: job} = data) do
+    Logger.debug("Webhook worker compaction run", session_id: data.session_id)
 
-    case Executor.compact(data.compaction_job) do
-      {:ok, summary} ->
-        Runtime.compaction_complete(data.session_id, data.epoch, summary)
+    case Executor.compact(job) do
+      {:ok, result} ->
+        Runtime.context_compaction_complete(data.session_id, result)
         {:next_state, :idle, reset_after_compaction(data)}
 
       {:error, reason} ->
-        Runtime.compaction_failed(data.session_id, data.epoch, reason)
+        Runtime.context_compaction_failed(data.session_id, reason)
         {:next_state, :idle, reset_after_compaction(data)}
     end
   end
@@ -186,12 +184,8 @@ defmodule Fleetlm.Webhook.Worker do
     }
   end
 
-  defp assign_compaction(data, %{epoch: epoch, job: job}) do
-    %{
-      data
-      | epoch: epoch,
-        compaction_job: Map.put(job, :session_id, data.session_id)
-    }
+  defp assign_compaction(data, %{job: job}) do
+    %{data | compaction_job: job}
   end
 
   defp reset_after_catch_up(data) do

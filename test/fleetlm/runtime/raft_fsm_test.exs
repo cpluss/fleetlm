@@ -5,7 +5,7 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
 
   alias Fleetlm.Runtime.RaftFSM
   alias Fleetlm.Runtime.RaftFSM.Conversation
-  alias Fleetlm.Storage.AgentCache
+  alias Fleetlm.Context.Snapshot
   alias Fleetlm.Storage.Model.Message
 
   describe "init/1" do
@@ -593,110 +593,6 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       assert new_state.lanes[lane_id].conversations[session_id].state == :idle
     end
 
-    test "agent_caught_up triggers compaction when thresholds met" do
-      now = NaiveDateTime.utc_now()
-      agent_id = "agent:compact"
-
-      {:ok, _agent} =
-        Fleetlm.Agent.create(%{
-          id: agent_id,
-          name: "Compaction Agent",
-          origin_url: "https://example.com",
-          webhook_path: "/webhook",
-          compaction_enabled: true,
-          compaction_token_budget: 10,
-          compaction_trigger_ratio: 0.5,
-          compaction_webhook_url: "https://example.com/compact"
-        })
-
-      AgentCache.clear_all()
-
-      state = RaftFSM.init(%{group_id: 0})
-      lane_id = 0
-      session_id = "session-compact"
-
-      conversation = %Conversation{
-        state: :catching_up,
-        work_epoch: 1,
-        last_seq: 3,
-        last_sent_seq: 1,
-        user_id: "alice",
-        agent_id: agent_id,
-        last_activity: now,
-        tokens_since_summary: 10,
-        last_compacted_seq: 0
-      }
-
-      lane = state.lanes[lane_id]
-      lane = %{lane | conversations: Map.put(lane.conversations, session_id, conversation)}
-      state = put_in(state.lanes[lane_id], lane)
-
-      {new_state, :ok, effects} =
-        RaftFSM.apply(
-          %{index: 6, term: 1},
-          {:agent_caught_up, lane_id, session_id, 1, 3},
-          state
-        )
-
-      updated = new_state.lanes[lane_id].conversations[session_id]
-      assert updated.state == :compacting
-      assert updated.last_sent_seq == 3
-
-      assert Enum.any?(effects, fn
-               {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_compaction,
-                [^session_id, %{epoch: 2, job: job}]} ->
-                 job[:payload][:range_end] == 3
-
-               _ ->
-                 false
-             end)
-    end
-
-    test "compaction_failed resumes pending user message" do
-      now = NaiveDateTime.utc_now()
-      lane_id = 0
-      session_id = "session-compaction-failed"
-
-      state = RaftFSM.init(%{group_id: 0})
-      lane = state.lanes[lane_id]
-
-      conversation = %Conversation{
-        state: :compacting,
-        work_epoch: 1,
-        pending_user_seq: 5,
-        pending_epoch: 2,
-        last_seq: 5,
-        last_sent_seq: 4,
-        user_id: "alice",
-        agent_id: "agent:bob",
-        last_activity: now
-      }
-
-      lane = %{lane | conversations: Map.put(lane.conversations, session_id, conversation)}
-      state = put_in(state.lanes[lane_id], lane)
-
-      {new_state, :ok, effects} =
-        RaftFSM.apply(
-          %{index: 7, term: 1},
-          {:compaction_failed, lane_id, session_id, 1, :timeout},
-          state
-        )
-
-      updated = new_state.lanes[lane_id].conversations[session_id]
-      assert updated.state == :catching_up
-      assert updated.pending_user_seq == nil
-      assert updated.work_epoch == 2
-
-      assert Enum.any?(effects, fn
-               {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_catch_up,
-                [^session_id, payload]} ->
-                 payload.target_seq == 5 and payload.epoch == 2
-
-               _ ->
-                 false
-             end)
-    end
-
     test "evict_inactive_conversations removes stale entries" do
       session = create_test_session("alice", "bob")
       state = RaftFSM.init(%{group_id: 0})
@@ -736,6 +632,105 @@ defmodule Fleetlm.Runtime.RaftFSMTest do
       assert Enum.all?(state.lanes, fn {_lane_id, lane} ->
                :ets.info(lane.ring, :size) == 0 and map_size(lane.conversations) == 0
              end)
+    end
+  end
+
+  describe "apply/3 - context compaction" do
+    setup do
+      {:ok, agent} =
+        Fleetlm.Agent.create(%{
+          id: "agent-webhook-test",
+          name: "Webhook Agent",
+          origin_url: "https://example.com",
+          webhook_path: "/hook",
+          context_strategy: "webhook",
+          context_strategy_config: %{
+            "url" => "https://example.com/context",
+            "compaction_url" => "https://example.com/compact",
+            "max_tokens" => 1
+          }
+        })
+
+      on_exit(fn ->
+        Fleetlm.Storage.AgentCache.invalidate(agent.id)
+        Fleetlm.Agent.delete(agent.id)
+      end)
+
+      %{agent: agent}
+    end
+
+    test "context_compaction_complete handles invalid summaries", %{agent: agent} do
+      state = RaftFSM.init(%{group_id: 0})
+      lane_id = 0
+      session_id = "session-compaction-invalid"
+
+      queue =
+        :queue.in(%{"seq" => 1, "content" => %{"text" => String.duplicate("a", 4)}}, :queue.new())
+
+      snapshot = %Snapshot{
+        strategy_id: "webhook",
+        summary_messages: [],
+        pending_messages: :queue.to_list(queue),
+        token_count: 1,
+        last_compacted_seq: 0,
+        last_included_seq: 1,
+        metadata: %{
+          compaction_inflight: true,
+          pending_queue: queue,
+          token_budget: 1,
+          summary_token_count: 0
+        }
+      }
+
+      conversation = %Conversation{
+        state: :idle,
+        work_epoch: 0,
+        last_sent_seq: 0,
+        pending_user_seq: nil,
+        pending_epoch: nil,
+        user_message_sent_at: nil,
+        last_seq: 1,
+        user_id: "user-1",
+        agent_id: agent.id,
+        last_activity: NaiveDateTime.utc_now(),
+        context_snapshot: snapshot
+      }
+
+      lane = state.lanes[lane_id]
+      lane = %{lane | conversations: Map.put(lane.conversations, session_id, conversation)}
+      state = put_in(state.lanes[lane_id], lane)
+
+      result = %{
+        "messages" => [
+          %{"seq" => 10, "content" => %{"text" => String.duplicate("b", 16)}}
+        ]
+      }
+
+      handler_id = "context-compaction-invalid-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:fleetlm, :context, :compaction],
+        fn event, measurements, metadata, _ ->
+          send(self(), {:telemetry_event, event, measurements, metadata})
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach(handler_id) end)
+
+      meta = %{index: 1, term: 1}
+
+      {new_state, :ok} =
+        RaftFSM.apply(meta, {:context_compaction_complete, lane_id, session_id, result}, state)
+
+      new_convo = new_state.lanes[lane_id].conversations[session_id]
+
+      refute new_convo.context_snapshot.metadata[:compaction_inflight]
+
+      assert_receive {:telemetry_event, [:fleetlm, :context, :compaction], %{count: 1},
+                      %{status: :invalid_result}},
+                     500
     end
   end
 end

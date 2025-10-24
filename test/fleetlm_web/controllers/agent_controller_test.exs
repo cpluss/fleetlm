@@ -61,8 +61,10 @@ defmodule FleetlmWeb.AgentControllerTest do
           "name" => "New Agent",
           "origin_url" => "http://localhost:4000",
           "webhook_path" => "/webhook",
-          "message_history_mode" => "tail",
-          "message_history_limit" => 100
+          "context" => %{
+            "strategy" => "last_n",
+            "config" => %{"limit" => 100}
+          }
         }
       }
 
@@ -72,7 +74,8 @@ defmodule FleetlmWeb.AgentControllerTest do
       assert response["agent"]["id"] == "new-agent"
       assert response["agent"]["name"] == "New Agent"
       assert response["agent"]["origin_url"] == "http://localhost:4000"
-      assert response["agent"]["message_history_limit"] == 100
+      assert response["agent"]["context"]["strategy"] == "last_n"
+      assert response["agent"]["context"]["config"] == %{"limit" => 100}
     end
 
     test "creates agent with minimal params (uses defaults)", %{conn: conn} do
@@ -89,8 +92,8 @@ defmodule FleetlmWeb.AgentControllerTest do
 
       assert response["agent"]["id"] == "minimal-agent"
       assert response["agent"]["webhook_path"] == "/webhook"
-      assert response["agent"]["message_history_mode"] == "tail"
-      assert response["agent"]["message_history_limit"] == 50
+      assert response["agent"]["context"]["strategy"] == "last_n"
+      assert response["agent"]["context"]["config"] == %{}
       assert response["agent"]["timeout_ms"] == 30_000
       assert response["agent"]["status"] == "enabled"
     end
@@ -110,20 +113,20 @@ defmodule FleetlmWeb.AgentControllerTest do
       assert Map.has_key?(response["errors"], "origin_url")
     end
 
-    test "returns 422 for invalid message_history_mode", %{conn: conn} do
+    test "returns 422 for invalid context strategy", %{conn: conn} do
       params = %{
         "agent" => %{
           "id" => "invalid-agent",
           "name" => "Invalid",
           "origin_url" => "http://localhost:3000",
-          "message_history_mode" => "invalid_mode"
+          "context" => %{"strategy" => "invalid"}
         }
       }
 
       conn = post(conn, ~p"/api/agents", params)
       response = json_response(conn, 422)
 
-      assert Map.has_key?(response["errors"], "message_history_mode")
+      assert Map.has_key?(response["errors"], "context_strategy")
     end
   end
 
@@ -134,7 +137,7 @@ defmodule FleetlmWeb.AgentControllerTest do
       params = %{
         "agent" => %{
           "name" => "Updated Name",
-          "message_history_mode" => "entire"
+          "context" => %{"strategy" => "strip_tool_results"}
         }
       }
 
@@ -142,7 +145,7 @@ defmodule FleetlmWeb.AgentControllerTest do
       response = json_response(conn, 200)
 
       assert response["agent"]["name"] == "Updated Name"
-      assert response["agent"]["message_history_mode"] == "entire"
+      assert response["agent"]["context"]["strategy"] == "strip_tool_results"
       # Other fields unchanged
       assert response["agent"]["origin_url"] == agent.origin_url
     end
@@ -155,19 +158,19 @@ defmodule FleetlmWeb.AgentControllerTest do
       assert json_response(conn, 404) == %{"error" => "Agent not found"}
     end
 
-    test "returns 422 for invalid updates", %{conn: conn} do
+    test "returns 422 for invalid context updates", %{conn: conn} do
       agent = create_agent("test-agent")
 
       params = %{
         "agent" => %{
-          "message_history_mode" => "invalid"
+          "context" => %{"strategy" => "invalid"}
         }
       }
 
       conn = put(conn, ~p"/api/agents/#{agent.id}", params)
       response = json_response(conn, 422)
 
-      assert Map.has_key?(response["errors"], "message_history_mode")
+      assert Map.has_key?(response["errors"], "context_strategy")
     end
   end
 

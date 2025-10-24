@@ -24,8 +24,8 @@ defmodule Fleetlm.Webhook.WorkerSupervisor do
     end
   end
 
-  @spec ensure_compaction(String.t(), map()) :: :ok
-  def ensure_compaction(session_id, params) do
+  @spec trigger_compaction(String.t(), map()) :: :ok
+  def trigger_compaction(session_id, params) do
     with {:ok, pid} <- ensure_started(session_id) do
       :gen_statem.cast(pid, {:compact, params})
     end

@@ -53,8 +53,10 @@ export function setupEchoAgent() {
         name: 'Bench Echo Agent',
         origin_url: config.agentUrl,
         webhook_path: '/webhook',
-        message_history_mode: 'tail',
-        message_history_limit: 10,
+      context: {
+        strategy: 'last_n',
+        config: { limit: 10 }
+      },
         timeout_ms: 30000,
         status: 'enabled',
       },

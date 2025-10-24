@@ -58,8 +58,8 @@ defmodule Fleetlm.Webhook.ExecutorTest do
         origin_url: "https://api.example.com",
         webhook_path: "/webhook",
         status: "enabled",
-        message_history_mode: "tail",
-        message_history_limit: 50,
+        context_strategy: "last_n",
+        context_strategy_config: %{"limit" => 50},
         timeout_ms: 5_000
       })
 
@@ -83,13 +83,17 @@ defmodule Fleetlm.Webhook.ExecutorTest do
       user_id: session.user_id,
       from_seq: 0,
       to_seq: seq,
-      user_message_sent_at: System.monotonic_time(:millisecond)
+      user_message_sent_at: System.monotonic_time(:millisecond),
+      context_snapshot: nil
     }
 
-    assert {:ok, %{last_sent_seq: ^seq, message_count: 1}} = Executor.catch_up(params)
+    assert {:ok, %{last_sent_seq: ^seq, message_count: 1, snapshot: snapshot}} =
+             Executor.catch_up(params)
 
     assert_receive {:payload, payload, ^agent_id}
+    assert payload.context.strategy == "last_n"
     assert [%{seq: ^seq} | _] = payload.messages
+    assert snapshot.strategy_id == "last_n"
 
     {:ok, messages} = Runtime.get_messages(session.id, 0, 10)
     assert Enum.any?(messages, &(&1.sender_id == agent_id && &1.kind == "assistant"))

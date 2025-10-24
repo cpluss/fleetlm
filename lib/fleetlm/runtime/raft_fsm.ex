@@ -47,6 +47,9 @@ defmodule Fleetlm.Runtime.RaftFSM do
   require Logger
 
   alias Fleetlm.Storage.Model.{Session, Message}
+  alias Fleetlm.Storage.AgentCache
+  alias Fleetlm.Context.{Manager, Snapshot, SnapshotStore}
+  alias Fleetlm.Observability.Telemetry
   alias Fleetlm.Repo
 
   # TODO: make these configurable, they're hardcoded now for simplicity
@@ -69,10 +72,9 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
     ## State Machine
 
-    Conversations can be in one of three states:
+    Conversations can be in one of two states:
     - :idle - awaiting user input
     - :catching_up - agent is actively processing messages
-    - :compacting - running context summarization (blocks processing)
     """
 
     @enforce_keys [:last_seq, :user_id, :agent_id, :last_activity]
@@ -84,11 +86,6 @@ defmodule Fleetlm.Runtime.RaftFSM do
       pending_user_seq: nil,
       pending_epoch: nil,
 
-      # Compaction state
-      tokens_since_summary: 0,
-      last_compacted_seq: 0,
-      summary: nil,
-
       # Telemetry tracking
       user_message_sent_at: nil,
 
@@ -96,23 +93,22 @@ defmodule Fleetlm.Runtime.RaftFSM do
       last_seq: 0,
       user_id: nil,
       agent_id: nil,
-      last_activity: nil
+      last_activity: nil,
+      context_snapshot: nil
     ]
 
     @type t :: %__MODULE__{
-            state: :idle | :catching_up | :compacting,
+            state: :idle | :catching_up,
             work_epoch: non_neg_integer(),
             last_sent_seq: non_neg_integer(),
             pending_user_seq: non_neg_integer() | nil,
             pending_epoch: non_neg_integer() | nil,
-            tokens_since_summary: non_neg_integer(),
-            last_compacted_seq: non_neg_integer(),
-            summary: map() | nil,
             user_message_sent_at: integer() | nil,
             last_seq: non_neg_integer(),
             user_id: String.t(),
             agent_id: String.t() | nil,
-            last_activity: NaiveDateTime.t()
+            last_activity: NaiveDateTime.t(),
+            context_snapshot: Fleetlm.Context.Snapshot.t() | nil
           }
   end
 
@@ -206,6 +202,9 @@ defmodule Fleetlm.Runtime.RaftFSM do
             last_activity: message.inserted_at
         }
 
+        {updated_conv, context_effects} =
+          maybe_update_context_snapshot(session_id, updated_conv, message)
+
         # State machine: trigger agent processing if this is a user message
         {updated_conv, new_effects} =
           if sender_id == conversation.user_id and conversation.agent_id != nil and
@@ -225,7 +224,9 @@ defmodule Fleetlm.Runtime.RaftFSM do
         Fleetlm.Observability.Telemetry.emit_message_throughput()
 
         # Accumulate results and effects
-        {[{session_id, next_seq, message.id} | results_acc], acc_lane, effects_acc ++ new_effects}
+        effects_acc = effects_acc ++ context_effects ++ new_effects
+
+        {[{session_id, next_seq, message.id} | results_acc], acc_lane, effects_acc}
       end)
 
     # Update FSM state
@@ -312,8 +313,7 @@ defmodule Fleetlm.Runtime.RaftFSM do
           |> Map.put(:last_sent_seq, max(conversation.last_sent_seq, sent_seq))
           |> Map.put(:user_message_sent_at, nil)
 
-        {updated, effects} = maybe_start_compaction(session_id, updated)
-        {updated, effects} = maybe_process_pending_after_idle(session_id, updated, effects)
+        {updated, effects} = maybe_process_pending_after_idle(session_id, updated, [])
 
         lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated)}
         new_state = put_in(state.lanes[lane_id], lane)
@@ -354,24 +354,67 @@ defmodule Fleetlm.Runtime.RaftFSM do
   end
 
   @impl true
-  def apply(_meta, {:compaction_complete, lane_id, session_id, epoch, summary}, state) do
+  def apply(_meta, {:context_compaction_complete, lane_id, session_id, result}, state) do
     lane = state.lanes[lane_id]
 
     case Map.get(lane.conversations, session_id) do
-      %Conversation{work_epoch: ^epoch, state: :compacting} = conversation ->
-        updated =
-          conversation
-          |> Map.put(:state, :idle)
-          |> Map.put(:summary, summary)
-          |> Map.put(:tokens_since_summary, 0)
-          |> Map.put(:last_compacted_seq, conversation.last_seq)
+      %Conversation{} = conversation ->
+        case AgentCache.get(conversation.agent_id) do
+          {:ok, agent} ->
+            case Manager.apply_compaction(
+                   conversation,
+                   conversation.context_snapshot,
+                   result,
+                   agent,
+                   []
+                 ) do
+              {:ok, snapshot} ->
+                updated = %{conversation | context_snapshot: snapshot}
+                lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated)}
+                persist_snapshot(session_id, snapshot)
 
-        {updated, effects} = maybe_process_pending_after_idle(session_id, updated, [])
+                Telemetry.emit_context_compaction(session_id, snapshot.strategy_id, :success, %{
+                  token_count: snapshot.token_count
+                })
 
-        lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated)}
-        new_state = put_in(state.lanes[lane_id], lane)
+                {put_in(state.lanes[lane_id], lane), :ok}
 
-        {new_state, :ok, effects}
+              {:error, reason} ->
+                Logger.warning("Failed to apply context compaction",
+                  session_id: session_id,
+                  reason: inspect(reason)
+                )
+
+                strategy_id =
+                  case conversation.context_snapshot do
+                    %Snapshot{strategy_id: id} -> id
+                    _ -> agent.context_strategy || "unknown"
+                  end
+
+                Telemetry.emit_context_compaction(session_id, strategy_id, :invalid_result, %{
+                  reason: inspect(reason)
+                })
+
+                snapshot =
+                  case conversation.context_snapshot do
+                    %Snapshot{} = snap -> Manager.compaction_failed(snap)
+                    _ -> nil
+                  end
+
+                updated = %{conversation | context_snapshot: snapshot}
+                lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated)}
+
+                case snapshot do
+                  %Snapshot{} = snap -> persist_snapshot(session_id, snap)
+                  _ -> delete_snapshot(session_id)
+                end
+
+                {put_in(state.lanes[lane_id], lane), :ok}
+            end
+
+          {:error, :not_found} ->
+            {state, :ok}
+        end
 
       _ ->
         {state, :ok}
@@ -379,27 +422,36 @@ defmodule Fleetlm.Runtime.RaftFSM do
   end
 
   @impl true
-  def apply(_meta, {:compaction_failed, lane_id, session_id, epoch, reason}, state) do
+  def apply(_meta, {:context_compaction_failed, lane_id, session_id, reason}, state) do
     lane = state.lanes[lane_id]
 
-    Logger.error("Compaction failed",
-      session_id: session_id,
-      lane: lane_id,
-      reason: inspect(reason)
-    )
-
     case Map.get(lane.conversations, session_id) do
-      %Conversation{work_epoch: ^epoch, state: :compacting} = conversation ->
-        updated =
-          conversation
-          |> Map.put(:state, :idle)
+      %Conversation{} = conversation ->
+        strategy_id =
+          case conversation.context_snapshot do
+            %Snapshot{strategy_id: id} -> id
+            _ -> "unknown"
+          end
 
-        {updated, effects} = maybe_process_pending_after_idle(session_id, updated, [])
+        Telemetry.emit_context_compaction(session_id, strategy_id, :failure, %{
+          reason: inspect(reason)
+        })
 
+        snapshot =
+          case conversation.context_snapshot do
+            nil -> nil
+            snap -> Manager.compaction_failed(snap)
+          end
+
+        updated = %{conversation | context_snapshot: snapshot}
         lane = %{lane | conversations: Map.put(lane.conversations, session_id, updated)}
-        new_state = put_in(state.lanes[lane_id], lane)
 
-        {new_state, :ok, effects}
+        case snapshot do
+          %Snapshot{} = snap -> persist_snapshot(session_id, snap)
+          _ -> delete_snapshot(session_id)
+        end
+
+        {put_in(state.lanes[lane_id], lane), :ok}
 
       _ ->
         {state, :ok}
@@ -431,15 +483,6 @@ defmodule Fleetlm.Runtime.RaftFSM do
               user_message_sent_at: conversation.user_message_sent_at
             })
           end
-
-        :compacting ->
-          # Restart compaction worker
-          job = build_compaction_job(session_id, conversation)
-
-          Fleetlm.Webhook.WorkerSupervisor.ensure_compaction(session_id, %{
-            epoch: conversation.work_epoch,
-            job: job
-          })
 
         :idle ->
           :ok
@@ -593,12 +636,15 @@ defmodule Fleetlm.Runtime.RaftFSM do
         # Create a minimal conversation and log a warning
         Logger.warning("Session #{session_id} not found in DB during bootstrap")
 
+        snapshot = load_persisted_snapshot(session_id)
+
         %Conversation{
           last_seq: 0,
           last_sent_seq: 0,
           user_id: "unknown",
           agent_id: nil,
-          last_activity: NaiveDateTime.utc_now()
+          last_activity: NaiveDateTime.utc_now(),
+          context_snapshot: snapshot
         }
 
       %{user_id: user_id, agent_id: agent_id, last_seq: last_seq} ->
@@ -609,12 +655,15 @@ defmodule Fleetlm.Runtime.RaftFSM do
           "Bootstrapped session #{session_id} from DB: last_seq=#{last_seq}, user_id=#{user_id}"
         )
 
+        snapshot = load_persisted_snapshot(session_id)
+
         %Conversation{
           last_seq: last_seq,
           last_sent_seq: 0,
           user_id: user_id,
           agent_id: agent_id,
-          last_activity: NaiveDateTime.utc_now()
+          last_activity: NaiveDateTime.utc_now(),
+          context_snapshot: snapshot
         }
     end
   end
@@ -634,43 +683,22 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
       case conversation.state do
         :idle ->
-          if should_compact?(conversation) do
-            epoch = conversation.work_epoch + 1
+          epoch = conversation.work_epoch + 1
 
-            conversation =
-              conversation
-              |> Map.put(:state, :compacting)
-              |> Map.put(:work_epoch, epoch)
-              |> Map.put(:pending_user_seq, seq)
-              |> Map.put(:pending_epoch, epoch + 1)
-              |> Map.put(:user_message_sent_at, now)
+          conversation =
+            conversation
+            |> Map.put(:state, :catching_up)
+            |> Map.put(:work_epoch, epoch)
+            |> Map.put(:user_message_sent_at, now)
 
-            job = build_compaction_job(session_id, conversation)
+          Logger.debug("Starting catch-up worker",
+            session_id: session_id,
+            state: :idle,
+            target_seq: seq
+          )
 
-            effects = [
-              {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_compaction,
-               [session_id, %{epoch: epoch, job: job}]}
-            ]
-
-            {conversation, effects}
-          else
-            epoch = conversation.work_epoch + 1
-
-            conversation =
-              conversation
-              |> Map.put(:state, :catching_up)
-              |> Map.put(:work_epoch, epoch)
-              |> Map.put(:user_message_sent_at, now)
-
-            Logger.debug("Starting catch-up worker",
-              session_id: session_id,
-              state: :idle,
-              target_seq: seq
-            )
-
-            effects = catch_up_effects(session_id, conversation, seq)
-            {conversation, effects}
-          end
+          effects = catch_up_effects(session_id, conversation, seq)
+          {conversation, effects}
 
         :catching_up ->
           epoch = conversation.work_epoch + 1
@@ -688,15 +716,6 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
           effects = catch_up_effects(session_id, conversation, seq)
           {conversation, effects}
-
-        :compacting ->
-          conversation =
-            conversation
-            |> Map.put(:pending_user_seq, seq)
-            |> Map.put(:pending_epoch, conversation.pending_epoch || conversation.work_epoch + 1)
-            |> Map.put(:user_message_sent_at, now)
-
-          {conversation, []}
       end
     end
   end
@@ -720,29 +739,69 @@ defmodule Fleetlm.Runtime.RaftFSM do
     ]
   end
 
-  defp maybe_start_compaction(_session_id, %{agent_id: nil} = conversation) do
-    {conversation, []}
-  end
+  defp maybe_update_context_snapshot(_session_id, %{agent_id: nil} = conversation, _message),
+    do: {conversation, []}
 
-  defp maybe_start_compaction(session_id, conversation) do
-    if should_compact?(conversation) do
-      epoch = conversation.work_epoch + 1
+  defp maybe_update_context_snapshot(session_id, conversation, message) do
+    case AgentCache.get(conversation.agent_id) do
+      {:ok, agent} ->
+        case Manager.append_message(conversation, conversation.context_snapshot, message, agent) do
+          {:ok, snapshot} ->
+            Telemetry.emit_context_decision(:append, snapshot.strategy_id, %{
+              session_id: session_id,
+              token_count: snapshot.token_count,
+              summary_count: length(snapshot.summary_messages || []),
+              pending_count: length(snapshot.pending_messages || [])
+            })
 
-      conversation =
-        conversation
-        |> Map.put(:state, :compacting)
-        |> Map.put(:work_epoch, epoch)
+            persist_snapshot(session_id, snapshot)
+            {%{conversation | context_snapshot: snapshot}, []}
 
-      job = build_compaction_job(session_id, conversation)
+          {:compact, snapshot, {:webhook, job}} ->
+            Telemetry.emit_context_decision(:trigger_compaction, snapshot.strategy_id, %{
+              session_id: session_id,
+              token_count: snapshot.token_count,
+              summary_count: length(snapshot.summary_messages || []),
+              pending_count: length(snapshot.pending_messages || []),
+              token_budget: Map.get(snapshot.metadata || %{}, :token_budget)
+            })
 
-      effects = [
-        {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :ensure_compaction,
-         [session_id, %{epoch: epoch, job: job}]}
-      ]
+            persist_snapshot(session_id, snapshot)
+            updated = %{conversation | context_snapshot: snapshot}
 
-      {conversation, effects}
-    else
-      {conversation, []}
+            effects = [
+              {:mod_call, Fleetlm.Webhook.WorkerSupervisor, :trigger_compaction,
+               [
+                 session_id,
+                 %{
+                   job: %{
+                     session_id: session_id,
+                     webhook_url: job.url,
+                     payload: job.payload
+                   }
+                 }
+               ]}
+            ]
+
+            {updated, effects}
+
+          {:error, reason} ->
+            Telemetry.emit_context_decision(:error, agent.context_strategy || "unknown", %{
+              session_id: session_id,
+              reason: inspect(reason)
+            })
+
+            Logger.warning("Context append failed",
+              session_id: session_id,
+              reason: inspect(reason)
+            )
+
+            delete_snapshot(session_id)
+            {%{conversation | context_snapshot: nil}, []}
+        end
+
+      {:error, :not_found} ->
+        {conversation, []}
     end
   end
 
@@ -768,6 +827,40 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
         {conversation, effects ++ catch_up_effects(session_id, conversation, seq)}
     end
+  end
+
+  defp persist_snapshot(session_id, %Snapshot{} = snapshot) do
+    if persist_snapshots?() do
+      case SnapshotStore.persist(session_id, snapshot) do
+        {:ok, size_bytes} ->
+          Telemetry.emit_context_snapshot(session_id, snapshot, size_bytes)
+
+        {:error, reason} ->
+          Logger.warning("Failed to persist context snapshot",
+            session_id: session_id,
+            reason: inspect(reason)
+          )
+      end
+    end
+  end
+
+  defp delete_snapshot(session_id) do
+    if persist_snapshots?(), do: SnapshotStore.delete(session_id)
+  end
+
+  defp load_persisted_snapshot(session_id) do
+    if persist_snapshots?() do
+      case SnapshotStore.load(session_id) do
+        {:ok, snapshot} -> snapshot
+        {:error, _} -> nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp persist_snapshots? do
+    Application.get_env(:fleetlm, :persist_context_snapshots, true)
   end
 
   defp evict_inactive_conversations(state) do
@@ -801,46 +894,6 @@ defmodule Fleetlm.Runtime.RaftFSM do
 
   defp inactive_conversation?(%{last_activity: last_activity}, cutoff) do
     NaiveDateTime.compare(last_activity, cutoff) == :lt
-  end
-
-  defp should_compact?(conversation) do
-    # Hardcoded threshold strategy: compact when tokens exceed 70% of budget
-    case Fleetlm.Storage.AgentCache.get(conversation.agent_id) do
-      {:ok, agent} ->
-        if Map.get(agent, :compaction_enabled, false) do
-          budget = Map.get(agent, :compaction_token_budget, 50_000)
-          ratio = Map.get(agent, :compaction_trigger_ratio, 0.7)
-          threshold = trunc(budget * ratio)
-
-          conversation.tokens_since_summary >= threshold
-        else
-          false
-        end
-
-      _error ->
-        false
-    end
-  end
-
-  defp build_compaction_job(session_id, conversation) do
-    case Fleetlm.Storage.AgentCache.get(conversation.agent_id) do
-      {:ok, agent} ->
-        %{
-          session_id: session_id,
-          webhook_url: Map.get(agent, :compaction_webhook_url),
-          payload: %{
-            range_start: conversation.last_compacted_seq + 1,
-            range_end: conversation.last_seq
-          },
-          context: %{
-            agent_id: conversation.agent_id,
-            user_id: conversation.user_id
-          }
-        }
-
-      _error ->
-        %{}
-    end
   end
 
   defp trim_ring_if_needed(lane) do

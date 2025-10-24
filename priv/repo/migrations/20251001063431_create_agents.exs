@@ -8,9 +8,9 @@ defmodule Fleetlm.Repo.Migrations.CreateAgents do
       add :origin_url, :string, null: false
       add :webhook_path, :string, default: "/webhook", null: false
 
-      # Message history configuration
-      add :message_history_mode, :string, default: "tail", null: false
-      add :message_history_limit, :integer, default: 50
+      # Context management configuration
+      add :context_strategy, :string, default: "last_n", null: false
+      add :context_strategy_config, :map, default: %{}, null: false
 
       # HTTP configuration
       add :timeout_ms, :integer, default: 30_000, null: false

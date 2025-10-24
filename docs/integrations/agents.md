@@ -45,8 +45,10 @@ FleetLM delivers messages to your agent through HTTP POST requests. You register
        "name": "Support Bot",
        "origin_url": "https://agent.example.com",
        "webhook_path": "/webhook",
-       "message_history_mode": "tail",
-       "message_history_limit": 50,
+       "context": {
+         "strategy": "last_n",
+         "config": {"limit": 50}
+       },
        "timeout_ms": 30000,
        "debounce_window_ms": 500
      }
@@ -78,9 +80,9 @@ FleetLM delivers messages to your agent through HTTP POST requests. You register
 An agent definition tells FleetLM:
 
 - **Where to send work** - `origin_url` + `webhook_path` resolve to your HTTP endpoint.
-- **How much history to include** - `message_history_mode` and `message_history_limit` define the transcript slice sent with each request.
+- **How to build context** - the `context.strategy` and its config describe how FleetLM prepares transcripts (e.g. last N messages, strip tool results, delegate to webhook).
 - **How to protect the agent** - `timeout_ms`, `debounce_window_ms`, and optional headers let you tune retries, batching, and auth.
-- **When to compact** - optional compaction settings give FleetLM the webhook that replaces long transcripts with summaries.
+- **When to compact** - strategies may request compaction and, if needed, delegate the job to a webhook.
 
 Without registration FleetLM has nowhere to forward messages; every session must reference a registered agent.
 
@@ -102,8 +104,8 @@ Without registration FleetLM has nowhere to forward messages; every session must
 | `name` | ✅ | Human-friendly label | - |
 | `origin_url` | ✅ | Base URL for webhook calls (protocol + host) | - |
 | `webhook_path` | ✅ | Path appended to `origin_url` | `/webhook` |
-| `message_history_mode` | ✅ | Transcript slice sent with each webhook | `"tail"` |
-| `message_history_limit` | ✅ | Number of messages when mode is `tail`/`last` | `50` |
+| `context.strategy` | ✅ | The strategy ID (e.g. `"last_n"`, `"webhook"`) | `"last_n"` |
+| `context.config` | ✅ | Strategy configuration blob | `{}` |
 | `timeout_ms` | ✅ | HTTP timeout per request | `30000` |
 | `debounce_window_ms` | ✅ | Delay before dispatch to batch bursts | `500` |
 | `headers` | Optional | Extra headers per request (API keys, signatures) | `{}` |
@@ -114,7 +116,7 @@ Without registration FleetLM has nowhere to forward messages; every session must
 
 Agents are stored in Postgres and cached in-memory. Update or delete them via the same REST API when needed.
 
-> Most teams leave `message_history_mode` as `"tail"` and rely on compaction to keep transcripts manageable. History modes remain for compatibility but are rarely customised.
+> Most teams start with `context.strategy = "last_n"` and adjust the limit as needed. Advanced policies can be plugged in without changing runtime code.
 
 ## Request Payload Shape
 
@@ -123,6 +125,10 @@ Agents are stored in Postgres and cached in-memory. Update or delete them via th
   "session_id": "01HXZAMPLE12345",
   "agent_id": "support-bot",
   "user_id": "alice",
+  "context": {
+    "strategy": "last_n",
+    "metadata": {"limit": 50}
+  },
   "messages": [
     {
       "seq": 42,
@@ -135,12 +141,7 @@ Agents are stored in Postgres and cached in-memory. Update or delete them via th
 }
 ```
 
-- `messages` honours the history mode:  
-  | Mode | Behaviour |
-  | --- | --- |
-  | `tail` | Last N messages (`message_history_limit`) |
-  | `last` | Only the most recent message |
-  | `entire` | Full conversation (limit must stay > 0) |
+- `context.strategy` reflects the handler used, and `context.metadata` surfaces strategy-specific hints (e.g. slice size, upstream webhook traces).
 - FleetLM omits internal metadata from the payload to keep your webhook stateless.
 
 ## Streaming Responses (AI SDK JSONL)

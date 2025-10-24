@@ -55,8 +55,10 @@ curl -X POST http://localhost:4000/api/agents \
       "name": "Bench Echo Agent",
       "origin_url": "http://host.docker.internal:3000",
       "webhook_path": "/webhook",
-      "message_history_mode": "tail",
-      "message_history_limit": 10,
+      "context": {
+        "strategy": "last_n",
+        "config": {"limit": 10}
+      },
       "timeout_ms": 30000,
       "debounce_window_ms": 250,
       "status": "enabled"

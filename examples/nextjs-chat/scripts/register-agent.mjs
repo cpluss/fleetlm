@@ -13,8 +13,10 @@ const payload = {
     name: agentName,
     origin_url: originUrl,
     webhook_path: webhookPath,
-    message_history_mode: "tail",
-    message_history_limit: 20,
+    context: {
+      strategy: "last_n",
+      config: { limit: 20 }
+    },
     timeout_ms: 30000,
     debounce_window_ms: debounceMs,
     status: "enabled",

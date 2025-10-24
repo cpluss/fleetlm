@@ -367,36 +367,34 @@ defmodule Fleetlm.Runtime do
   end
 
   @doc """
-  Report that compaction finished for a given epoch.
+  Report that a context compaction finished successfully.
   """
-  @spec compaction_complete(String.t(), non_neg_integer(), map()) ::
-          :ok | {:error, term()}
-  def compaction_complete(session_id, epoch, summary) do
+  @spec context_compaction_complete(String.t(), map()) :: :ok | {:error, term()}
+  def context_compaction_complete(session_id, result) do
     group_id = RaftManager.group_for_session(session_id)
     lane = RaftManager.lane_for_session(session_id)
     server_id = RaftManager.server_id(group_id)
 
     {server_id, Node.self()}
     |> :ra.process_command(
-      {:compaction_complete, lane, session_id, epoch, summary},
+      {:context_compaction_complete, lane, session_id, result},
       @raft_timeout
     )
     |> handle_raft_result()
   end
 
   @doc """
-  Report compaction failure for the given epoch.
+  Report that a context compaction failed.
   """
-  @spec compaction_failed(String.t(), non_neg_integer(), term()) ::
-          :ok | {:error, term()}
-  def compaction_failed(session_id, epoch, reason) do
+  @spec context_compaction_failed(String.t(), term()) :: :ok | {:error, term()}
+  def context_compaction_failed(session_id, reason) do
     group_id = RaftManager.group_for_session(session_id)
     lane = RaftManager.lane_for_session(session_id)
     server_id = RaftManager.server_id(group_id)
 
     {server_id, Node.self()}
     |> :ra.process_command(
-      {:compaction_failed, lane, session_id, epoch, reason},
+      {:context_compaction_failed, lane, session_id, reason},
       @raft_timeout
     )
     |> handle_raft_result()

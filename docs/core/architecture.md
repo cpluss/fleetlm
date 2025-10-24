@@ -280,23 +280,22 @@ Subsequent user messages bump the `work_epoch` and trigger another `ensure_catch
 - Epochs live in Raft state, so failover can replay or resume safely
 - No hidden queues-FSM state reflects exactly what work is in flight
 
-### Compaction
+### Context Strategies & Compaction
 
-When the conversation exceeds its token budget, the FSM transitions to `:compacting`:
+Each agent selects a context strategy. The FSM asks that strategy—through the context manager abstraction—whether a conversation should compact before dispatching more work. When a strategy requests compaction:
 - Pending user messages are stored in `conversation.pending_user_seq`
 - FSM emits `{:mod_call, Webhook.WorkerSupervisor, :ensure_compaction, [...]}`
-- Worker posts to the compaction webhook and reports via `Runtime.compaction_complete/3`
-- FSM updates `conversation.summary`, resets counters, and if a message was pending starts a fresh catch-up epoch immediately
+- Worker executes the strategy’s job inline (simple trims) or calls the configured webhook before issuing the agent request
+- FSM lets the strategy update metadata, resets counters, and if a message was pending starts a fresh catch-up epoch immediately
 
-**Compaction strategy:** Hardcoded threshold (70% of token budget). Agent config:
-- `compaction_enabled` - Enable/disable (default: false)
-- `compaction_token_budget` - Total budget (default: 50,000)
-- `compaction_trigger_ratio` - Trigger ratio (default: 0.7)
-- `compaction_webhook_url` - Summarization endpoint
+Built-in strategies cover:
+- `last_n` – send the last N messages, no compaction
+- `strip_tool_results` – drop tool responses from the slice
+- `webhook` – delegate both context assembly and compaction to your service (with thresholds defined in config)
 
 ### Streaming Message Model
 
-We reuse the [AI SDK UI stream protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) for agent replies. Agents must speak the chunk vocabulary (`text-*`, `tool-*`, `finish`, etc.). The assembler (`Fleetlm.Webhook.Assembler`) streams chunks to the session channel while compacting into one persisted assistant message on terminal chunk.
+We reuse the [AI SDK UI stream protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol) for agent replies. Agents must speak the chunk vocabulary (`text-*`, `tool-*`, `finish`, etc.). The chunk assembler streams updates to the session channel while compacting them into one persisted assistant message on the terminal chunk.
 
 This eliminates translation layers-streamed parts flow straight through to the UI.
 

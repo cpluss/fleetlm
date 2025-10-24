@@ -8,8 +8,8 @@ defmodule Fleetlm.Webhook.Executor do
 
   alias Fleetlm.Observability.Telemetry
   alias Fleetlm.Runtime
-  alias Fleetlm.Storage
   alias Fleetlm.Storage.AgentCache
+  alias Fleetlm.Context.{Manager, SnapshotStore}
   alias Phoenix.PubSub
 
   @type catch_up_params :: %{
@@ -18,11 +18,17 @@ defmodule Fleetlm.Webhook.Executor do
           user_id: String.t(),
           from_seq: non_neg_integer(),
           to_seq: non_neg_integer(),
-          user_message_sent_at: integer() | nil
+          user_message_sent_at: integer() | nil,
+          context_snapshot: Fleetlm.Context.Snapshot.t() | nil
         }
 
   @spec catch_up(catch_up_params()) ::
-          {:ok, %{last_sent_seq: non_neg_integer(), message_count: non_neg_integer()}}
+          {:ok,
+           %{
+             last_sent_seq: non_neg_integer(),
+             message_count: non_neg_integer(),
+             snapshot: Fleetlm.Context.Snapshot.t() | nil
+           }}
           | {:error, term()}
   def catch_up(%{
         session_id: session_id,
@@ -30,16 +36,19 @@ defmodule Fleetlm.Webhook.Executor do
         user_id: user_id,
         from_seq: from_seq,
         to_seq: to_seq,
-        user_message_sent_at: user_message_sent_at
+        user_message_sent_at: user_message_sent_at,
+        context_snapshot: snapshot
       }) do
     started_at = System.monotonic_time(:millisecond)
 
     with {:ok, agent} <- AgentCache.get(agent_id),
          :ok <- ensure_enabled(agent),
-         {:ok, messages} <- select_history(agent, session_id),
-         {:ok, payload} <- build_payload(agent, session_id, user_id, messages),
+         {:ok, conversation} <- fetch_conversation(session_id, agent),
+         {:ok, payload, new_snapshot} <-
+           prepare_payload(session_id, conversation, snapshot, agent),
+         {:ok, final_payload} <- build_payload(agent, session_id, user_id, payload),
          {:ok, count} <-
-           dispatch(agent, payload, session_id, agent_id, user_id, user_message_sent_at) do
+           dispatch(agent, final_payload, session_id, agent_id, user_id, user_message_sent_at) do
       duration_ms = System.monotonic_time(:millisecond) - started_at
 
       Telemetry.emit_agent_webhook(
@@ -59,7 +68,7 @@ defmodule Fleetlm.Webhook.Executor do
         messages: count
       )
 
-      {:ok, %{last_sent_seq: to_seq, message_count: count}}
+      {:ok, %{last_sent_seq: to_seq, message_count: count, snapshot: new_snapshot}}
     else
       {:error, reason} = error ->
         duration_ms = System.monotonic_time(:millisecond) - started_at
@@ -118,45 +127,76 @@ defmodule Fleetlm.Webhook.Executor do
   defp ensure_enabled(%{status: "enabled"}), do: :ok
   defp ensure_enabled(_agent), do: {:error, :agent_disabled}
 
-  defp select_history(agent, session_id) do
-    case agent.message_history_mode do
-      "tail" ->
-        Runtime.get_messages(session_id, 0, agent.message_history_limit)
+  defp fetch_conversation(session_id, agent) do
+    case Runtime.get_conversation_metadata(session_id) do
+      nil ->
+        {:ok,
+         %{
+           last_seq: 0,
+           agent_id: agent.id,
+           user_id: nil
+         }}
 
-      "entire" ->
-        Storage.get_all_messages(session_id)
-
-      "last" ->
-        case Runtime.get_messages(session_id, 0, 1) do
-          {:ok, messages} -> {:ok, Enum.take(messages, -1)}
-          other -> other
-        end
-
-      _other ->
-        Runtime.get_messages(session_id, 0, agent.message_history_limit)
+      conversation ->
+        {:ok, conversation}
     end
   end
 
-  defp build_payload(agent, session_id, user_id, messages) do
-    formatted =
-      Enum.map(messages, fn message ->
-        %{
-          seq: message.seq,
-          sender_id: message.sender_id,
-          kind: message.kind,
-          content: message.content,
-          inserted_at: NaiveDateTime.to_iso8601(message.inserted_at)
-        }
-      end)
+  defp prepare_payload(session_id, conversation, snapshot, _agent) do
+    snapshot =
+      snapshot || conversation_context_snapshot(conversation) ||
+        load_snapshot_from_store(session_id)
+
+    case snapshot do
+      %Fleetlm.Context.Snapshot{} = snap ->
+        payload = Manager.payload_from_snapshot(snap)
+        {:ok, payload, snap}
+
+      nil ->
+        {:error, :no_context_snapshot}
+    end
+  end
+
+  defp build_payload(agent, session_id, user_id, %{messages: messages, context: context}) do
+    formatted = Enum.map(messages, &serialize_message/1)
 
     {:ok,
      %{
        session_id: session_id,
        agent_id: agent.id,
        user_id: user_id,
+       context: context,
        messages: formatted
      }}
   end
+
+  defp conversation_context_snapshot(%{context_snapshot: snapshot}), do: snapshot
+  defp conversation_context_snapshot(_), do: nil
+
+  defp load_snapshot_from_store(session_id) do
+    if Application.get_env(:fleetlm, :persist_context_snapshots, true) do
+      case SnapshotStore.load(session_id) do
+        {:ok, snapshot} -> snapshot
+        {:error, _} -> nil
+      end
+    else
+      nil
+    end
+  end
+
+  defp serialize_message(%{inserted_at: %NaiveDateTime{} = inserted_at} = message) do
+    message
+    |> mapify()
+    |> Map.put(:inserted_at, NaiveDateTime.to_iso8601(inserted_at))
+  end
+
+  defp serialize_message(%{"inserted_at" => inserted_at} = message) when is_binary(inserted_at),
+    do: message
+
+  defp serialize_message(message) when is_map(message), do: mapify(message)
+
+  defp mapify(%_{} = struct), do: Map.from_struct(struct)
+  defp mapify(map), do: map
 
   defp dispatch(agent, payload, session_id, agent_id, user_id, user_message_sent_at) do
     handler = fn action, acc ->

@@ -41,8 +41,7 @@ RESPONSE=$(curl -s -X POST "http://$FIRST_IP:4000/api/agents" \
       \"name\": \"Bench Echo Agent\",
       \"origin_url\": \"$BASE_URL\",
       \"webhook_path\": \"/webhook\",
-      \"message_history_mode\": \"last\",
-      \"message_history_limit\": 1,
+      \"context\": {\"strategy\": \"last_n\", \"config\": {\"limit\": 1}},
       \"timeout_ms\": 5000
     }
   }")
