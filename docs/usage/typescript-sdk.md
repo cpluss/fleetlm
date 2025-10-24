@@ -41,10 +41,10 @@ const ctx = await fastpaca.context('chat_123')
 
 | Method | REST equivalent | Description |
 | --- | --- | --- |
-| `ctx.append(event, opts?)` | `POST /v1/conversations/:id/events` | Append an event. Accepts `idempotencyKey`. |
-| `ctx.window(opts?)` | `GET /v1/conversations/:id/window` | Fetch the token-budgeted window. Returns `{ messages, usedTokens, needsCompaction, version }`. |
-| `ctx.compact(range)` | `POST /v1/conversations/:id/compact` | Replace a sequence range with your own summary events. |
-| `ctx.replay(opts?)` | `GET /v1/conversations/:id/events` | Async iterator over the raw log (supports `fromSeq` / `toSeq`). |
+| `ctx.append(message, opts?)` | `POST /v1/conversations/:id/messages` | Append a message. Accepts `idempotencyKey`. |
+| `ctx.context(opts?)` | `GET /v1/conversations/:id/context` | Fetch the LLM context. Returns `{ messages, usedTokens, needsCompaction, version }`. |
+| `ctx.compact(range)` | `POST /v1/conversations/:id/compact` | Replace a sequence range with your own summary messages. |
+| `ctx.replay(opts?)` | `GET /v1/conversations/:id/messages` | Async iterator over the message log (supports `fromSeq` / `toSeq`). |
 | `ctx.stream(handler, options?)` | Websocket | Stream LLM output back to Fastpaca while sending it to clients. |
 
 Example append:
@@ -77,8 +77,8 @@ return ctx.stream((messages) =>
 
 `ctx.stream` will:
 
-1. Fetch the latest window.  
-2. Call your function with that window.  
+1. Fetch the latest LLM context.  
+2. Call your handler with that context’s messages.  
 3. Relay streamed tokens to the caller.  
 4. Append the final assistant message when the stream completes.
 
@@ -102,8 +102,8 @@ Provide an async function to run whenever `needs_compaction` would otherwise be 
 ```typescript
 const ctx = await fastpaca.context('chat_123')
   .budget(1_000_000)
-  .autoCompact(async window => {
-    const head = window.messages.slice(0, -10);
+  .autoCompact(async context => {
+    const head = context.messages.slice(0, -10);
     const summary = await summarize(head);
 
     return {

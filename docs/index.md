@@ -34,7 +34,7 @@ Fastpaca bridges that gap with an append-only history, context compaction, and s
      .trigger(0.7 /* 70% */)
      .policy({ strategy: 'last_n', config: { limit: 400 } });
    ```
-2. **Append from your backend** – Fastpaca stores every event in an append-only log (Raft, idempotent writes).  
+2. **Append from your backend** – Fastpaca stores every message in an append-only log (Raft, idempotent writes).  
    ```ts
    await ctx.append({
      role: 'user',

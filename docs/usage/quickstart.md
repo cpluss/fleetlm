@@ -5,11 +5,7 @@ sidebar_position: 1
 
 # Quick Start
 
-Five minutes to a working Fastpaca instance.
-
----
-
-## 1. Run the server
+## 1. Run Fastpaca
 
 ```bash
 docker run -d \
@@ -18,17 +14,20 @@ docker run -d \
   ghcr.io/fastpaca/fastpaca:latest
 ```
 
-The API is now available on `http://localhost:4000/v1`.
+Fastpaca now listens on `http://localhost:4000/v1`. The container persists data under `fastpaca_data/`.
 
 ---
 
 ## 2. Create a conversation
 
+Create a context with the id `demo-chat`.
+
 ```bash
-curl -X PUT http://localhost:4000/v1/conversations/demo \
+curl -X PUT http://localhost:4000/v1/conversations/demo-chat \
   -H "Content-Type: application/json" \
   -d '{
     "token_budget": 1000000,
+    "trigger_ratio": 0.7,
     "policy": {
       "strategy": "last_n",
       "config": { "limit": 200 }
@@ -40,11 +39,13 @@ curl -X PUT http://localhost:4000/v1/conversations/demo \
 
 ## 3. Append a message
 
+Adds a user message with `How do I deploy this?` as text.
+
 ```bash
-curl -X POST http://localhost:4000/v1/conversations/demo/events \
+curl -X POST http://localhost:4000/v1/conversations/demo-chat/messages \
   -H "Content-Type: application/json" \
   -d '{
-    "event": {
+    "message": {
       "role": "user",
       "parts": [{ "type": "text", "text": "How do I deploy this?" }]
     },
@@ -52,18 +53,22 @@ curl -X POST http://localhost:4000/v1/conversations/demo/events \
   }'
 ```
 
-Response:
+Fastpaca replies with the assigned sequence number and version:
 
 ```json
 { "seq": 1, "version": 1, "token_estimate": 24 }
 ```
 
+Retry with the same `idempotency_key` if the network flakes; duplicates are ignored.
+
 ---
 
-## 4. Fetch the context window
+## 4. Get the LLM context
+
+The context endpoint returns the current LLM context plus metadata.
 
 ```bash
-curl "http://localhost:4000/v1/conversations/demo/window?budget_tokens=1000000"
+curl http://localhost:4000/v1/conversations/demo-chat/context
 ```
 
 Response (trimmed):
@@ -83,9 +88,13 @@ Response (trimmed):
 }
 ```
 
+Feed `messages` directly into your LLM client.
+
 ---
 
-## 5. Stream an LLM response
+## 5. Stream a response (Next.js + ai-sdk)
+
+Plug and play with ai-sdk by default in typescript!
 
 ```typescript title="app/api/chat/route.ts"
 import { fastpaca } from 'fastpaca';
@@ -97,37 +106,17 @@ export async function POST(req: Request) {
 
   const ctx = await fastpaca.context(conversationId).budget(1_000_000);
 
-  await ctx.append({ role: 'user', content: message });
+  await ctx.append({
+    role: 'user',
+    parts: [{ type: 'text', text: message }]
+  });
 
-  return ctx.stream((messages) =>
+  return ctx.stream(messages =>
     streamText({ model: openai('gpt-4o-mini'), messages })
   ).toResponse();
 }
 ```
 
-The helper sends the window to your LLM, streams tokens back to the client, and appends the final assistant message to Fastpaca.
-
 ---
 
-## 6. Manually compact when the budget is high
-
-```bash
-curl -X POST http://localhost:4000/v1/conversations/demo/compact \
-  -H "Content-Type: application/json" \
-  -d '{
-    "from_seq": 1,
-    "to_seq": 1,
-    "replacement": [
-      {
-        "role": "system",
-        "parts": [{ "type": "text", "text": "User asked how to deploy Fastpaca." }]
-      }
-    ]
-  }'
-```
-
-Fastpaca bumps the conversation version and rewrites the snapshot while preserving the raw log.
-
----
-
-That’s it. Continue with the [Getting Started](./getting-started.md) guide for more detail, or jump straight to the [API reference](../api/rest.md).
+Ready to go deeper? Continue with [Getting Started](./getting-started.md) or jump straight to the [API reference](../api/rest.md).

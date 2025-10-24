@@ -7,11 +7,11 @@ sidebar_position: 1
 
 All endpoints live under `/v1`.  Requests must include `Content-Type: application/json` where applicable.  Responses are JSON unless stated otherwise.
 
-## Conversation resource
+## Conversations
 
 ### PUT `/v1/conversations/:id`
 
-Create or update a conversation.
+Create or update a conversation. Idempotent (`PUT`).
 
 ```json title="Request body"
 {
@@ -45,17 +45,17 @@ Returns the current conversation configuration and metadata.
 
 ### DELETE `/v1/conversations/:id`
 
-Tombstones the conversation.  Existing data remains in the log for audit but new appends are rejected.  Use with caution.
+Tombstones the conversation. Existing messages remain available for replay, but new messages are rejected.
 
-## Event log
+## Messages
 
-### POST `/v1/conversations/:id/events`
+### POST `/v1/conversations/:id/messages`
 
-Append an event.
+Append a message.
 
 ```json title="Request body"
 {
-  "event": {
+  "message": {
     "role": "assistant",
     "parts": [
       { "type": "text", "text": "Checking now…" },
@@ -73,47 +73,46 @@ Append an event.
 ```
 
 - `idempotency_key` is optional but recommended for retries.  
-- `if_version` enforces optimistic concurrency.  The server returns `409 Conflict` if the current version does not match.
+- `if_version` enforces optimistic concurrency. The server returns `409 Conflict` if the current version does not match.
 
-### GET `/v1/conversations/:id/events`
+### GET `/v1/conversations/:id/messages`
 
-Stream events.  Supports pagination via either `from_seq`/`to_seq` or `cursor`/`limit`.
+Page through the message log. Supports `from_seq`/`to_seq`, `cursor`/`limit`, and negative offsets.
 
 ```
-GET /v1/conversations/demo/events?from_seq=101&to_seq=120
-GET /v1/conversations/demo/events?cursor=200&limit=50
-GET /v1/conversations/demo/events?from_seq=-100          # last 100 events
+GET /v1/conversations/demo/messages?from_seq=101&to_seq=120
+GET /v1/conversations/demo/messages?cursor=200&limit=50
+GET /v1/conversations/demo/messages?from_seq=-100          # last 100 messages
 ```
 
 Response:
 
 ```json
 {
-  "events": [
+  "messages": [
     {
       "seq": 101,
       "role": "user",
       "parts": [{ "type": "text", "text": "…" }],
       "inserted_at": "2025-01-24T12:00:00Z"
-    },
-    ...
+    }
   ],
   "next_cursor": 200
 }
 ```
 
-`next_cursor` can be used to fetch the next page or resume later.
+Use `next_cursor` to continue paging or resume after a disconnect.
 
-## Context window
+## LLM context
 
-### GET `/v1/conversations/:id/window`
+### GET `/v1/conversations/:id/context`
 
-Returns the token-budgeted context to send to your LLM.
+Returns the current LLM context (the slice you send to your LLM).
 
 Query parameters:
 
-- `budget_tokens` (optional) – override the conversation budget for this call.  
-- `if_version` (optional) – fail with `409` if the snapshot has changed since the provided version.
+- `budget_tokens` (optional) – temporarily override the configured budget.  
+- `if_version` (optional) – fail with `409` if the snapshot changed since the supplied version.
 
 ```json title="Response"
 {

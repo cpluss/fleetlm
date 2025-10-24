@@ -21,7 +21,10 @@ export async function POST(req: Request) {
 
   const ctx = await fastpaca.context(conversationId).budget(1_000_000);
 
-  await ctx.append({ role: 'user', content: message });
+  await ctx.append({
+    role: 'user',
+    parts: [{ type: 'text', text: message }]
+  });
 
   return ctx.stream((messages) =>
     streamText({ model: openai('gpt-4o-mini'), messages })
@@ -40,16 +43,22 @@ import { anthropic } from '@ai-sdk/anthropic';
 
 const ctx = await fastpaca.context('chat_non_stream').budget(1_000_000);
 
-await ctx.append({ role: 'user', content: 'Summarise the release notes.' });
+await ctx.append({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Summarise the release notes.' }]
+});
 
-const window = await ctx.window();
+const context = await ctx.context();
 
 const { text } = await generateText({
   model: anthropic('claude-3-opus'),
-  messages: window.messages
+  messages: context.messages
 });
 
-await ctx.append({ role: 'assistant', content: text });
+await ctx.append({
+  role: 'assistant',
+  parts: [{ type: 'text', text }]
+});
 ```
 
 ---
@@ -57,15 +66,18 @@ await ctx.append({ role: 'assistant', content: text });
 ## Manual compaction with LLM-generated summary
 
 ```typescript
-const window = await ctx.window();
+const context = await ctx.context();
 
-if (window.needsCompaction) {
-  const head = window.messages.slice(0, -8);
+if (context.needsCompaction) {
+  const head = context.messages.slice(0, -8);
 
   const { text: summary } = await generateText({
     model: openai('gpt-4o-mini'),
     messages: [
-      { role: 'system', content: 'Summarise the following chat in one paragraph.' },
+      {
+        role: 'system',
+        parts: [{ type: 'text', text: 'Summarise the following chat in one paragraph.' }]
+      },
       ...head
     ]
   });
@@ -87,23 +99,29 @@ if (window.needsCompaction) {
 ```typescript
 const ctx = await fastpaca.context('mixed-sources').budget(1_000_000);
 
-await ctx.append({ role: 'user', content: 'Explain vector clocks.' });
+await ctx.append({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Explain vector clocks.' }]
+});
 
 await ctx.append({
   role: 'assistant',
   content: await streamText({
     model: openai('gpt-4o'),
-    messages: await ctx.window().then(w => w.messages)
+    messages: await ctx.context().then(c => c.messages)
   }).text()
 });
 
-await ctx.append({ role: 'user', content: 'Now explain like I’m five.' });
+await ctx.append({
+  role: 'user',
+  parts: [{ type: 'text', text: 'Now explain like I’m five.' }]
+});
 
 await ctx.append({
   role: 'assistant',
   content: await streamText({
     model: anthropic('claude-3-haiku'),
-    messages: await ctx.window().then(w => w.messages)
+    messages: await ctx.context().then(c => c.messages)
   }).text()
 });
 ```
@@ -114,10 +132,10 @@ await ctx.append({
 
 ```bash
 # Append tool call output
-curl -X POST http://localhost:4000/v1/conversations/support/events \
+curl -X POST http://localhost:4000/v1/conversations/support/messages \
   -H "Content-Type: application/json" \
   -d '{
-    "event": {
+    "message": {
       "role": "assistant",
       "parts": [
         { "type": "text", "text": "Fetching the latest logs..." },
@@ -128,8 +146,8 @@ curl -X POST http://localhost:4000/v1/conversations/support/events \
 ```
 
 ```bash
-# Replay the last 50 events
-curl "http://localhost:4000/v1/conversations/support/events?from_seq=-50"
+# Replay the last 50 messages
+curl "http://localhost:4000/v1/conversations/support/messages?from_seq=-50"
 ```
 
 ---

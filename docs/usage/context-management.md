@@ -5,117 +5,78 @@ sidebar_position: 3
 
 # Context Management
 
-Fastpaca keeps two representations of every conversation:
+Managing your conversation context is key to scaling an LLM product. Users want full history, but your LLM or agent is operating on a stricter limit where you can only send a certain number of input tokens to it - dictated by its context window. 
 
-1. **Log** – immutable events with sequence numbers.  
-2. **Snapshot** – a compacted summary + live tail used to build the context window.
-
-This page explains how token budgets, strategies, and compaction triggers work together.
+It usually works quite well to send all messages to the LLM up until you hit the input token limit (and exceed the context window), but once you reach that you either need to stop processing a conversation or reduce the data to give your user the illusion of a product that can take all of it into account on each request.
 
 ---
 
-## Token budgets
+## Token budgets & triggers
 
-- Defined per conversation (`token_budget`).  
-- Expressed in tokens, not messages.  Budgets up to **1,000,000 tokens** are supported today.  
-- Every call to `/window` enforces the budget.  If you ask for more than the budget, Fastpaca returns the largest slice that fits and flags `needs_compaction`.
+To determine _when_ it is time to reduce the size of the input (messages) you send to your LLM you usually define
 
-### Trigger thresholds
+1. A **token budget**, ie. how many tokens you can send as input to the LLM. Popular LLMs have well-defined token budgets, for example claude 4.5 sonnet accepts up to 1M tokens.
+2. A **trigger ratio**, which is a percentage of the token budget that you want to compact at. As usually once you hit the complete budget (or limit) you may end up trying to send too much data, which your model provider won't accept and reject the call.
 
-- `needs_compaction` flips to `true` when the snapshot plus tail exceed **70%** of the budget.  
-- The 70% threshold leaves headroom for the next user turn and any system prompts you prepend.  
-- You can override the threshold per conversation by setting `policy.trigger_ratio` (e.g., `0.6` for 60%).
+For example, with a budget of `8000` tokens and a trigger at `80%` you would trigger context compaction once the input exceeds `6400` tokens. This gives you breathing room in case the context grows larger when processing the next request without risking hitting a limit (your budget) and entering an unrecoverable state.
 
----
+## Token budgets at a glance
 
-## Strategies
-
-Strategies define how the snapshot evolves as new events arrive. They run inline inside the Raft state machine and must be deterministic and fast.
-
-### Built-in strategies
-
-| Strategy | Description | Typical use |
-| --- | --- | --- |
-| `last_n` | Maintain a FIFO queue of the most recent events, trimming older ones.  Respects both item count (`limit`) and token budget. | Short-lived assistants where the latest turns matter most. |
-| `strip_tool_results` | Drop `tool_result` events, then behave like `last_n`.  Keeps prompts terse while preserving tool call metadata. | Agents that produce large tool outputs (retrieval, code execution). |
-| `budget` | Keep all events in the tail, only flag `needs_compaction` when the budget threshold is crossed. | Use with your own summariser to replace history in larger chunks. |
-
-All strategies share a `max_tokens` configuration which defaults to the conversation budget if omitted.
-
-### Custom strategies
-
-You can register additional strategies in the Fastpaca server configuration. A strategy module implements:
-
-```elixir
-@callback append_message(snapshot | nil, event, config, opts) ::
-  {:ok, snapshot} |
-  {:needs_compaction, snapshot}
-```
-
-Where `snapshot` is the current summary/tail structure and the return value indicates whether `needs_compaction` should be flipped.
-
----
-
-## Manual compaction
-
-Fastpaca never rewrites the snapshot for you. When `needs_compaction` is true:
-
-1. Fetch the window via the REST API or SDK.  
-2. Decide which `seq` range to replace.  
-3. Produce the replacement events (e.g., a summary system message).  
-4. Call `POST /v1/conversations/:id/compact`.
-
-Example (trim everything before the last ten turns):
+- Configure once when you create the conversation: `token_budget: 1_000_000`
+- Every call to `ctx.context()` (or `GET /v1/conversations/:id/context`) respects that ceiling
+- When the snapshot + tail cross the trigger ratio (default `0.7`), `needsCompaction` flips to `true`
+- Override the trigger ratio per conversation if you want earlier/later warnings
 
 ```bash
-curl -X POST http://localhost:4000/v1/conversations/chat-45/compact \
+curl -X PUT http://localhost:4000/v1/conversations/docs-demo \
   -H "Content-Type: application/json" \
   -d '{
-    "from_seq": 1,
-    "to_seq": 320,
-    "replacement": [
-      {
-        "role": "system",
-        "parts": [
-          { "type": "text", "text": "Conversation summary covering seq 1-320..." }
-        ]
-      }
-    ]
+    "token_budget": 1000000,
+    "policy": {
+      "strategy": "last_n",
+      "config": { "limit": 400, "trigger_ratio": 0.65 }
+    }
   }'
 ```
 
-You can automate this by:
+## Context compaction strategy
 
-- Using the TypeScript SDK’s `ctx.autoCompact(async window => ...)` helper.  
-- Listening to the websocket stream for `needs_compaction` events and running compaction in a background worker.
+"Compaction" is the act of reducing the input to your llm while retaining useful data, and throwing away that which you do not need. It is commonly done with strategies such as
+
+* Keep the latest *N* messages, and throw away the rest.
+* Strip away detail that the LLM most likely do not need further, e.g. tool calls, reasoning, media too large, etc.
+* Maintain a running initial "summary" message at the top, which another LLM continuously builds on by taking new messages and updating it.
+
+There are other creative & more complex ways to manage context such as involving a RAG or Vector DB to save facts about each conversation for later, but those are not covered by fastpaca since they're quite convoluted and usually aren't needed.
+
+These strategies dictate *what we do when we approach the token budget* within the context context.
+
+## Built-in strategies in fastpaca
+
+| Strategy | What it does | Ideal for |
+| --- | --- | --- |
+| `last_n` | Keep the latest *N* messages (with token and message limits). | Short chats where recent turns matter most. |
+| `skip_parts` | Drop `tool*` & `reasoning` messages, then apply `last_n`. | Agents that generate huge tool outputs or research agents that accrue a lot of reasoning messages. |
+| `manual` | Keep everything until the trigger ratio trips, then flip flag `needsCompaction`. | Workflows where you summarise in larger batches. |
+
+You can also use & implement your own strategy by setting the strategy to `manual` and using `needsCompaction` to rewrite the context for the agent by yourself.
+
+## Changing policies
+
+If you fetch a context again but change your policy during the setup it will automatically change the policy on the context going forward. The next time context compaction triggers it will use the new policy rather than the old.
+
+*NOTE: fastpaca does not rebuild the entire context from scratch when you change policies, since that can be an incredibly expensive operation. You can do so manually however by rewriting the context by calling `compact` manually.*
+
+## Choosing a starting policy
+
+| If you want… | Pick… | Notes |
+| --- | --- | --- |
+| Something simple | `last_n` with `limit: 200` | Great default for short chats. |
+| Lean prompts with tools | `skip_parts` | Keeps metadata, removes noisy payloads. Good for most agents. |
+| Full control, larger batches | `budget` with `trigger_ratio: 0.7` | Pair with your own summariser. |
+
+Revisit the policy when you change LLMs or expand conversation length.
 
 ---
 
-## Tool calls and reasoning
-
-Fastpaca stores tool calls and reasoning traces as message parts:
-
-```json
-{
-  "role": "assistant",
-  "parts": [
-    { "type": "text", "text": "Checking inventory..." },
-    { "type": "tool_call", "name": "reserve", "payload": { "sku": 123 } },
-    { "type": "reasoning", "tokens": ["plan", "reserve", "confirm"] }
-  ]
-}
-```
-
-Strategies treat these parts like any other content. Use `strip_tool_results` or a custom strategy if you need to drop verbose outputs while keeping the call metadata.
-
----
-
-## Choosing a policy
-
-| Requirement | Recommendation |
-| --- | --- |
-| Small assistants (short chats) | `last_n` with `limit: 200`, leave summarisation to ad-hoc jobs. |
-| Tool-heavy agents | `strip_tool_results` with a modest `limit` to keep prompts clean. |
-| Long-running threads | `budget` and a dedicated summariser invoked via `needs_compaction`. |
-
-Revisit your policy when you change models — larger context windows may let you relax compaction or switch strategies.
+Next steps: wire this into your backend with the [TypeScript SDK](./typescript-sdk.md) or see full examples in [Examples](./examples.md).

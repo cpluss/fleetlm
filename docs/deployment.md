@@ -84,12 +84,12 @@ The flusher retries on failure and does not block the hot path.
 Prometheus metrics are exposed on `/metrics`.  Key series:
 
 - `fastpaca_append_latency_ms` (p50/p95)  
-- `fastpaca_window_latency_ms`  
+- `fastpaca_context_latency_ms`  
 - `fastpaca_snapshot_token_count` (per conversation)  
 - `fastpaca_compaction_requests_total`  
 - `fastpaca_raft_pending_flush_messages`
 
-Logs follow JSON structure with `event`, `conversation_id`, and `seq`.  Forward them to your logging stack for audit trails.
+Logs follow JSON structure with fields like `type`, `conversation_id`, and `seq`. Forward them to your logging stack for audit trails.
 
 ---
 
@@ -97,7 +97,7 @@ Logs follow JSON structure with `event`, `conversation_id`, and `seq`.  Forward 
 
 - Raft log and snapshots reside in `/data`.  Snapshot the volume regularly (EBS/GCE disk snapshots).  
 - If Postgres is enabled, use standard database backups.  
-- Periodically export conversations for legal or compliance requirements via the `/events` endpoint.
+- Periodically export conversations for legal or compliance requirements via the `/v1/conversations/:id/messages` endpoint.
 
 ---
 

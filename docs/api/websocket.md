@@ -18,7 +18,7 @@ ws://HOST/v1/conversations/:id/stream
 | Query parameter | Description |
 | --- | --- |
 | `cursor` (optional) | The last version you processed.  Pass `0` to receive everything from the beginning. |
-| `includeEvents` (default `true`) | Set to `false` if you only care about window/compaction updates. |
+| `include_messages` (default `true`) | Set to `false` if you only care about context/compaction updates. |
 
 Example:
 
@@ -28,18 +28,20 @@ ws://localhost:4000/v1/conversations/support-123/stream?cursor=120
 
 If authentication is enabled, include the API key via the `Authorization` header (`Bearer …`).
 
+Disable message notifications with `?include_messages=false` if you only need compaction/context signals.
+
 ## Message format
 
 All messages are JSON objects with `type` and `version`.  Version numbers are strictly increasing.
 
-### Event notifications
+### Message notifications
 
 ```json
 {
-  "type": "event",
+  "type": "message",
   "version": 121,
   "seq": 121,
-  "event": {
+  "message": {
     "role": "user",
     "parts": [{ "type": "text", "text": "Any updates?" }],
     "inserted_at": "2025-01-24T12:00:00Z"
@@ -47,20 +49,20 @@ All messages are JSON objects with `type` and `version`.  Version numbers are st
 }
 ```
 
-Sent whenever a new event is appended.
+Sent whenever a new message is appended to the conversation.
 
-### Window invalidations
+### Context updates
 
 ```json
 {
-  "type": "window",
+  "type": "context",
   "version": 121,
   "needs_compaction": false,
   "used_tokens": 512340
 }
 ```
 
-Indicates that the cached window should be refreshed via `GET /window`.
+Indicates that the cached LLM context should be refreshed via `GET /v1/conversations/:id/context`.
 
 ### Compaction acknowledgements
 
@@ -88,7 +90,7 @@ The conversation has been deleted.  The server closes the connection after sendi
 { "type": "reset", "version": 200 }
 ```
 
-The snapshot was rebuilt (e.g., after a manual repair).  Clients should discard cached state and fetch a fresh window.
+The snapshot was rebuilt (e.g., after a manual repair). Clients should discard cached state and fetch a fresh LLM context.
 
 ## Heartbeats & timeouts
 
@@ -100,7 +102,7 @@ The snapshot was rebuilt (e.g., after a manual repair).  Clients should discard 
 
 1. Keep track of the highest `version` you've processed.  
 2. On reconnect, pass that value as `cursor`.  
-3. If the server responds with `{"type":"gap","expected":...,"actual":...}` immediately fetch the missing events via `GET /events` and resume with the returned `version`.
+3. If the server responds with `{"type":"gap","expected":...,"actual":...}` immediately fetch the missing messages via `GET /v1/conversations/:id/messages` and resume with the returned `version`.
 
 ## Limits
 
