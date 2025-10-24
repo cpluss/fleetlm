@@ -106,10 +106,13 @@ await ctx.append({
 
 await ctx.append({
   role: 'assistant',
-  content: await streamText({
-    model: openai('gpt-4o'),
-    messages: await ctx.context().then(c => c.messages)
-  }).text()
+  parts: [{
+    type: 'text',
+    text: await streamText({
+      model: openai('gpt-4o'),
+      messages: await ctx.context().then(c => c.messages)
+    }).text()
+  }]
 });
 
 await ctx.append({
@@ -119,10 +122,13 @@ await ctx.append({
 
 await ctx.append({
   role: 'assistant',
-  content: await streamText({
-    model: anthropic('claude-3-haiku'),
-    messages: await ctx.context().then(c => c.messages)
-  }).text()
+  parts: [{
+    type: 'text',
+    text: await streamText({
+      model: anthropic('claude-3-haiku'),
+      messages: await ctx.context().then(c => c.messages)
+    }).text()
+  }]
 });
 ```
 

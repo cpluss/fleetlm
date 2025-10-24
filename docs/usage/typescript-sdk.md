@@ -5,15 +5,13 @@ sidebar_position: 4
 
 # TypeScript SDK
 
-The SDK wraps the REST and websocket APIs with a lightweight interface. Install it alongside your LLM client of choice.
+These helpers mirror the REST API shown in the Quick Start / Getting Started guides. They expect ai-sdk style messages (`UIMessage`) and keep the same method names you’ve already seen there.
 
 ```bash
-npm install fastpaca ai
+npm install fastpaca
 ```
 
----
-
-## Initialising the client
+## 1. Create (or load) a conversation
 
 ```typescript
 import { createClient } from 'fastpaca';
@@ -22,108 +20,96 @@ const fastpaca = createClient({
   baseUrl: process.env.FASTPACA_URL ?? 'http://localhost:4000/v1',
   apiKey: process.env.FASTPACA_API_KEY // optional
 });
-```
 
-Conversations are identified by your own IDs. The SDK never generates IDs for you.
-
----
-
-## Core operations
-
-```typescript
-const ctx = await fastpaca.context('chat_123')
-  .budget(1_000_000)
-  .policy({
+const ctx = fastpaca.context('123456')
+  .budget(1_000_000)  // token budget for this conversation
+  .trigger(0.7)       // optional trigger ratio (defaults to 0.7)
+  .policy({           // optional policy (defaults to last_n)
     strategy: 'last_n',
     config: { limit: 400 }
   });
 ```
 
-| Method | REST equivalent | Description |
-| --- | --- | --- |
-| `ctx.append(message, opts?)` | `POST /v1/conversations/:id/messages` | Append a message. Accepts `idempotencyKey`. |
-| `ctx.context(opts?)` | `GET /v1/conversations/:id/context` | Fetch the LLM context. Returns `{ messages, usedTokens, needsCompaction, version }`. |
-| `ctx.compact(range)` | `POST /v1/conversations/:id/compact` | Replace a sequence range with your own summary messages. |
-| `ctx.replay(opts?)` | `GET /v1/conversations/:id/messages` | Async iterator over the message log (supports `fromSeq` / `toSeq`). |
-| `ctx.stream(handler, options?)` | Websocket | Stream LLM output back to Fastpaca while sending it to clients. |
+`context(id)` never creates IDs for you—you decide what to use so you can continue the same conversation later.
 
-Example append:
+## 2. Append messages (ai-sdk `UIMessage`)
 
 ```typescript
-await ctx.append(
-  {
-    role: 'assistant',
-    parts: [
-      { type: 'text', text: 'Looking that up now…' },
-      { type: 'tool_call', name: 'lookup', payload: { sku: 'A-19' } }
-    ]
-  },
-  { idempotencyKey: 'msg-045' }
-);
+await ctx.append({
+  role: 'assistant',
+  parts: [
+    { type: 'text', text: 'I can help with that.' },
+    { type: 'tool_call', name: 'lookup_manual', payload: { article: 'installing' } }
+  ],
+  metadata: { reasoning: 'User asked for deployment steps.' }
+}, {
+  idempotencyKey: 'msg-017'
+});
 ```
 
----
+Messages are stored exactly as you send them and receive a deterministic `seq` for ordering. Reuse the same `idempotencyKey` when retrying failed requests.
 
-## Streaming helper
+## 3. Build the LLM context and call your model
 
 ```typescript
-return ctx.stream((messages) =>
-  streamText({
-    model: openai('gpt-4o-mini'),
-    messages
-  })
+const { usedTokens, messages, needsCompaction } = await ctx.context();
+
+const completion = await generateText({
+  model: openai('gpt-4o-mini'),
+  messages
+});
+
+await ctx.append(completion);
+```
+
+`needsCompaction` is a hint; ignore it unless you’ve opted to handle compaction yourself.
+
+## 4. Stream responses
+
+```typescript
+return ctx.stream(messages =>
+  streamText({ model: openai('gpt-4o-mini'), messages })
 ).toResponse();
 ```
 
-`ctx.stream` will:
+Fastpaca fetches the context, calls your function, streams tokens to your caller, and appends the final assistant message. Pass `{ autoAppend: false }` if you want to append manually.
 
-1. Fetch the latest LLM context.  
-2. Call your handler with that context’s messages.  
-3. Relay streamed tokens to the caller.  
-4. Append the final assistant message when the stream completes.
-
-Disable the automatic append if you want full control:
+## 5. Fetch messages for your UI
 
 ```typescript
-const stream = await ctx.stream(
-  messages => streamText({ model, messages }),
-  { autoAppend: false }
-);
+const tail = await ctx.get_messages({ tail_offset: 50 });        // last ~50 messages
+const previous = await ctx.get_messages({ tail_offset: 100, limit: 50 });
+const entireHistory = await ctx.get_messages();
 ```
 
-You can then read the stream manually and call `ctx.append` with the final result yourself.
-
----
-
-## Auto-compaction
-
-Provide an async function to run whenever `needs_compaction` would otherwise be returned:
+## 6. Optional: manage compaction yourself
 
 ```typescript
-const ctx = await fastpaca.context('chat_123')
+const ctx = fastpaca.context('manual-demo')
   .budget(1_000_000)
-  .autoCompact(async context => {
-    const head = context.messages.slice(0, -10);
-    const summary = await summarize(head);
+  .disable_compaction();
 
-    return {
-      fromSeq: head[0].seq,
-      toSeq: head[head.length - 1].seq,
-      replacement: [
-        { role: 'system', parts: [{ type: 'text', text: summary }] }
-      ]
-    };
+const context = await ctx.context();
+
+if (context.needsCompaction) {
+  const head = context.messages.slice(0, -6);
+  const summary = await summarize(head);
+
+  await ctx.compact({
+    messages: [
+      { role: 'system', parts: [{ type: 'text', text: summary }] },
+      ...context.messages.slice(-6)
+    ]
   });
+}
 ```
 
-Auto-compaction only runs in the process using the SDK. If you scale horizontally you may want to coordinate through the websocket stream instead.
-
----
+This rewrites only what the LLM will see. Users still get the full message log.
 
 ## Error handling
 
-- Append conflicts return `409 Conflict` when `ifVersion` guards are used.  
-- Network failures during `append` are safe to retry with the same `idempotencyKey`.  
-- Streaming helpers surface model errors directly; Fastpaca only appends on successful completion.
+- Append conflicts return `409 Conflict` when you pass `ifVersion` (optimistic concurrency).  
+- Network retries are safe when you reuse the same `idempotencyKey`.  
+- Streaming propagates LLM errors directly; Fastpaca only appends once the stream succeeds.
 
-See the [REST API reference](../api/rest.md) for full response schemas.
+See the [REST API reference](../api/rest.md) for exact payloads.
