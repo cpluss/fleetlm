@@ -85,7 +85,7 @@ Response (trimmed):
 
 ---
 
-## 5. Stream a model response
+## 5. Stream an LLM response
 
 ```typescript title="app/api/chat/route.ts"
 import { fastpaca } from 'fastpaca';

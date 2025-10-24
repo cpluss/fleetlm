@@ -62,7 +62,7 @@ Fastpaca bridges that gap with an append-only history, context compaction, and s
    }
    ```
 
-Fastpaca never sits between your frontend and model. It’s backend-only: append, window, compact, replay, stream.
+Fastpaca never sits between your frontend and LLM. It’s backend-only: append, window, compact, replay, stream.
 
 Need the mental model? Go to [Context Management](./usage/context-management.md). Want to hack now? Hit [Quick Start](./usage/quickstart.md).
 
@@ -94,4 +94,4 @@ No agents. No RAG. No model proxy. Only context conversation state that doesn’
 - Call the API from code: [TypeScript SDK](./usage/typescript-sdk.md) & [Examples](./usage/examples.md)  
 - Learn the internals: [Architecture](./architecture.md) • [API Reference](./api/rest.md)
 
-**Use ai-sdk for inference. Use Fastpaca for conversation state. Bring your own model, framework, and frontend.**
+**Use ai-sdk for inference. Use Fastpaca for conversation state. Bring your own LLM, framework, and frontend.**
