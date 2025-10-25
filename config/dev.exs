@@ -1,11 +1,11 @@
 import Config
 
 # Configure your database
-config :fleetlm, Fleetlm.Repo,
+config :fastpaca, Fastpaca.Repo,
   username: "postgres",
   password: "postgres",
   hostname: "localhost",
-  database: "fleetlm_dev",
+  database: "fastpaca_dev",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 20,

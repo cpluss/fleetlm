@@ -1,305 +1,249 @@
 defmodule FastpacaWeb.ContextController do
   use FastpacaWeb, :controller
 
-  alias Fastpaca.{Runtime, Repo}
-  alias Fastpaca.Storage.Model.Context
+  alias Fastpaca.Context
+  alias Fastpaca.Context.{Config, Message}
+  alias Fastpaca.Runtime
 
   action_fallback FastpacaWeb.FallbackController
 
-  @doc """
-  PUT /v1/contexts/:id
+  # ---------------------------------------------------------------------------
+  # Context lifecycle
+  # ---------------------------------------------------------------------------
 
-  Create or update a context (idempotent).
-  """
   def upsert(conn, %{"id" => id} = params) do
-    attrs = %{
-      id: id,
-      token_budget: params["token_budget"],
-      trigger_ratio: params["trigger_ratio"],
-      policy: params["policy"],
-      metadata: params["metadata"] || %{}
-    }
-
-    case Repo.get(Context, id) do
-      nil ->
-        # Create new context
-        case %Context{}
-             |> Context.changeset(attrs)
-             |> Repo.insert() do
-          {:ok, context} ->
-            conn
-            |> put_status(:created)
-            |> json(serialize_context(context))
-
-          {:error, changeset} ->
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "validation_failed", details: changeset_errors(changeset)})
-        end
-
-      existing ->
-        # Update existing context
-        case existing
-             |> Context.changeset(attrs)
-             |> Repo.update() do
-          {:ok, context} ->
-            json(conn, serialize_context(context))
-
-          {:error, changeset} ->
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "validation_failed", details: changeset_errors(changeset)})
-        end
+    with {:ok, config} <- build_config(params),
+         {:ok, context} <-
+           Runtime.upsert_context(id, config,
+             status: status_from_params(params),
+             metadata: params["metadata"] || %{}
+           ) do
+      status = if conn.method == "PUT", do: :ok, else: :ok
+      conn |> put_status(status) |> json(context)
     end
   end
 
-  @doc """
-  GET /v1/contexts/:id
-
-  Get context configuration and metadata.
-  """
   def show(conn, %{"id" => id}) do
-    case Repo.get(Context, id) do
-      nil ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "context_not_found"})
-
-      context ->
-        json(conn, serialize_context(context))
+    with {:ok, %Context{} = context} <- Runtime.get_context(id) do
+      json(conn, context_to_map(context))
     end
   end
 
-  @doc """
-  DELETE /v1/contexts/:id
-
-  Tombstone a context (no new messages accepted).
-  """
   def delete(conn, %{"id" => id}) do
-    case Repo.get(Context, id) do
-      nil ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "context_not_found"})
-
-      context ->
-        case context
-             |> Context.changeset(%{status: "tombstoned"})
-             |> Repo.update() do
-          {:ok, _context} ->
-            send_resp(conn, :no_content, "")
-
-          {:error, _changeset} ->
-            conn
-            |> put_status(:internal_server_error)
-            |> json(%{error: "failed_to_tombstone"})
-        end
+    with {:ok, %Context{} = context} <- Runtime.get_context(id),
+         {:ok, _} <-
+           Runtime.upsert_context(id, context.config,
+             status: :tombstoned,
+             metadata: context.metadata || %{}
+           ) do
+      send_resp(conn, :no_content, "")
     end
   end
 
-  @doc """
-  PATCH /v1/contexts/:id/metadata
-
-  Update context metadata.
-  """
   def update_metadata(conn, %{"id" => id, "metadata" => metadata}) do
-    case Repo.get(Context, id) do
-      nil ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "context_not_found"})
-
-      context ->
-        case context
-             |> Context.changeset(%{metadata: metadata})
-             |> Repo.update() do
-          {:ok, updated} ->
-            json(conn, serialize_context(updated))
-
-          {:error, changeset} ->
-            conn
-            |> put_status(:bad_request)
-            |> json(%{error: "validation_failed", details: changeset_errors(changeset)})
-        end
+    with {:ok, %Context{} = context} <- Runtime.get_context(id),
+         {:ok, updated} <-
+           Runtime.upsert_context(id, context.config, status: context.status, metadata: metadata) do
+      json(conn, updated)
     end
   end
 
-  @doc """
-  POST /v1/contexts/:id/messages
+  # ---------------------------------------------------------------------------
+  # Messaging
+  # ---------------------------------------------------------------------------
 
-  Append a message to the context.
-  """
-  def append(conn, %{"id" => context_id, "message" => message} = params) do
-    idempotency_key = params["idempotency_key"]
-    if_version = params["if_version"]
+  def append(conn, %{"id" => id, "message" => message_params} = params) do
+    with {:ok, inputs} <- build_message_inputs(message_params),
+         {:ok, reply} <-
+           Runtime.append_messages(id, inputs, if_version: parse_int(params["if_version"])) do
+      last = List.last(reply)
 
-    # TODO: Check idempotency_key (store in cache)
-    # TODO: Check if_version (optimistic concurrency)
-
-    case Runtime.append_message(context_id, message) do
-      {:ok, seq, version, token_estimate} ->
-        conn
-        |> put_status(:created)
-        |> json(%{
-          seq: seq,
-          version: version,
-          token_estimate: token_estimate
-        })
-
-      {:timeout, _leader} ->
-        conn
-        |> put_status(:service_unavailable)
-        |> json(%{error: "timeout", message: "Raft quorum timeout"})
-
-      {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "append_failed", message: inspect(reason)})
+      conn
+      |> put_status(:created)
+      |> json(%{
+        seq: last[:seq] || last["seq"],
+        version: last[:version] || last["version"],
+        token_estimate: last[:token_count] || last["token_count"] || 0
+      })
     end
   end
 
-  @doc """
-  GET /v1/contexts/:id/messages
+  def list_messages(conn, %{"id" => id} = params) do
+    after_seq = parse_int(params["from_seq"]) || 0
+    limit = parse_int(params["limit"]) || 100
 
-  List messages from context (replay/audit).
-  """
-  def list_messages(conn, %{"id" => context_id} = params) do
-    after_seq = String.to_integer(params["from_seq"] || "0")
-    limit = String.to_integer(params["limit"] || "100")
-
-    case Runtime.get_messages(context_id, after_seq, limit) do
-      {:ok, messages} ->
-        json(conn, %{
-          messages: Enum.map(messages, &serialize_message/1),
-          next_cursor: after_seq + length(messages)
-        })
-
-      {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "fetch_failed", message: inspect(reason)})
+    with {:ok, messages} <- Runtime.get_messages(id, after_seq, limit) do
+      json(conn, %{messages: Enum.map(messages, &message_to_map/1)})
     end
   end
 
-  @doc """
-  GET /v1/contexts/:id/context
-
-  Get the LLM context window (pre-computed, pure read).
-  """
-  def window(conn, %{"id" => context_id} = params) do
-    if_version = params["if_version"]
-
-    case Runtime.get_context_window(context_id) do
-      {:ok, %{messages: messages, version: version, used_tokens: used_tokens, needs_compaction: needs_compaction}} ->
-        # Check version guard
-        if if_version && String.to_integer(if_version) != version do
-          conn
-          |> put_status(:conflict)
-          |> json(%{
-            error: "conflict",
-            message: "Version changed (expected #{if_version}, found #{version})"
-          })
-        else
-          json(conn, %{
-            version: version,
-            messages: Enum.map(messages, &serialize_message/1),
-            used_tokens: used_tokens,
-            needs_compaction: needs_compaction,
-            segments: build_segments(messages)
-          })
-        end
-
-      {:error, :context_not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "context_not_found"})
-
-      {:error, reason} ->
-        conn
-        |> put_status(:internal_server_error)
-        |> json(%{error: "fetch_failed", message: inspect(reason)})
+  def window(conn, %{"id" => id}) do
+    with {:ok, window} <- Runtime.get_context_window(id) do
+      json(conn, %{
+        version: window.version,
+        messages: Enum.map(window.messages, &llm_message_to_map/1),
+        used_tokens: window.token_count,
+        needs_compaction: window.needs_compaction,
+        metadata: window.metadata,
+        segments: build_segments(window.messages)
+      })
     end
   end
 
-  @doc """
-  POST /v1/contexts/:id/compact
-
-  Manual compaction - replace message range with summary.
-  """
-  def compact(conn, %{"id" => context_id} = params) do
-    from_seq = params["from_seq"]
-    to_seq = params["to_seq"]
-    replacement = params["replacement"]
-    if_version = params["if_version"]
-
-    # TODO: Check if_version (optimistic concurrency)
-
-    case Runtime.compact(context_id, from_seq, to_seq, replacement) do
-      {:ok, new_version} ->
-        json(conn, %{version: new_version})
-
-      {:error, :context_not_found} ->
-        conn
-        |> put_status(:not_found)
-        |> json(%{error: "context_not_found"})
-
-      {:error, reason} ->
-        conn
-        |> put_status(:bad_request)
-        |> json(%{error: "compaction_failed", message: inspect(reason)})
+  def compact(conn, %{"id" => id} = params) do
+    with {:ok, inputs} <- build_replacement(params["replacement"]),
+         {:ok, version} <-
+           Runtime.manual_compact(id, inputs, if_version: parse_int(params["if_version"])) do
+      json(conn, %{version: version})
     end
   end
 
-  # Private helpers
+  # ---------------------------------------------------------------------------
+  # Helpers
+  # ---------------------------------------------------------------------------
 
-  defp serialize_context(context) do
+  defp build_config(params) do
+    token_budget = parse_int(params["token_budget"]) || params["token_budget"]
+    trigger_ratio = parse_float(params["trigger_ratio"]) || 0.7
+    policy = params["policy"] || %{}
+
+    {:ok, %Config{token_budget: token_budget, trigger_ratio: trigger_ratio, policy: policy}}
+  end
+
+  defp status_from_params(%{"status" => "tombstoned"}), do: :tombstoned
+  defp status_from_params(_), do: :active
+
+  defp build_message_inputs(message) when is_map(message) do
+    tuple =
+      {message_role(message), normalize_parts(message_parts(message)), message_metadata(message),
+       message_token_count(message)}
+
+    {:ok, [tuple]}
+  end
+
+  defp build_message_inputs(_), do: {:error, :invalid_message}
+
+  defp build_replacement(messages) when is_list(messages) do
+    replacement =
+      Enum.map(messages, fn message ->
+        %{
+          role: message_role(message),
+          parts: normalize_parts(message_parts(message)),
+          metadata: message_metadata(message),
+          token_count: message_token_count(message)
+        }
+      end)
+
+    {:ok, replacement}
+  end
+
+  defp build_replacement(_), do: {:error, :invalid_replacement}
+
+  defp message_role(message), do: message["role"] || message[:role]
+  defp message_parts(message), do: message["parts"] || message[:parts] || []
+
+  defp normalize_parts(parts) when is_list(parts) do
+    Enum.map(parts, fn
+      %{"type" => type} when is_binary(type) -> %{type: type}
+      %{type: type} when is_binary(type) -> %{type: type}
+    end)
+  end
+
+  defp message_metadata(message), do: message["metadata"] || message[:metadata] || %{}
+  defp message_token_count(message), do: message["token_count"] || message[:token_count]
+
+  defp message_to_map(%Message{} = message), do: Message.to_api_map(message)
+
+  defp llm_message_to_map(%Message{} = message), do: Message.to_api_map(message)
+
+  defp llm_message_to_map(%{
+         role: role,
+         parts: parts,
+         metadata: metadata,
+         token_count: tokens,
+         seq: seq,
+         inserted_at: %NaiveDateTime{} = dt
+       }) do
+    %{
+      role: role,
+      parts: parts,
+      metadata: metadata,
+      token_count: tokens,
+      seq: seq,
+      inserted_at: NaiveDateTime.to_iso8601(dt)
+    }
+  end
+
+  defp llm_message_to_map(%{
+         role: role,
+         parts: parts,
+         metadata: metadata,
+         token_count: tokens,
+         seq: seq,
+         inserted_at: inserted_at
+       }) do
+    %{
+      role: role,
+      parts: parts,
+      metadata: metadata,
+      token_count: tokens,
+      seq: seq,
+      inserted_at: inserted_at
+    }
+  end
+
+  defp build_segments(messages) do
+    seqs =
+      messages
+      |> Enum.map(fn msg -> msg[:seq] || msg["seq"] end)
+      |> Enum.filter(&is_integer/1)
+
+    case seqs do
+      [] -> []
+      _ -> [%{type: "live", from_seq: Enum.min(seqs), to_seq: Enum.max(seqs)}]
+    end
+  end
+
+  defp context_to_map(%Context{} = context) do
     %{
       id: context.id,
-      token_budget: context.token_budget,
-      trigger_ratio: context.trigger_ratio,
-      policy: context.policy,
-      version: context.version,
       status: context.status,
-      metadata: context.metadata,
-      created_at: NaiveDateTime.to_iso8601(context.inserted_at),
+      token_budget: context.config.token_budget,
+      trigger_ratio: context.config.trigger_ratio,
+      policy: context.config.policy,
+      version: context.version,
+      last_seq: context.last_seq,
+      metadata: context.metadata || %{},
+      inserted_at: NaiveDateTime.to_iso8601(context.inserted_at),
       updated_at: NaiveDateTime.to_iso8601(context.updated_at)
     }
   end
 
-  defp serialize_message(message) when is_map(message) do
-    %{
-      seq: message[:seq] || message["seq"],
-      role: message[:role] || message["role"],
-      parts: message[:parts] || message["parts"],
-      metadata: message[:metadata] || message["metadata"] || %{},
-      inserted_at: format_timestamp(message[:inserted_at] || message["inserted_at"])
-    }
+  defp parse_int(nil), do: nil
+
+  defp parse_int(value) when is_integer(value), do: value
+
+  defp parse_int(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {int, ""} -> int
+      _ -> nil
+    end
   end
 
-  defp format_timestamp(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
-  defp format_timestamp(ts) when is_binary(ts), do: ts
-  defp format_timestamp(_), do: nil
+  defp parse_int(_), do: nil
 
-  defp build_segments(messages) when is_list(messages) and length(messages) > 0 do
-    first_seq = hd(messages)[:seq] || hd(messages)["seq"] || 1
-    last_seq = List.last(messages)[:seq] || List.last(messages)["seq"] || 1
+  defp parse_float(nil), do: nil
 
-    [
-      %{
-        type: "live",
-        from_seq: first_seq,
-        to_seq: last_seq
-      }
-    ]
+  defp parse_float(value) when is_float(value), do: value
+
+  defp parse_float(value) when is_integer(value), do: value / 1.0
+
+  defp parse_float(value) when is_binary(value) do
+    case Float.parse(value) do
+      {float, ""} -> float
+      _ -> nil
+    end
   end
 
-  defp build_segments(_), do: []
-
-  defp changeset_errors(changeset) do
-    Ecto.Changeset.traverse_errors(changeset, fn {msg, opts} ->
-      Enum.reduce(opts, msg, fn {key, value}, acc ->
-        String.replace(acc, "%{#{key}}", to_string(value))
-      end)
-    end)
-  end
+  defp parse_float(_), do: nil
 end

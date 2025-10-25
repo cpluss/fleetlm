@@ -19,17 +19,19 @@ defmodule Fastpaca.Runtime.RaftManager do
 
   alias Fastpaca.Runtime.{RaftFSM, RaftTopology}
 
+  # TODO: make these configurable
   @num_groups 256
+  @num_lanes 16
   @replication_factor 3
 
-  @doc "Map session_id → group_id (0..255)"
+  @doc "Map session_id → group_id (0..#{@num_groups - 1})"
   def group_for_context(session_id) do
     :erlang.phash2(session_id, @num_groups)
   end
 
-  @doc "Map session_id → lane_id (0..15) within its group"
+  @doc "Map session_id → lane_id (0..#{@num_lanes - 1}) within its group"
   def lane_for_context(session_id) do
-    :erlang.phash2(session_id, 16)
+    :erlang.phash2(session_id, @num_lanes)
   end
 
   @doc "Get Ra server ID (process name) for a group"
@@ -122,7 +124,10 @@ defmodule Fastpaca.Runtime.RaftManager do
         bootstrap_cluster(group_id, cluster_name, machine, server_ids, {server_id, my_node})
       else
         # Retry join until bootstrap node creates cluster
-        join_cluster_with_retry(group_id, server_id, cluster_name, machine, retries: 10)
+        join_cluster_with_retry(group_id, server_id, cluster_name, machine,
+          retries: 10,
+          attempts: 0
+        )
       end
     end
   end
@@ -153,21 +158,33 @@ defmodule Fastpaca.Runtime.RaftManager do
     end
   end
 
-  defp join_cluster_with_retry(group_id, _server_id, _cluster_name, _machine, retries: 0) do
+  defp join_cluster_with_retry(group_id, _server_id, _cluster_name, _machine,
+         retries: 0,
+         attempts: _attempts
+       ) do
     Logger.error("RaftManager: Failed to join group #{group_id} after retries")
     {:error, :join_timeout}
   end
 
-  defp join_cluster_with_retry(group_id, server_id, cluster_name, machine, retries: n) do
+  defp join_cluster_with_retry(group_id, server_id, cluster_name, machine,
+         retries: retries,
+         attempts: attempts
+       ) do
     case join_cluster(group_id, server_id, cluster_name, machine) do
       :ok ->
         :ok
 
       {:error, :enoent} ->
         # Cluster doesn't exist yet, retry
-        # Brief backoff, not great to sleep but what can we do
-        Process.sleep(100)
-        join_cluster_with_retry(group_id, server_id, cluster_name, machine, retries: n - 1)
+        # Exponential backoff, not great to sleep but what can we do
+        backoff_ms = 100 * :math.pow(2, attempts)
+        Logger.warning("RaftManager: Cluster doesn't exist yet, retrying in #{backoff_ms}ms")
+        Process.sleep(backoff_ms)
+
+        join_cluster_with_retry(group_id, server_id, cluster_name, machine,
+          retries: retries - 1,
+          attempts: attempts + 1
+        )
 
       {:error, reason} ->
         {:error, reason}

@@ -8,7 +8,7 @@
 import Config
 
 config :fleetlm,
-  ecto_repos: [Fleetlm.Repo],
+  ecto_repos: [Fastpaca.Repo],
   generators: [timestamp_type: :utc_datetime]
 
 # Raft configuration

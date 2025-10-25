@@ -30,7 +30,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
 
   alias Fastpaca.Runtime.RaftManager
 
-  @presence_topic "fleetlm:raft_ready_nodes"
+  @presence_topic "fastpaca:raft_ready_nodes"
   # TODO: make these configurable
   @rebalance_debounce_ms 5_000
   @readiness_interval_ms 1_000
@@ -44,7 +44,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
     """
     use Phoenix.Presence,
       otp_app: :fastpaca,
-      pubsub_server: Fleetlm.PubSub
+      pubsub_server: Fastpaca.PubSub
   end
 
   # Client API
@@ -100,7 +100,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
     # Suppress Ra's verbose logs - only show errors
     :logger.set_application_level(:ra, :error)
 
-    :ok = Phoenix.PubSub.subscribe(Fleetlm.PubSub, @presence_topic)
+    :ok = Phoenix.PubSub.subscribe(Fastpaca.PubSub, @presence_topic)
     :ok = :net_kernel.monitor_nodes(true, node_type: :visible)
 
     # CRITICAL: Track immediately as :joining so placement can see us!
@@ -162,7 +162,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
 
         # Start groups async via Task.Supervisor in a non-blocking way
         Task.Supervisor.async_stream_nolink(
-          Fleetlm.RaftTaskSupervisor,
+          Fastpaca.RaftTaskSupervisor,
           not_started,
           fn group_id -> RaftManager.start_group(group_id) end,
           max_concurrency: 50,

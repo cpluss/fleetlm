@@ -1,75 +1,97 @@
-# FleetLM × Next.js Demo
+# Fastpaca × Next.js Chat Example
 
-A full-stack example that pairs FleetLM with a Next.js app:
+Minimal chat app demonstrating Fastpaca context management with ai-sdk and Next.js.
 
-- **Browser UI** - React client joins the FleetLM session channel, renders streaming chunks, and persists history.
-- **Webhook** - Next.js API route responds to FleetLM with AI SDK JSONL chunks (edit this file to call your own LLM or tools).
-- **Utilities** - API routes proxy session/message calls plus a script to register the agent against FleetLM.
+## Features
 
-## Prerequisites
-
-- Node.js 18+
-- FleetLM running locally (`mix phx.server` or `docker compose up`)
-- Env vars from `.env.example`
-
-> ℹ️ If FleetLM runs inside Docker on macOS/Windows, set `FLEETLM_AGENT_ORIGIN=http://host.docker.internal:3000` so the container can reach your Next.js webhook.
+- **Pure ai-sdk frontend** - Uses `useChat` hook, no Fastpaca client code needed
+- **Backend integration** - All Fastpaca calls in the API route
+- **gpt-4o-mini** - 400k context window, affordable
+- **Auto-compaction** - `last_n` strategy keeps last 400 messages
 
 ## Setup
 
 ```bash
 cd examples/nextjs-chat
 cp .env.example .env.local
+# Edit .env.local and add your OPENAI_API_KEY
+
 npm install
-
-# Register the demo agent (id + webhook URL taken from .env.local)
-npm run register-agent
-
-# Start the Next.js app
 npm run dev
 ```
 
-Open http://localhost:3000 and send a message. FleetLM persists the user input, invokes the Next.js webhook, and streams each chunk back into the UI in real time.
+## How it Works
 
-### What to look at
+### Frontend (Standard ai-sdk)
+```tsx
+// app/page.tsx
+import { useChat } from '@ai-sdk/react';
 
-| File | Purpose |
-| --- | --- |
-| `app/api/fleetlm/webhook/route.ts` | Streaming webhook - swap the demo text generator for your own LLM call. |
-| `components/chat-app.tsx` | Phoenix channel client, message rendering, and live chunk handling. |
-| `app/api/fleetlm/session/route.ts` | Thin proxy that creates sessions through FleetLM’s REST API. |
-| `scripts/register-agent.mjs` | Registers the Next.js webhook with FleetLM (id, debounce, history window). |
+const { messages, input, handleSubmit } = useChat();
+// That's it! No Fastpaca code in frontend
+```
 
-## Calling a Real LLM
+### Backend (Fastpaca Integration)
+```typescript
+// app/api/chat/route.ts
+export async function POST(req: Request) {
+  const { messages } = await req.json();
 
-The webhook currently streams a handcrafted response. To delegate to a provider:
+  // 1. Get context ID from session/user
+  const contextId = getContextId(req);
 
-1. Add an API key to `.env.local` (e.g. `OPENAI_API_KEY=sk-...`).
-2. Replace the body of `replyTemplate` in `app/api/fleetlm/webhook/route.ts` with a call to your provider.
-3. Forward streamed tokens as AI SDK chunks:
+  // 2. Append last message to Fastpaca
+  await appendToFastpaca(contextId, messages[messages.length - 1]);
 
-```ts
-controller.enqueue(encodeLine({ type: "text-start", id: partId }));
-for await (const delta of providerStream) {
-  controller.enqueue(encodeLine({ type: "text-delta", id: partId, delta }));
+  // 3. Get token-budgeted window from Fastpaca
+  const { messages: contextMessages } = await getFastpacaWindow(contextId);
+
+  // 4. Stream to OpenAI
+  const result = streamText({
+    model: openai('gpt-4o-mini'),
+    messages: convertToModelMessages(contextMessages),
+  });
+
+  // 5. Auto-append assistant response after stream
+  await appendAssistantResponse(contextId, result);
+
+  return result.toUIMessageStreamResponse();
 }
-controller.enqueue(encodeLine({ type: "text-end", id: partId }));
-controller.enqueue(encodeLine({ type: "finish", message: yourFinalMessage }));
 ```
 
-FleetLM will handle retries, state reconciliation, and message persistence regardless of the backend you call.
+### Compaction
+When `used_tokens > 280k` (70% of 400k), Fastpaca automatically:
+1. Drops oldest messages (keeps last 400)
+2. Updates snapshot on write path
+3. Next `GET /context` returns compacted window
 
-## Tweaks
+## Architecture
 
-- Change `FLEETLM_AGENT_DEBOUNCE_MS` in `.env.local` to watch how FleetLM batches fast message bursts.
-- Enable compaction by setting `compaction_enabled` + `compaction_webhook_url` in `scripts/register-agent.mjs`, then implement a summary path in your Next.js app.
-- Use the REST proxies in `app/api/fleetlm` as a template for integrating FleetLM into your own backend.
-
-## Cleanup
-
-To remove the demo agent:
-
-```bash
-curl -X DELETE "$FLEETLM_API_URL/api/agents/$FLEETLM_AGENT_ID"
+```
+Browser → useChat (ai-sdk)
+            ↓
+      POST /api/chat (Next.js)
+            ↓
+      Fastpaca REST API
+       - Append message
+       - Get window (pre-computed!)
+       - Auto-compact (on write)
+            ↓
+      OpenAI gpt-4o-mini
+            ↓
+      Stream → Browser
 ```
 
-This keeps your FleetLM registry tidy when you create production agents.
+All Fastpaca logic is hidden in the backend. Frontend is pure ai-sdk.
+
+## Files
+
+- `app/page.tsx` - Chat UI (standard `useChat`)
+- `app/api/chat/route.ts` - Fastpaca integration + streaming
+- `lib/fastpaca.ts` - Helper functions for Fastpaca REST calls
+
+## Running
+
+1. Start Fastpaca: `mix phx.server` (from repo root)
+2. Start Next.js: `npm run dev`
+3. Open: http://localhost:3000

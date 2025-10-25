@@ -17,7 +17,7 @@ import Config
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
 if System.get_env("PHX_SERVER") do
-  config :fleetlm, FleetlmWeb.Endpoint, server: true
+  config :fastpaca, FastpacaWeb.Endpoint, server: true
 end
 
 # Suppress Ra (Raft library) verbose logs
@@ -63,7 +63,7 @@ if config_env() == :prod do
     config :fleetlm, :slot_log_dir, slot_log_dir
   end
 
-  config :fleetlm, Fleetlm.Repo,
+  config :fastpaca, Fastpaca.Repo,
     # ssl: true,
     url: database_url,
     pool_size: String.to_integer(System.get_env("POOL_SIZE") || "25"),
@@ -134,7 +134,7 @@ if config_env() == :prod do
 
   config :libcluster, topologies: topologies
 
-  config :fleetlm, FleetlmWeb.Endpoint,
+  config :fastpaca, FastpacaWeb.Endpoint,
     url: [host: host, port: 443, scheme: "https"],
     http: [
       # Bind on all interfaces (IPv6 :: supports both IPv4 and IPv6 via dual-stack)
@@ -148,7 +148,7 @@ if config_env() == :prod do
   # To get SSL working, you will need to add the `https` key
   # to your endpoint configuration:
   #
-  #     config :fleetlm, FleetlmWeb.Endpoint,
+  #     config :fastpaca, FastpacaWeb.Endpoint,
   #       https: [
   #         ...,
   #         port: 443,
@@ -170,7 +170,7 @@ if config_env() == :prod do
   # We also recommend setting `force_ssl` in your config/prod.exs,
   # ensuring no data is ever sent via http, always redirecting to https:
   #
-  #     config :fleetlm, FleetlmWeb.Endpoint,
+  #     config :fastpaca, FastpacaWeb.Endpoint,
   #       force_ssl: [hsts: true]
   #
   # Check `Plug.SSL` for all available options in `force_ssl`.
