@@ -11,7 +11,8 @@ defmodule FastpacaWeb.Endpoint do
     same_site: "Lax"
   ]
 
-  socket "/stream", FastpacaWeb.StreamSocket,
+  # WebSocket for context updates
+  socket "/socket", FastpacaWeb.UserSocket,
     websocket: [compress: true, timeout: 120_000],
     longpoll: false
 
