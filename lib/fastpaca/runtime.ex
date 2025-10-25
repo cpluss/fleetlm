@@ -40,9 +40,20 @@ defmodule Fastpaca.Runtime do
       case :ra.local_query({server_id, Node.self()}, fn state ->
              RaftFSM.query_context(state, lane, id)
            end) do
-        {:ok, {:ok, context}, _leader} -> {:ok, context}
-        {:ok, {:error, reason}, _leader} -> {:error, reason}
-        other -> other
+        {:ok, {:ok, context}, _leader} ->
+          {:ok, context}
+
+        {:ok, {:error, reason}, _leader} ->
+          {:error, reason}
+
+        {:ok, {{_term, _index}, {:ok, context}}, _leader} ->
+          {:ok, context}
+
+        {:ok, {{_term, _index}, {:error, reason}}, _leader} ->
+          {:error, reason}
+
+        other ->
+          other
       end
     end
   end
@@ -111,7 +122,10 @@ defmodule Fastpaca.Runtime do
       case :ra.local_query({server_id, Node.self()}, fn state ->
              RaftFSM.query_messages(state, lane, id, after_seq)
            end) do
-        {:ok, messages, _leader} ->
+        {:ok, messages, _leader} when is_list(messages) ->
+          {:ok, messages |> Enum.take(limit)}
+
+        {:ok, {{_term, _index}, messages}, _leader} when is_list(messages) ->
           {:ok, messages |> Enum.take(limit)}
 
         {:timeout, leader} ->

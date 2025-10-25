@@ -55,3 +55,8 @@ defmodule Fastpaca.Application do
     end
   end
 end
+
+# Temporary alias for mix.exs compatibility
+defmodule Fleetlm.Application do
+  defdelegate start(type, args), to: Fastpaca.Application
+end

@@ -94,9 +94,11 @@ defmodule Fastpaca.Context do
       MessageLog.append(context.message_log, inbound_messages, context.last_seq)
 
     llm_context = LLMContext.append(context.llm_context, appended)
+
     {new_llm_context, flag} =
       if exceeds_trigger?(llm_context.token_count, context.config) do
         cfg = context.config.policy.config || %{}
+
         {:ok, new_llm_context, flag} =
           case context.config.policy.strategy do
             :skip_parts -> Fastpaca.Context.Policies.SkipParts.apply(llm_context, cfg)

@@ -35,9 +35,8 @@ defmodule Fastpaca.Repo.Migrations.CreateFastpacaContexts do
       timestamps(type: :naive_datetime_usec, updated_at: false)
     end
 
-    create index(:messages, [:context_id, :seq])
-    create index(:messages, [:context_id, :inserted_at])
     create unique_index(:messages, [:context_id, :seq])
+    create index(:messages, [:context_id, :inserted_at])
   end
 
   def down do
