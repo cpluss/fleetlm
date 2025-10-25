@@ -1,4 +1,4 @@
-defmodule Fastpaca.Context.Strategies.SkipParts do
+defmodule Fastpaca.Context.Policies.SkipParts do
   @moduledoc """
   Drops messages containing certain part types before delegating to the LastN
   strategy.
@@ -7,11 +7,12 @@ defmodule Fastpaca.Context.Strategies.SkipParts do
   @behaviour Fastpaca.Context.Policy
 
   alias Fastpaca.Context.LLMContext
+  alias Fastpaca.Context.Policies.LastN
 
   @default_skip_kinds [:tool]
 
   @impl true
-  def apply(messages, %LLMContext{} = existing, config) do
+  def apply(%LLMContext{messages: messages} = llm_context, config) do
     skip_kinds = config[:skip_kinds] || @default_skip_kinds
     limit = config[:limit]
 
@@ -22,16 +23,15 @@ defmodule Fastpaca.Context.Strategies.SkipParts do
         end)
       end)
 
+    filtered_llm_context = %LLMContext{llm_context | messages: filtered}
     strategy_config = %{limit: limit}
 
-    case Fastpaca.Context.Strategies.LastN.apply(filtered, existing, strategy_config) do
-      {:ok, %LLMContext{} = llm_context, flag} ->
-        skipped = length(messages) - length(filtered)
-        metadata = Map.put(llm_context.metadata || %{}, :skipped_parts, skipped)
-        {:ok, %{llm_context | metadata: metadata}, flag}
+    {:ok, %LLMContext{} = compacted_llm_context, flag} =
+      LastN.apply(filtered_llm_context, strategy_config)
 
-      other ->
-        other
-    end
+    skipped = length(messages) - length(filtered)
+    metadata = Map.put(compacted_llm_context.metadata || %{}, :skipped_parts, skipped)
+
+    {:ok, %{compacted_llm_context | metadata: metadata}, flag}
   end
 end

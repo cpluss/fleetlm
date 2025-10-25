@@ -2,7 +2,7 @@ defmodule FastpacaWeb.ContextController do
   use FastpacaWeb, :controller
 
   alias Fastpaca.Context
-  alias Fastpaca.Context.{Config, Message}
+  alias Fastpaca.Context.Config
   alias Fastpaca.Runtime
 
   action_fallback FastpacaWeb.FallbackController
@@ -93,7 +93,7 @@ defmodule FastpacaWeb.ContextController do
   def compact(conn, %{"id" => id} = params) do
     with {:ok, inputs} <- build_replacement(params["replacement"]),
          {:ok, version} <-
-           Runtime.manual_compact(id, inputs, if_version: parse_int(params["if_version"])) do
+           Runtime.compact(id, inputs, if_version: parse_int(params["if_version"])) do
       json(conn, %{version: version})
     end
   end
@@ -152,9 +152,7 @@ defmodule FastpacaWeb.ContextController do
   defp message_metadata(message), do: message["metadata"] || message[:metadata] || %{}
   defp message_token_count(message), do: message["token_count"] || message[:token_count]
 
-  defp message_to_map(%Message{} = message), do: Message.to_api_map(message)
-
-  defp llm_message_to_map(%Message{} = message), do: Message.to_api_map(message)
+  defp message_to_map(message) when is_map(message), do: message
 
   defp llm_message_to_map(%{
          role: role,

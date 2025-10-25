@@ -1,4 +1,4 @@
-defmodule Fastpaca.Context.Strategies.LastN do
+defmodule Fastpaca.Context.Policies.LastN do
   @moduledoc """
   Keeps only the last N messages in the LLM context while preserving the full
   append-only log.
@@ -11,17 +11,18 @@ defmodule Fastpaca.Context.Strategies.LastN do
   @default_limit 200
 
   @impl true
-  def apply(messages, %LLMContext{} = _existing, config) do
+  def apply(%LLMContext{messages: messages} = llm_context, config) do
     limit = config[:limit] || @default_limit
     kept = take_last(messages, limit)
 
-    llm_context = %LLMContext{
-      messages: kept,
-      token_count: sum_tokens(kept),
-      metadata: %{strategy: "last_n", limit: limit}
+    new_llm_context = %LLMContext{
+      llm_context
+      | messages: kept,
+        token_count: sum_tokens(kept),
+        metadata: %{strategy: "last_n", limit: limit}
     }
 
-    {:ok, llm_context, :compact}
+    {:ok, new_llm_context, :compact}
   end
 
   defp take_last(list, limit) do

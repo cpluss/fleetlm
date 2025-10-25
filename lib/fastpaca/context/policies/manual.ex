@@ -1,4 +1,4 @@
-defmodule Fastpaca.Context.Strategies.Manual do
+defmodule Fastpaca.Context.Policies.Manual do
   @moduledoc """
   Leaves the LLM context untouched; useful when developers manage compaction
   themselves.
@@ -9,7 +9,7 @@ defmodule Fastpaca.Context.Strategies.Manual do
   alias Fastpaca.Context.LLMContext
 
   @impl true
-  def apply(_messages, %LLMContext{} = llm_context, _config) do
+  def apply(%LLMContext{} = llm_context, _config) do
     {:ok, llm_context, :noop}
   end
 end

@@ -7,7 +7,7 @@ defmodule Fastpaca.Runtime.RaftFSM do
   @behaviour :ra_machine
 
   alias Fastpaca.Context
-  alias Fastpaca.Context.{Config, Message}
+  alias Fastpaca.Context.Config
 
   @num_lanes 16
 
@@ -96,7 +96,7 @@ defmodule Fastpaca.Runtime.RaftFSM do
 
     with {:ok, context} <- fetch_context(lane, context_id),
          :ok <- guard_version(context, opts[:if_version]) do
-      {updated_context, _llm} = Context.manual_compact(context, replacement)
+      {updated_context, _llm} = Context.compact(context, replacement)
 
       new_lane = %{lane | contexts: Map.put(lane.contexts, context_id, updated_context)}
       new_state = put_in(state.lanes[lane_id], new_lane)
@@ -186,8 +186,8 @@ defmodule Fastpaca.Runtime.RaftFSM do
     end
   end
 
-  defp message_payload(%Message{} = message, %Context{} = context) do
-    Map.merge(Message.to_api_map(message), %{version: context.version})
+  defp message_payload(message, %Context{} = context) do
+    Map.put(message, :version, context.version)
   end
 
   defp broadcast_compaction(context_id, %Context{} = context) do

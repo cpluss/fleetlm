@@ -7,9 +7,11 @@ defmodule Fastpaca.Context.Config do
   @enforce_keys [:token_budget, :trigger_ratio, :policy]
   defstruct [:token_budget, :trigger_ratio, :policy]
 
+  @type strategy :: :last_n | :skip_parts | :manual
+
   @type t :: %__MODULE__{
           token_budget: pos_integer(),
           trigger_ratio: float(),
-          policy: %{strategy: String.t(), config: map()}
+          policy: %{strategy: strategy(), config: map()}
         }
 end

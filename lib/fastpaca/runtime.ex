@@ -69,9 +69,9 @@ defmodule Fastpaca.Runtime do
     end
   end
 
-  @spec manual_compact(String.t(), list(), keyword()) ::
+  @spec compact(String.t(), list(), keyword()) ::
           {:ok, non_neg_integer()} | {:error, term()} | {:timeout, term()}
-  def manual_compact(id, replacement, opts \\ []) when is_binary(id) do
+  def compact(id, replacement, opts \\ []) when is_binary(id) do
     with {:ok, server_id, lane, group} <- locate(id),
          :ok <- ensure_group_started(group) do
       case :ra.process_command(
@@ -90,7 +90,14 @@ defmodule Fastpaca.Runtime do
   @spec get_context_window(String.t()) :: {:ok, map()} | {:error, term()}
   def get_context_window(id) when is_binary(id) do
     with {:ok, %Context{} = context} <- get_context(id) do
-      {:ok, Context.window(context)}
+      {:ok,
+       %{
+         messages: context.llm_context.messages,
+         version: context.version,
+         token_count: context.llm_context.token_count,
+         metadata: context.llm_context.metadata,
+         needs_compaction: Context.needs_compaction?(context)
+       }}
     end
   end
 
