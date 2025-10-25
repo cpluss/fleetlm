@@ -11,7 +11,7 @@ These helpers mirror the REST API shown in the Quick Start / Getting Started gui
 npm install fastpaca
 ```
 
-## 1. Create (or load) a conversation
+## 1. Create (or load) a context
 
 ```typescript
 import { createClient } from 'fastpaca';
@@ -22,7 +22,7 @@ const fastpaca = createClient({
 });
 
 const ctx = fastpaca.context('123456')
-  .budget(1_000_000)  // token budget for this conversation
+  .budget(1_000_000)  // token budget for this context
   .trigger(0.7)       // optional trigger ratio (defaults to 0.7)
   .policy({           // optional policy (defaults to last_n)
     strategy: 'last_n',
@@ -30,7 +30,7 @@ const ctx = fastpaca.context('123456')
   });
 ```
 
-`context(id)` never creates IDs for you—you decide what to use so you can continue the same conversation later.
+`context(id)` never creates IDs for you—you decide what to use so you can continue the same context later.
 
 ## 2. Append messages (ai-sdk `UIMessage`)
 

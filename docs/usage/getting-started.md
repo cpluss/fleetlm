@@ -5,16 +5,16 @@ sidebar_position: 2
 
 # Getting Started
 
-Understand how Fastpaca stores conversations and how you work with them day to day.
+Understand how Fastpaca stores contexts and how you work with them day to day.
 
 ## Creating a context
 
-Fastpaca works on the concept of *conversation contexts*. Each context contains two things:
+Fastpaca works on the concept of *context contexts*. Each context contains two things:
 
 1. **Message log** – what your users see and care about.
 2. **LLM context** – what the LLM care about in order to process user requests.
 
-Contexts are created with a unique identifier that you create yourself, as long as it is globally unique it works. That way you can track & reuse conversations in your product.
+Contexts are created with a unique identifier that you create yourself, as long as it is globally unique it works. That way you can track & reuse contexts in your product.
 
 ```typescript
 const ctx = fastpaca.context('123456')
@@ -28,7 +28,7 @@ const ctx = fastpaca.context('123456')
   .policy({ strategy: 'last_n', config: { limit: 400 }})
 ```
 
-This context acts as your soruce of truth to recognise a conversation in the future, to be reused across requests. Do note that budget, trigger, and policy are only necessary if you want to tune it - and changing it only changes context behaviour on _new_ contexts created.
+This context acts as your soruce of truth to recognise a context in the future, to be reused across requests. Do note that budget, trigger, and policy are only necessary if you want to tune it - and changing it only changes context behaviour on _new_ contexts created.
 
 *(For more details on how context compaction & management works see [Context Management](./context-management.md))*
 
@@ -47,7 +47,7 @@ await ctx.append({
 });
 ```
 
-Fastpaca doesn't care about the shape of the parts, nor metadata, and only require each part to have a `type`. Note that each message is assigned a determinsitic sequence number (`seq`) which is used to order them (total order) within a conversation.
+Fastpaca doesn't care about the shape of the parts, nor metadata, and only require each part to have a `type`. Note that each message is assigned a determinsitic sequence number (`seq`) which is used to order them (total order) within a context.
 
 ## Calling your LLM
 
@@ -83,7 +83,7 @@ This will automatically consume the stream results and append them to the contex
 
 ## Getting messages
 
-Reading messages is fairly straightforward, but can be time consuming. Usually when you build products with conversation state your users don't see every message at all once, as some conversations can span thousands if not hundreds of thousands of messages. Fetching all of that is slow, regardless of what system you use.
+Reading messages is fairly straightforward, but can be time consuming. Usually when you build products with context state your users don't see every message at all once, as some contexts can span thousands if not hundreds of thousands of messages. Fetching all of that is slow, regardless of what system you use.
 
 Fastpaca takes this into account and allows you to fetch partial messages based on their sequence numbers, which is used to fetch messages the user can actually see.
 
@@ -95,7 +95,7 @@ const ctx = fastpaca.context('12345');
 const tail = await ctx.get_messages({ tail_offset: 50 });
 
 // In case your user starts to scroll you may add UI elements to 
-// fetch the rest of the conversation
+// fetch the rest of the context
 const one_page_up = await ctx.get_messages({ tail_offset: 100,  limit: 50 });
 
 // Fetches the entire user history, in cases where you have millions of

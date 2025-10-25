@@ -18,12 +18,12 @@ Fastpaca now listens on `http://localhost:4000/v1`. The container persists data 
 
 ---
 
-## 2. Create a conversation
+## 2. Create a context
 
 Create a context with the id `demo-chat`.
 
 ```bash
-curl -X PUT http://localhost:4000/v1/conversations/demo-chat \
+curl -X PUT http://localhost:4000/v1/contexts/demo-chat \
   -H "Content-Type: application/json" \
   -d '{
     "token_budget": 1000000,
@@ -42,7 +42,7 @@ curl -X PUT http://localhost:4000/v1/conversations/demo-chat \
 Adds a user message with `How do I deploy this?` as text.
 
 ```bash
-curl -X POST http://localhost:4000/v1/conversations/demo-chat/messages \
+curl -X POST http://localhost:4000/v1/contexts/demo-chat/messages \
   -H "Content-Type: application/json" \
   -d '{
     "message": {
@@ -68,7 +68,7 @@ Retry with the same `idempotency_key` if the network flakes; duplicates are igno
 The context endpoint returns the current LLM context plus metadata.
 
 ```bash
-curl http://localhost:4000/v1/conversations/demo-chat/context
+curl http://localhost:4000/v1/contexts/demo-chat/context
 ```
 
 Response (trimmed):
@@ -102,9 +102,9 @@ import { streamText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 
 export async function POST(req: Request) {
-  const { conversationId, message } = await req.json();
+  const { contextId, message } = await req.json();
 
-  const ctx = await fastpaca.context(conversationId).budget(1_000_000);
+  const ctx = await fastpaca.context(contextId).budget(1_000_000);
 
   await ctx.append({
     role: 'user',

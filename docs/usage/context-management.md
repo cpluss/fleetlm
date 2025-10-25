@@ -5,9 +5,9 @@ sidebar_position: 3
 
 # Context Management
 
-Managing your conversation context is key to scaling an LLM product. Users want full history, but your LLM or agent is operating on a stricter limit where you can only send a certain number of input tokens to it - dictated by its context window. 
+Managing your context context is key to scaling an LLM product. Users want full history, but your LLM or agent is operating on a stricter limit where you can only send a certain number of input tokens to it - dictated by its context window. 
 
-It usually works quite well to send all messages to the LLM up until you hit the input token limit (and exceed the context window), but once you reach that you either need to stop processing a conversation or reduce the data to give your user the illusion of a product that can take all of it into account on each request.
+It usually works quite well to send all messages to the LLM up until you hit the input token limit (and exceed the context window), but once you reach that you either need to stop processing a context or reduce the data to give your user the illusion of a product that can take all of it into account on each request.
 
 ---
 
@@ -22,13 +22,13 @@ For example, with a budget of `8000` tokens and a trigger at `80%` you would tri
 
 ## Token budgets at a glance
 
-- Configure once when you create the conversation: `token_budget: 1_000_000`
-- Every call to `ctx.context()` (or `GET /v1/conversations/:id/context`) respects that ceiling
+- Configure once when you create the context: `token_budget: 1_000_000`
+- Every call to `ctx.context()` (or `GET /v1/contexts/:id/context`) respects that ceiling
 - When the snapshot + tail cross the trigger ratio (default `0.7`), `needsCompaction` flips to `true`
-- Override the trigger ratio per conversation if you want earlier/later warnings
+- Override the trigger ratio per context if you want earlier/later warnings
 
 ```bash
-curl -X PUT http://localhost:4000/v1/conversations/docs-demo \
+curl -X PUT http://localhost:4000/v1/contexts/docs-demo \
   -H "Content-Type: application/json" \
   -d '{
     "token_budget": 1000000,
@@ -47,7 +47,7 @@ curl -X PUT http://localhost:4000/v1/conversations/docs-demo \
 * Strip away detail that the LLM most likely do not need further, e.g. tool calls, reasoning, media too large, etc.
 * Maintain a running initial "summary" message at the top, which another LLM continuously builds on by taking new messages and updating it.
 
-There are other creative & more complex ways to manage context such as involving a RAG or Vector DB to save facts about each conversation for later, but those are not covered by fastpaca since they're quite convoluted and usually aren't needed.
+There are other creative & more complex ways to manage context such as involving a RAG or Vector DB to save facts about each context for later, but those are not covered by fastpaca since they're quite convoluted and usually aren't needed.
 
 These strategies dictate *what we do when we approach the token budget* within the context context.
 
@@ -75,7 +75,7 @@ If you fetch a context again but change your policy during the setup it will aut
 | Lean prompts with tools | `skip_parts` | Keeps metadata, removes noisy payloads. Good for most agents. |
 | Full control, larger batches | `budget` with `trigger_ratio: 0.7` | Pair with your own summariser. |
 
-Revisit the policy when you change LLMs or expand conversation length.
+Revisit the policy when you change LLMs or expand context length.
 
 ---
 

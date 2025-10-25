@@ -5,12 +5,12 @@ sidebar_position: 2
 
 # Websocket API
 
-Fastpaca exposes a backend-only websocket for watching conversation updates in near real-time.  Use it to trigger compaction workers, fan out updates to other services, or maintain UI state via your own gateway.
+Fastpaca exposes a backend-only websocket for watching context updates in near real-time.  Use it to trigger compaction workers, fan out updates to other services, or maintain UI state via your own gateway.
 
 Endpoint:
 
 ```
-ws://HOST/v1/conversations/:id/stream
+ws://HOST/v1/contexts/:id/stream
 ```
 
 ## Connection parameters
@@ -23,7 +23,7 @@ ws://HOST/v1/conversations/:id/stream
 Example:
 
 ```
-ws://localhost:4000/v1/conversations/support-123/stream?cursor=120
+ws://localhost:4000/v1/contexts/support-123/stream?cursor=120
 ```
 
 If authentication is enabled, include the API key via the `Authorization` header (`Bearer …`).
@@ -49,7 +49,7 @@ All messages are JSON objects with `type` and `version`.  Version numbers are st
 }
 ```
 
-Sent whenever a new message is appended to the conversation.
+Sent whenever a new message is appended to the context.
 
 ### Context updates
 
@@ -62,7 +62,7 @@ Sent whenever a new message is appended to the conversation.
 }
 ```
 
-Indicates that the cached LLM context should be refreshed via `GET /v1/conversations/:id/context`.
+Indicates that the cached LLM context should be refreshed via `GET /v1/contexts/:id/context`.
 
 ### Compaction acknowledgements
 
@@ -82,7 +82,7 @@ Emitted after a successful `/compact` call.
 { "type": "tombstoned", "version": 0 }
 ```
 
-The conversation has been deleted.  The server closes the connection after sending this message.
+The context has been deleted.  The server closes the connection after sending this message.
 
 ### Snapshot reset
 
@@ -102,7 +102,7 @@ The snapshot was rebuilt (e.g., after a manual repair). Clients should discard c
 
 1. Keep track of the highest `version` you've processed.  
 2. On reconnect, pass that value as `cursor`.  
-3. If the server responds with `{"type":"gap","expected":...,"actual":...}` immediately fetch the missing messages via `GET /v1/conversations/:id/messages` and resume with the returned `version`.
+3. If the server responds with `{"type":"gap","expected":...,"actual":...}` immediately fetch the missing messages via `GET /v1/contexts/:id/messages` and resume with the returned `version`.
 
 ## Limits
 

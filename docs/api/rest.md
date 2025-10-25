@@ -7,11 +7,11 @@ sidebar_position: 1
 
 All endpoints live under `/v1`.  Requests must include `Content-Type: application/json` where applicable.  Responses are JSON unless stated otherwise.
 
-## Conversations
+## Contexts
 
-### PUT `/v1/conversations/:id`
+### PUT `/v1/contexts/:id`
 
-Create or update a conversation. Idempotent (`PUT`).
+Create or update a context. Idempotent (`PUT`).
 
 ```json title="Request body"
 {
@@ -39,17 +39,17 @@ Create or update a conversation. Idempotent (`PUT`).
 
 `trigger_ratio` defaults to `0.7` if omitted.
 
-### GET `/v1/conversations/:id`
+### GET `/v1/contexts/:id`
 
-Returns the current conversation configuration and metadata.
+Returns the current context configuration and metadata.
 
-### DELETE `/v1/conversations/:id`
+### DELETE `/v1/contexts/:id`
 
-Tombstones the conversation. Existing messages remain available for replay, but new messages are rejected.
+Tombstones the context. Existing messages remain available for replay, but new messages are rejected.
 
 ## Messages
 
-### POST `/v1/conversations/:id/messages`
+### POST `/v1/contexts/:id/messages`
 
 Append a message.
 
@@ -75,14 +75,14 @@ Append a message.
 - `idempotency_key` is optional but recommended for retries.  
 - `if_version` enforces optimistic concurrency. The server returns `409 Conflict` if the current version does not match.
 
-### GET `/v1/conversations/:id/messages`
+### GET `/v1/contexts/:id/messages`
 
 Page through the message log. Supports `from_seq`/`to_seq`, `cursor`/`limit`, and negative offsets.
 
 ```
-GET /v1/conversations/demo/messages?from_seq=101&to_seq=120
-GET /v1/conversations/demo/messages?cursor=200&limit=50
-GET /v1/conversations/demo/messages?from_seq=-100          # last 100 messages
+GET /v1/contexts/demo/messages?from_seq=101&to_seq=120
+GET /v1/contexts/demo/messages?cursor=200&limit=50
+GET /v1/contexts/demo/messages?from_seq=-100          # last 100 messages
 ```
 
 Response:
@@ -105,7 +105,7 @@ Use `next_cursor` to continue paging or resume after a disconnect.
 
 ## LLM context
 
-### GET `/v1/conversations/:id/context`
+### GET `/v1/contexts/:id/context`
 
 Returns the current LLM context (the slice you send to your LLM).
 
@@ -129,7 +129,7 @@ Query parameters:
 
 ## Compaction
 
-### POST `/v1/conversations/:id/compact`
+### POST `/v1/contexts/:id/compact`
 
 Rewrite part of the snapshot.  The raw log remains untouched for replay/audit.
 
@@ -155,11 +155,11 @@ Rewrite part of the snapshot.  The raw log remains untouched for replay/audit.
 
 If the server detects gaps or overlapping ranges it returns `400 Bad Request`.
 
-## Conversation metadata
+## Context metadata
 
-### PATCH `/v1/conversations/:id/metadata`
+### PATCH `/v1/contexts/:id/metadata`
 
-Upsert custom metadata associated with the conversation.  Metadata is stored alongside the snapshot and returned by `GET /v1/conversations/:id`.
+Upsert custom metadata associated with the context.  Metadata is stored alongside the snapshot and returned by `GET /v1/contexts/:id`.
 
 ```json
 { "metadata": { "customer": "acme-corp", "priority": "gold" } }
@@ -178,8 +178,8 @@ Upsert custom metadata associated with the conversation.  Metadata is stored alo
 | --- | --- | --- |
 | `400` | Invalid payload | Schema or validation failure |
 | `401` | Unauthorized | Missing/invalid API key (when enabled) |
-| `404` | Not found | Conversation does not exist |
-| `409` | Conflict | Version guard failed or conversation tombstoned |
+| `404` | Not found | Context does not exist |
+| `409` | Conflict | Version guard failed or context tombstoned |
 | `429` | Rate limited | Per-node rate limiting (configurable) |
 | `500` | Internal error | Unexpected server failure |
 | `503` | Unavailable | No Raft quorum available (retry with backoff) |
@@ -189,6 +189,6 @@ Errors follow a consistent shape:
 ```json
 {
   "error": "conflict",
-  "message": "Conversation version changed (expected 83, found 84)"
+  "message": "Context version changed (expected 83, found 84)"
 }
 ```

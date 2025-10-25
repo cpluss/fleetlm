@@ -8,7 +8,7 @@ sidebar_position: 0
 
 **Context infra for LLM apps.** Fastpaca keeps full history and maintains your LLM context window in one backend service. 
 
-- **[Quick Start](./usage/quickstart.md)** – ship a conversation endpoint in minutes  
+- **[Quick Start](./usage/quickstart.md)** – ship a context endpoint in minutes  
 - **[Getting Started](./usage/getting-started.md)** – understand how the pieces fit  
 - **[API Reference](./api/rest.md)** – REST & websocket surfaces
 
@@ -75,7 +75,7 @@ Need the mental model? Go to [Context Management](./usage/context-management.md)
 - **Token-smart** – enforce token budgets with plug and play compaction strategies.
 - **Self-hosted** – single container, add nodes to cluster with automatic failover, optional Postgres write-behind.  
 
-No agents. No RAG. No model proxy. Only context conversation state that doesn’t fall over.
+No agents. No RAG. No model proxy. Only context context state that doesn’t fall over.
 
 ---
 
@@ -94,4 +94,4 @@ No agents. No RAG. No model proxy. Only context conversation state that doesn’
 - Call the API from code: [TypeScript SDK](./usage/typescript-sdk.md) & [Examples](./usage/examples.md)  
 - Learn the internals: [Architecture](./architecture.md) • [API Reference](./api/rest.md)
 
-**Use ai-sdk for inference. Use Fastpaca for conversation state. Bring your own LLM, framework, and frontend.**
+**Use ai-sdk for inference. Use Fastpaca for context state. Bring your own LLM, framework, and frontend.**

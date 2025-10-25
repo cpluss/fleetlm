@@ -17,9 +17,9 @@ import { streamText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 
 export async function POST(req: Request) {
-  const { conversationId, message } = await req.json();
+  const { contextId, message } = await req.json();
 
-  const ctx = await fastpaca.context(conversationId).budget(1_000_000);
+  const ctx = await fastpaca.context(contextId).budget(1_000_000);
 
   await ctx.append({
     role: 'user',
@@ -94,7 +94,7 @@ if (context.needsCompaction) {
 
 ---
 
-## Switching providers mid-conversation
+## Switching providers mid-context
 
 ```typescript
 const ctx = await fastpaca.context('mixed-sources').budget(1_000_000);
@@ -138,7 +138,7 @@ await ctx.append({
 
 ```bash
 # Append tool call output
-curl -X POST http://localhost:4000/v1/conversations/support/messages \
+curl -X POST http://localhost:4000/v1/contexts/support/messages \
   -H "Content-Type: application/json" \
   -d '{
     "message": {
@@ -153,7 +153,7 @@ curl -X POST http://localhost:4000/v1/conversations/support/messages \
 
 ```bash
 # Replay the last 50 messages
-curl "http://localhost:4000/v1/conversations/support/messages?from_seq=-50"
+curl "http://localhost:4000/v1/contexts/support/messages?from_seq=-50"
 ```
 
 ---

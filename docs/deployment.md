@@ -64,7 +64,7 @@ Fastpaca does not require Postgres for correctness.  Configure it if you need:
 
 - Long-term archival beyond the Raft snapshot retention window.  
 - Analytics / BI queries on the full log.  
-- Faster cold-start recovery for very old conversations.
+- Faster cold-start recovery for very old contexts.
 
 Set environment variables:
 
@@ -85,11 +85,11 @@ Prometheus metrics are exposed on `/metrics`.  Key series:
 
 - `fastpaca_append_latency_ms` (p50/p95)  
 - `fastpaca_context_latency_ms`  
-- `fastpaca_snapshot_token_count` (per conversation)  
+- `fastpaca_snapshot_token_count` (per context)  
 - `fastpaca_compaction_requests_total`  
 - `fastpaca_raft_pending_flush_messages`
 
-Logs follow JSON structure with fields like `type`, `conversation_id`, and `seq`. Forward them to your logging stack for audit trails.
+Logs follow JSON structure with fields like `type`, `context_id`, and `seq`. Forward them to your logging stack for audit trails.
 
 ---
 
@@ -97,7 +97,7 @@ Logs follow JSON structure with fields like `type`, `conversation_id`, and `seq`
 
 - Raft log and snapshots reside in `/data`.  Snapshot the volume regularly (EBS/GCE disk snapshots).  
 - If Postgres is enabled, use standard database backups.  
-- Periodically export conversations for legal or compliance requirements via the `/v1/conversations/:id/messages` endpoint.
+- Periodically export contexts for legal or compliance requirements via the `/v1/contexts/:id/messages` endpoint.
 
 ---
 
