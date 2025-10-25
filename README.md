@@ -5,7 +5,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Elixir](https://img.shields.io/badge/Elixir-1.18.4-purple.svg)](https://elixir-lang.org/)
 
-**Store conversations. Build LLM context. Stream responses.** Fastpaca is a backend-only API that keeps every message durable, keeps your LLM context within budget, and gives you precise compaction hooks—all in one container.
+**Store contexts. Build LLM context. Stream responses.** Fastpaca is a backend-only API that keeps every message durable, keeps your LLM context within budget, and gives you precise compaction hooks—all in one container.
 
 **Context infra for LLM apps.** Fastpaca keeps full history and maintains your LLM context window in one backend service. 
 - **Users need to see every message.**
