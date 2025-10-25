@@ -1,77 +1,48 @@
-# FleetLM - Context infra for LLM apps
+# Fastpaca – Context infra for LLM apps
 
-[![Tests](https://github.com/cpluss/fleetlm/actions/workflows/test.yml/badge.svg)](https://github.com/cpluss/fleetlm/actions/workflows/test.yml)
-[![Docker Build](https://github.com/cpluss/fleetlm/actions/workflows/docker-build.yml/badge.svg)](https://github.com/cpluss/fleetlm/actions/workflows/docker-build.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Tests](https://github.com/fastpaca/fastpaca/actions/workflows/test.yml/badge.svg)](https://github.com/fastpaca/fastpaca/actions/workflows/test.yml)
+[![Docker Build](https://github.com/fastpaca/fastpaca/actions/workflows/docker-build.yml/badge.svg)](https://github.com/fastpaca/fastpaca/actions/workflows/docker-build.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Elixir](https://img.shields.io/badge/Elixir-1.18.4-purple.svg)](https://elixir-lang.org/)
-[![Phoenix](https://img.shields.io/badge/Phoenix-1.8.1-red.svg)](https://phoenixframework.org/)
 
-Context management is killing your costs. RAG + pub/sub + compaction + persistence = complexity that balloons fast.
+**Store conversations. Build LLM context. Stream responses.** Fastpaca is a backend-only API that keeps every message durable, keeps your LLM context within budget, and gives you precise compaction hooks—all in one container.
 
-FleetLM handles the full lifecycle: persist, replay, compact, deliver.
+**Context infra for LLM apps.** Fastpaca keeps full history and maintains your LLM context window in one backend service. 
+- **Users need to see every message.**
+- **LLMs can only see a limited context window.**
 
-[Website](https://fleetlm.com/) · [Documentation](https://docs.fleetlm.com/) · [Benchmarks](https://fleetlm.com/#benchmarks)
+Fastpaca bridges that gap with an append-only history, context compaction, and streaming — all inside one backend service. You stay focused on prompts, tools, UI, and business logic. 
 
----
-
-## The Context Complexity Trap
-
-1. Simple LLM calls → works great
-2. Add persistence → need database
-3. Multi-device sync → need pub/sub
-4. Context limits hit → need compaction
-5. Debug sessions → need event log
-6. **Five systems. Distributed nightmare.**
-
-**FleetLM does all of this out of the box.**
-
-Write stateless REST. Deploy with docker compose. We handle state, ordering, replay and soon compaction.
+- [Docs](https://docs.fastpaca.com) 
+- [Quick Start](https://docs.fastpaca.com/usage/quickstart)
+- [Architecture](https://docs.fastpaca.com/architecture)
 
 ---
-
-## Quick Start
-
-```bash
-# Checkout the repository
-git clone https://github.com/cpluss/fleetlm
-cd fleetlm
-
-# Start postgres + fleetlm
-docker compose up
-```
-
-Server runs at `http://localhost:4000` with WebSocket endpoint at `ws://localhost:4000/socket`.
-
-**Next steps:**
-- [Register an agent](https://docs.fleetlm.com/quickstart#register-an-agent)
-- [Send your first message](https://docs.fleetlm.com/quickstart#send-a-message)
 
 ## Development
 
-- [Read the architecture](https://docs.fleetlm.com/architecture)
-- Local setup without Docker:
-
 ```bash
-mix setup          # Install deps, create DB, run migrations
-mix phx.server     # Start server on :4000
-mix test           # Run test suite
-mix precommit      # Format, compile (warnings-as-errors), test
+# Clone and set up
+git clone https://github.com/fastpaca/fastpaca
+cd fastpaca
+mix setup            # install deps, create DB, run migrations
+
+# Start server on http://localhost:4000
+mix phx.server
+
+# Run tests / precommit checks
+mix test
+mix precommit        # format, compile (warnings-as-errors), test
 ```
-
-## Contributing
-
-Before opening a PR:
-
-1. Run `mix precommit` (compile, format, test)
-2. Add tests for new behavior
-3. Update docs if you change runtime or message flow
-
-If you use a coding agent (claude, codex, etc) make sure they follow `CLAUDE.md` or `AGENTS.md`, and carefully review all output.
-
-## License
-
-Apache 2.0 - see [LICENSE](LICENSE)
 
 ---
 
-**FleetLM makes LLM infra as boring as it should be.**
+## Contributing
+
+We welcome pull requests. Before opening one:
+
+1. Run `mix precommit` (format, compile, test)
+2. Add tests for new behaviour
+3. Update docs if you change runtime behaviour or message flow
+
+If you use a coding agent, make sure it follows `AGENTS.md`/`CLAUDE.md` and review all output carefully.
