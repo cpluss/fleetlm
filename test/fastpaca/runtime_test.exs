@@ -1,6 +1,8 @@
 defmodule Fastpaca.RuntimeTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Fastpaca.Runtime
   alias Fastpaca.Runtime.RaftManager
   alias Fastpaca.Context.Config
@@ -214,109 +216,113 @@ defmodule Fastpaca.RuntimeTest do
 
   describe "Raft failover and recovery" do
     test "recovers state after server crash and restart" do
-      config = %Config{
-        token_budget: 100_000,
-        trigger_ratio: 0.7,
-        policy: %{strategy: :last_n, config: %{limit: 100}}
-      }
+      capture_log(fn ->
+        config = %Config{
+          token_budget: 100_000,
+          trigger_ratio: 0.7,
+          policy: %{strategy: :last_n, config: %{limit: 100}}
+        }
 
-      {:ok, _ctx} = Runtime.upsert_context("ctx-failover", config)
+        {:ok, _ctx} = Runtime.upsert_context("ctx-failover", config)
 
-      {:ok, results1} =
-        Runtime.append_messages("ctx-failover", [
-          {"user", [%{type: "text", text: "before crash"}], %{}, 10}
-        ])
+        {:ok, results1} =
+          Runtime.append_messages("ctx-failover", [
+            {"user", [%{type: "text", text: "before crash"}], %{}, 10}
+          ])
 
-      assert hd(results1).seq == 1
+        assert hd(results1).seq == 1
 
-      # Kill the Raft group
-      group_id = RaftManager.group_for_context("ctx-failover")
-      server_id = RaftManager.server_id(group_id)
-      pid = Process.whereis(server_id)
+        # Kill the Raft group
+        group_id = RaftManager.group_for_context("ctx-failover")
+        server_id = RaftManager.server_id(group_id)
+        pid = Process.whereis(server_id)
 
-      ref = Process.monitor(pid)
-      Process.exit(pid, :kill)
+        ref = Process.monitor(pid)
+        Process.exit(pid, :kill)
 
-      receive do
-        {:DOWN, ^ref, :process, ^pid, _} -> :ok
-      after
-        2000 -> flunk("Raft process did not die")
-      end
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        after
+          2000 -> flunk("Raft process did not die")
+        end
 
-      # Restart the group (may not form cluster in test env)
-      start_result = RaftManager.start_group(group_id)
-      assert start_result in [:ok, {:error, :cluster_not_formed}]
+        # Restart the group (may not form cluster in test env)
+        start_result = RaftManager.start_group(group_id)
+        assert start_result in [:ok, {:error, :cluster_not_formed}]
 
-      # Wait for restart
-      eventually(
-        fn ->
-          assert Process.whereis(server_id)
-        end,
-        timeout: 3_000
-      )
+        # Wait for restart
+        eventually(
+          fn ->
+            assert Process.whereis(server_id)
+          end,
+          timeout: 3_000
+        )
 
-      # Append after crash
-      {:ok, results2} =
-        Runtime.append_messages("ctx-failover", [
-          {"user", [%{type: "text", text: "after crash"}], %{}, 10}
-        ])
+        # Append after crash
+        {:ok, results2} =
+          Runtime.append_messages("ctx-failover", [
+            {"user", [%{type: "text", text: "after crash"}], %{}, 10}
+          ])
 
-      assert hd(results2).seq >= 2
+        assert hd(results2).seq >= 2
 
-      # Verify both messages exist
-      {:ok, messages} = Runtime.get_messages("ctx-failover", 0, 10)
-      texts = Enum.map(messages, &(&1.parts |> hd() |> Map.get(:text)))
+        # Verify both messages exist
+        {:ok, messages} = Runtime.get_messages("ctx-failover", 0, 10)
+        texts = Enum.map(messages, &(&1.parts |> hd() |> Map.get(:text)))
 
-      assert "before crash" in texts
-      assert "after crash" in texts
+        assert "before crash" in texts
+        assert "after crash" in texts
+      end)
     end
 
     test "recovers with thousands of messages after crash" do
-      config = %Config{
-        token_budget: 1_000_000,
-        trigger_ratio: 0.7,
-        policy: %{strategy: :last_n, config: %{limit: 5000}}
-      }
+      capture_log(fn ->
+        config = %Config{
+          token_budget: 1_000_000,
+          trigger_ratio: 0.7,
+          policy: %{strategy: :last_n, config: %{limit: 5000}}
+        }
 
-      {:ok, _ctx} = Runtime.upsert_context("ctx-stress", config)
+        {:ok, _ctx} = Runtime.upsert_context("ctx-stress", config)
 
-      # Append 1000 messages
-      inbound = for i <- 1..1000, do: {"user", [%{type: "text", text: "msg-#{i}"}], %{}, 10}
-      {:ok, results} = Runtime.append_messages("ctx-stress", inbound)
-      assert length(results) == 1000
-      last_seq_before = hd(Enum.reverse(results)).seq
+        # Append 1000 messages
+        inbound = for i <- 1..1000, do: {"user", [%{type: "text", text: "msg-#{i}"}], %{}, 10}
+        {:ok, results} = Runtime.append_messages("ctx-stress", inbound)
+        assert length(results) == 1000
+        last_seq_before = hd(Enum.reverse(results)).seq
 
-      # Kill and restart
-      group_id = RaftManager.group_for_context("ctx-stress")
-      server_id = RaftManager.server_id(group_id)
-      pid = Process.whereis(server_id)
+        # Kill and restart
+        group_id = RaftManager.group_for_context("ctx-stress")
+        server_id = RaftManager.server_id(group_id)
+        pid = Process.whereis(server_id)
 
-      ref = Process.monitor(pid)
-      Process.exit(pid, :kill)
+        ref = Process.monitor(pid)
+        Process.exit(pid, :kill)
 
-      receive do
-        {:DOWN, ^ref, :process, ^pid, _} -> :ok
-      after
-        2000 -> flunk("Raft process did not die")
-      end
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        after
+          2000 -> flunk("Raft process did not die")
+        end
 
-      start_result = RaftManager.start_group(group_id)
-      assert start_result in [:ok, {:error, :cluster_not_formed}]
+        start_result = RaftManager.start_group(group_id)
+        assert start_result in [:ok, {:error, :cluster_not_formed}]
 
-      eventually(
-        fn ->
-          assert Process.whereis(server_id)
-        end,
-        timeout: 3_000
-      )
+        eventually(
+          fn ->
+            assert Process.whereis(server_id)
+          end,
+          timeout: 3_000
+        )
 
-      # Verify all messages still exist
-      {:ok, context} = Runtime.get_context("ctx-stress")
-      assert context.last_seq == last_seq_before
+        # Verify all messages still exist
+        {:ok, context} = Runtime.get_context("ctx-stress")
+        assert context.last_seq == last_seq_before
 
-      {:ok, window} = Runtime.get_context_window("ctx-stress")
-      # Should have messages in window
-      assert length(window.messages) > 0
+        {:ok, window} = Runtime.get_context_window("ctx-stress")
+        # Should have messages in window
+        assert length(window.messages) > 0
+      end)
     end
   end
 
