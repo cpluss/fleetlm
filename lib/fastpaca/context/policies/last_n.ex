@@ -13,7 +13,9 @@ defmodule Fastpaca.Context.Policies.LastN do
   @impl true
   def apply(%LLMContext{messages: messages} = llm_context, config) do
     limit = config[:limit] || @default_limit
-    kept = take_last(messages, limit)
+
+    # Messages are stored newest first, so just take the first N
+    kept = Enum.take(messages, limit)
 
     new_llm_context = %LLMContext{
       llm_context
@@ -23,16 +25,6 @@ defmodule Fastpaca.Context.Policies.LastN do
     }
 
     {:ok, new_llm_context, :compact}
-  end
-
-  defp take_last(list, limit) do
-    count = length(list)
-
-    if count <= limit do
-      list
-    else
-      Enum.slice(list, count - limit, limit)
-    end
   end
 
   defp sum_tokens(messages) do

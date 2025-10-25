@@ -90,9 +90,11 @@ defmodule Fastpaca.Runtime do
   @spec get_context_window(String.t()) :: {:ok, map()} | {:error, term()}
   def get_context_window(id) when is_binary(id) do
     with {:ok, %Context{} = context} <- get_context(id) do
+      alias Fastpaca.Context.LLMContext
+
       {:ok,
        %{
-         messages: context.llm_context.messages,
+         messages: LLMContext.to_list(context.llm_context),
          version: context.version,
          token_count: context.llm_context.token_count,
          metadata: context.llm_context.metadata,

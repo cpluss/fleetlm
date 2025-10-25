@@ -2,7 +2,11 @@ defmodule Fastpaca.Context.LLMContext do
   @moduledoc """
   LLM-facing window (context window) of a context. Contains the compacted view
   of messages that will be sent to the LLM, along with token count tracking.
+
+  Messages are stored in reverse chronological order (newest first) for fast tail access.
   """
+
+  alias __MODULE__, as: LLMContext
 
   @enforce_keys [:messages, :token_count]
   defstruct messages: [], token_count: 0, metadata: %{}
@@ -16,32 +20,39 @@ defmodule Fastpaca.Context.LLMContext do
           metadata: map()
         }
 
-  @type t :: %__MODULE__{
+  @type t :: %LLMContext{
           messages: [ui_message()],
           token_count: non_neg_integer(),
           metadata: map()
         }
 
   @spec new() :: t()
-  def new, do: %__MODULE__{messages: [], token_count: 0, metadata: %{}}
+  def new, do: %LLMContext{messages: [], token_count: 0, metadata: %{}}
 
   @spec append(t(), [ui_message()]) :: t()
-  def append(%__MODULE__{} = llm_context, messages) do
-    %__MODULE__{
+  def append(%LLMContext{} = llm_context, messages) do
+    # Prepend reversed messages (newest first)
+    new_messages = Enum.reverse(messages) ++ llm_context.messages
+
+    %LLMContext{
       llm_context
-      | messages: llm_context.messages ++ messages,
+      | messages: new_messages,
         token_count: llm_context.token_count + sum_tokens(messages)
     }
   end
 
   @spec compact(t(), [ui_message()]) :: t()
-  def compact(%__MODULE__{} = llm_context, messages) do
-    %__MODULE__{
+  def compact(%LLMContext{} = llm_context, messages) do
+    # Messages come in chronological order, reverse for storage
+    %LLMContext{
       llm_context
-      | messages: messages,
+      | messages: Enum.reverse(messages),
         token_count: sum_tokens(messages)
     }
   end
+
+  @spec to_list(t()) :: [ui_message()]
+  def to_list(%LLMContext{messages: messages}), do: Enum.reverse(messages)
 
   defp sum_tokens(messages) do
     Enum.reduce(messages, 0, fn message, acc -> acc + message.token_count end)
