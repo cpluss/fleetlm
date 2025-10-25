@@ -5,11 +5,9 @@ defmodule Fastpaca.RuntimeTest do
   alias Fastpaca.Runtime.RaftManager
   alias Fastpaca.Context.Config
 
-  import Ecto.Query
-
   setup do
     # Clean up any existing Raft groups
-    for group_id <- 0..255 do
+    for group_id <- 0..(RaftManager.num_groups() - 1) do
       server_id = RaftManager.server_id(group_id)
 
       case Process.whereis(server_id) do
@@ -28,11 +26,8 @@ defmodule Fastpaca.RuntimeTest do
       end
     end
 
-    # Clean up test snapshots
-    Fastpaca.Repo.delete_all(from(s in "raft_snapshots"))
-
-    # Small delay to ensure cleanup
-    Process.sleep(50)
+    # Remove residual Raft data on disk
+    Fastpaca.Runtime.TestHelper.reset()
 
     :ok
   end
@@ -436,7 +431,7 @@ defmodule Fastpaca.RuntimeTest do
   end
 
   # Helper to wait for eventually condition
-  defp eventually(fun, opts \\ []) do
+  defp eventually(fun, opts) when is_function(fun, 0) and is_list(opts) do
     timeout = Keyword.get(opts, :timeout, 1000)
     interval = Keyword.get(opts, :interval, 50)
     deadline = System.monotonic_time(:millisecond) + timeout

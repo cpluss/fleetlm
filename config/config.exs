@@ -7,28 +7,23 @@
 # General application configuration
 import Config
 
-config :fleetlm,
-  ecto_repos: [Fastpaca.Repo],
-  generators: [timestamp_type: :utc_datetime]
-
-# Raft configuration
-config :fleetlm,
+config :fastpaca,
   raft_data_dir: "priv/raft",
   raft_flush_interval_ms: 5000
 
-config :fleetlm, Fleetlm.Runtime.DrainCoordinator,
+config :fastpaca, Fastpaca.Runtime.DrainCoordinator,
   drain_timeout: :timer.seconds(5),
   drain_grace_period: :timer.seconds(1)
 
 # Configures the endpoint
-config :fleetlm, FleetlmWeb.Endpoint,
+config :fastpaca, FastpacaWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,
   render_errors: [
-    formats: [json: FleetlmWeb.ErrorJSON],
+    formats: [json: FastpacaWeb.ErrorJSON],
     layout: false
   ],
-  pubsub_server: Fleetlm.PubSub
+  pubsub_server: Fastpaca.PubSub
 
 # Configures Elixir's Logger
 config :logger, :default_formatter,
@@ -40,7 +35,7 @@ config :phoenix, :json_library, Jason
 
 config :libcluster, topologies: []
 
-config :fleetlm, Fleetlm.Observability.PromEx,
+config :fastpaca, Fastpaca.Observability.PromEx,
   metrics_server: :disabled,
   grafana_agent: :disabled
 

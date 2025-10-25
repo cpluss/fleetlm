@@ -12,7 +12,7 @@ import Config
 # If you use `mix release`, you need to explicitly enable the server
 # by passing the PHX_SERVER=true when you start it:
 #
-#     PHX_SERVER=true bin/fleetlm start
+#     PHX_SERVER=true bin/fastpaca start
 #
 # Alternatively, you can use `mix phx.gen.release` to generate a `bin/server`
 # script that automatically sets the env var above.
@@ -49,31 +49,10 @@ if cluster_nodes && cluster_nodes != "" do
 end
 
 if config_env() == :prod do
-  database_url =
-    System.get_env("DATABASE_URL") ||
-      raise """
-      environment variable DATABASE_URL is missing.
-      For example: ecto://USER:PASS@HOST/DATABASE
-      """
-
-  maybe_ipv6 = if System.get_env("ECTO_IPV6") in ~w(true 1), do: [:inet6], else: []
-
   # Optional: Override slot log directory (for mounting NVMe, etc)
   if slot_log_dir = System.get_env("SLOT_LOG_DIR") do
-    config :fleetlm, :slot_log_dir, slot_log_dir
+    config :fastpaca, :slot_log_dir, slot_log_dir
   end
-
-  config :fastpaca, Fastpaca.Repo,
-    # ssl: true,
-    url: database_url,
-    pool_size: String.to_integer(System.get_env("POOL_SIZE") || "25"),
-    queue_target: String.to_integer(System.get_env("DB_QUEUE_TARGET") || "2000"),
-    queue_interval: String.to_integer(System.get_env("DB_QUEUE_INTERVAL") || "500"),
-    timeout: String.to_integer(System.get_env("DB_TIMEOUT") || "30000"),
-    ownership_timeout: String.to_integer(System.get_env("DB_OWNERSHIP_TIMEOUT") || "60000"),
-    # For machines with several cores, consider starting multiple pools of `pool_size`
-    # pool_count: 4,
-    socket_options: maybe_ipv6
 
   # The secret key base is used to sign/encrypt cookies and other secrets.
   # A default value is used in config/dev.exs and config/test.exs but you
@@ -91,7 +70,7 @@ if config_env() == :prod do
   port = String.to_integer(System.get_env("PORT") || "4000")
 
   # Cluster configuration
-  # For production: DNS_CLUSTER_QUERY=fleetlm-headless.default.svc.cluster.local
+  # For production: DNS_CLUSTER_QUERY=fastpaca-headless.default.svc.cluster.local
   # For local dev: CLUSTER_NODES=node1@localhost,node2@localhost
   dns_query = System.get_env("DNS_CLUSTER_QUERY")
   cluster_nodes = System.get_env("CLUSTER_NODES")
@@ -104,12 +83,12 @@ if config_env() == :prod do
     cond do
       dns_query && dns_query != "" ->
         [
-          fleetlm_dns: [
+          fastpaca_dns: [
             strategy: Cluster.Strategy.DNSPoll,
             config: [
               polling_interval: dns_poll_interval,
               query: dns_query,
-              node_basename: System.get_env("DNS_CLUSTER_NODE_BASENAME", "fleetlm")
+              node_basename: System.get_env("DNS_CLUSTER_NODE_BASENAME", "fastpaca")
             ]
           ]
         ]
@@ -180,7 +159,7 @@ if config_env() == :prod do
   # In production you need to configure the mailer to use a different adapter.
   # Here is an example configuration for Mailgun:
   #
-  #     config :fleetlm, Fleetlm.Mailer,
+  #     config :fastpaca, Fastpaca.Mailer,
   #       adapter: Swoosh.Adapters.Mailgun,
   #       api_key: System.get_env("MAILGUN_API_KEY"),
   #       domain: System.get_env("MAILGUN_DOMAIN")

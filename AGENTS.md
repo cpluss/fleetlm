@@ -45,7 +45,7 @@ FleetLM is a clustered Phoenix application that delivers real-time conversations
 
 ## Observability & Testing
 
-- Emit telemetry via helpers in `Fleetlm.Observability.Telemetry`; add new events there so tags stay normalised.
+- Emit telemetry via helpers in `Fastpaca.Observability.Telemetry`; add new events there so tags stay normalised.
 - When you touch collections rendered in LiveView, prefer streams (`stream/3`) and track counts/empty states separately.
 - Use `mix test`, `mix test --failed`, or file-scoped runs to iterate quickly. End every work session with `mix precommit`.
 

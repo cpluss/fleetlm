@@ -9,7 +9,6 @@ defmodule Fastpaca.Application do
 
     children =
       [
-        Fastpaca.Repo,
         pubsub_spec(),
         Fastpaca.Runtime.Supervisor,
         FastpacaWeb.Endpoint,
@@ -54,9 +53,4 @@ defmodule Fastpaca.Application do
       nil
     end
   end
-end
-
-# Temporary alias for mix.exs compatibility
-defmodule Fleetlm.Application do
-  defdelegate start(type, args), to: Fastpaca.Application
 end

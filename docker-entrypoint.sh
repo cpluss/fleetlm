@@ -1,13 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-APP_BIN="/app/fleetlm/bin/fleetlm"
+APP_BIN="/app/fastpaca/bin/fastpaca"
 CMD="${1:-start}"
 MIGRATE_ON_BOOT="${MIGRATE_ON_BOOT:-true}"
 
 run_migrations() {
-  echo "Running database migrations..."
-  "$APP_BIN" eval "Fleetlm.Release.migrate"
+  echo "Skipping database migrations (no database configured for Fastpaca)."
 }
 
 case "$CMD" in

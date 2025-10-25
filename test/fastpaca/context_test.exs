@@ -189,7 +189,7 @@ defmodule Fastpaca.ContextTest do
 
       context = Context.new("ctx-1", config)
 
-      inbound = for i <- 1..10, do: {"user", [%{type: "text"}], %{}, 10}
+      inbound = for _i <- 1..10, do: {"user", [%{type: "text"}], %{}, 10}
       {context, _appended, _flag} = Context.append(context, inbound)
 
       messages = Context.messages_after(context, 0, 5)

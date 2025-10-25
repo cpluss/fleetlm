@@ -1,9 +1,9 @@
-defmodule Fleetlm.MixProject do
+defmodule Fastpaca.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :fleetlm,
+      app: :fastpaca,
       version: "0.1.0",
       elixir: "~> 1.18",
       elixirc_paths: elixirc_paths(Mix.env()),
@@ -21,7 +21,7 @@ defmodule Fleetlm.MixProject do
   # Type `mix help compile.app` for more information.
   def application do
     [
-      mod: {Fleetlm.Application, []},
+      mod: {Fastpaca.Application, []},
       extra_applications: [:logger, :runtime_tools]
     ]
   end
@@ -42,9 +42,6 @@ defmodule Fleetlm.MixProject do
   defp deps do
     [
       {:phoenix, "~> 1.8.1"},
-      {:phoenix_ecto, "~> 4.5"},
-      {:ecto_sql, "~> 3.13"},
-      {:postgrex, ">= 0.0.0"},
       {:phoenix_live_view, "~> 1.0"},
       {:cachex, "~> 3.6"},
       {:prom_ex, "~> 1.11"},
@@ -68,10 +65,8 @@ defmodule Fleetlm.MixProject do
   # See the documentation for `Mix` for more info on aliases.
   defp aliases do
     [
-      setup: ["deps.get", "ecto.setup"],
-      "ecto.setup": ["ecto.create", "ecto.migrate"],
-      "ecto.reset": ["ecto.drop", "ecto.setup"],
-      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
+      setup: ["deps.get"],
+      test: ["test"],
       precommit: ["compile --warning-as-errors", "deps.unlock --unused", "format", "test"]
     ]
   end

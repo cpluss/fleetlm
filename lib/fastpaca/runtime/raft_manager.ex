@@ -24,6 +24,9 @@ defmodule Fastpaca.Runtime.RaftManager do
   @num_lanes 16
   @replication_factor 3
 
+  @doc false
+  def num_groups, do: @num_groups
+
   @doc "Map session_id → group_id (0..#{@num_groups - 1})"
   def group_for_context(session_id) do
     :erlang.phash2(session_id, @num_groups)
