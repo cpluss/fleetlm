@@ -1,18 +1,15 @@
 defmodule Fastpaca.Context.Strategies.Manual do
   @moduledoc """
-  Manual compaction strategy - never auto-compacts.
-
-  Just sets the `needs_compaction` flag when triggered.
-  Client must call POST /contexts/:id/compact manually.
+  Leaves the LLM context untouched; useful when developers manage compaction
+  themselves.
   """
 
-  @behaviour Fastpaca.Context.Strategy
+  @behaviour Fastpaca.Context.Policy
+
+  alias Fastpaca.Context.LLMContext
 
   @impl true
-  def compact(snapshot, _config) do
-    # Never compact automatically
-    # Just flag that compaction is needed
-    new_snapshot = put_in(snapshot.metadata[:needs_compaction], true)
-    {:noop, new_snapshot}
+  def apply(_messages, %LLMContext{} = llm_context, _config) do
+    {:ok, llm_context, :noop}
   end
 end

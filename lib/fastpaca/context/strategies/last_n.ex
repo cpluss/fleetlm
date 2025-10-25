@@ -1,44 +1,40 @@
 defmodule Fastpaca.Context.Strategies.LastN do
   @moduledoc """
-  Keeps only the last N messages in the context.
-
-  Config:
-  - `limit`: Maximum number of messages to keep (default: 200)
-
-  When triggered, drops older messages beyond the limit.
+  Keeps only the last N messages in the LLM context while preserving the full
+  append-only log.
   """
 
-  @behaviour Fastpaca.Context.Strategy
+  @behaviour Fastpaca.Context.Policy
 
-  alias Fastpaca.Context.Snapshot
+  alias Fastpaca.Context.LLMContext
 
   @default_limit 200
 
   @impl true
-  def compact(snapshot, config) do
-    limit = Map.get(config, :limit, Map.get(config, "limit", @default_limit))
+  def apply(messages, %LLMContext{} = _existing, config) do
+    limit = config[:limit] || @default_limit
+    kept = take_last(messages, limit)
 
-    all_messages = (snapshot.summary_messages || []) ++ (snapshot.pending_messages || [])
+    llm_context = %LLMContext{
+      messages: kept,
+      token_count: sum_tokens(kept),
+      metadata: %{strategy: "last_n", limit: limit}
+    }
 
-    if length(all_messages) > limit do
-      # Drop oldest messages
-      kept_messages = Enum.take(all_messages, -limit)
-      dropped_messages = Enum.take(all_messages, length(all_messages) - limit)
+    {:ok, llm_context, :compact}
+  end
 
-      from_seq = hd(all_messages).seq
-      to_seq = List.last(dropped_messages).seq
+  defp take_last(list, limit) do
+    count = length(list)
 
-      new_snapshot = %{
-        snapshot
-        | summary_messages: [],
-          pending_messages: kept_messages,
-          last_compacted_seq: to_seq
-      }
-
-      {:ok, new_snapshot, from_seq, to_seq}
+    if count <= limit do
+      list
     else
-      # Not enough messages yet
-      {:noop, snapshot}
+      Enum.slice(list, count - limit, limit)
     end
+  end
+
+  defp sum_tokens(messages) do
+    Enum.reduce(messages, 0, fn message, acc -> acc + message.token_count end)
   end
 end
