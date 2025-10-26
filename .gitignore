@@ -56,6 +56,12 @@ docs-site/.docusaurus
 docs-site/build
 
 examples/*/node_modules
+examples/*/.next
+examples/*/.env*
+
+# SDK artifacts
+sdk/**/node_modules
+sdk/**/dist
 
 # osx ..
 .DS_Store
