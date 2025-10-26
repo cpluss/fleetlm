@@ -17,15 +17,17 @@ Fastpaca works on the concept of *context contexts*. Each context contains two t
 Contexts are created with a unique identifier that you create yourself, as long as it is globally unique it works. That way you can track & reuse contexts in your product.
 
 ```typescript
-const ctx = fastpaca.context('123456')
+import { createClient } from 'fastpaca';
+
+const fastpaca = createClient({ baseUrl: process.env.FASTPACA_URL || 'http://localhost:4000/v1' });
+const ctx = await fastpaca.context('123456', {
   // The token budget for this context, tunable and defaults to 8k to be conservative.
-  .budget(1_000_000)  
-  // Optionally tune the compaction trigger, ie. at what point will we trigger
-  // compaction.
-  .trigger(0.7)
-  // You can select a compaction policy manually, and eg. only retain 400 
-  // messages.
-  .policy({ strategy: 'last_n', config: { limit: 400 }})
+  budget: 1_000_000,
+  // Optionally tune the compaction trigger, i.e. at what point will we trigger compaction.
+  trigger: 0.7,
+  // You can select a compaction policy manually, and e.g. only retain 400 messages.
+  policy: { strategy: 'last_n', config: { limit: 400 } }
+});
 ```
 
 This context acts as your soruce of truth to recognise a context in the future, to be reused across requests. Do note that budget, trigger, and policy are only necessary if you want to tune it - and changing it only changes context behaviour on _new_ contexts created.
@@ -54,14 +56,14 @@ Fastpaca doesn't care about the shape of the parts, nor metadata, and only requi
 Request the context whenever you need to call your LLM.
 
 ```typescript
-const {usedTokens, messages, needsCompaction} = await ctx.context();
+const { usedTokens, messages, needsCompaction } = await ctx.context();
 const result = await generateText({
   model: openai('gpt-4o-mini'),
-  messages: messages
+  messages
 });
 
 // Append the result - do not forget this.
-ctx.append(result)
+await ctx.append({ role: 'assistant', parts: [{ type: 'text', text: result.text }] });
 ```
 
 The context also stores an *estimated* size of how many tokens it includes, as well as a flag whether compaction is necessary or not. The compaction flag can be safely ignored unless you have explicitly disabled compaction and want to manage it yourself.
@@ -71,12 +73,10 @@ The context also stores an *estimated* size of how many tokens it includes, as w
 The best UX streams intermediary results directly to the UI, but not to worry: fastpaca supports this out of the box so you don't need to manually add each part to the context.
 
 ```typescript
-const stream = ctx.stream((messages) => streamText({
+return ctx.stream((messages) => streamText({
   model: openai('gpt-4o-mini'),
-  messages: messages
+  messages
 }));
-
-return stream.toResponse();
 ```
 
 This will automatically consume the stream results and append them to the context as they arrive, and still allows you to build a responsive product on top.
@@ -88,19 +88,13 @@ Reading messages is fairly straightforward, but can be time consuming. Usually w
 Fastpaca takes this into account and allows you to fetch partial messages based on their sequence numbers, which is used to fetch messages the user can actually see.
 
 ```typescript
-const ctx = fastpaca.context('12345');
+const ctx = await fastpaca.context('12345');
 
-// Fetch the last ~50 messages, most likely stored in
-// memory already so should be low latency.
-const tail = await ctx.get_messages({ tail_offset: 50 });
+// Fetch the last ~50 messages (from the tail)
+const latest = await ctx.getTail({ offset: 0, limit: 50 });
 
-// In case your user starts to scroll you may add UI elements to 
-// fetch the rest of the context
-const one_page_up = await ctx.get_messages({ tail_offset: 100,  limit: 50 });
-
-// Fetches the entire user history, in cases where you have millions of
-// messages beware.
-const all_messages = await ctx.get_messages();
+// In case your user starts to scroll you may add UI elements to fetch more
+const onePageUp = await ctx.getTail({ offset: 50, limit: 50 });
 ```
 
 ---
@@ -110,23 +104,13 @@ const all_messages = await ctx.get_messages();
 Fastpaca works best when managing compaction for you so you don't need to think about it, but in case you have a product requirement where you need to manage it by yourself it is supported out of the box.
 
 ```typescript
-const ctx = fastpaca.context('12345')
-  // NOTE: this is required, otherwise you'll run compaction
-  // twice!
-  .disable_compaction();
-
-const { messages, needsCompaction } = await ctx.context();
-// We can rewrite history ourselves at any point, but it's best
-// to do when we hit the context window thresholds
+const { needsCompaction, messages } = await ctx.context();
 if (needsCompaction) {
-  await ctx.compact({
-    // This will completely rewrite the context window that the LLM
-    // sees on subsequent requests, but NOT what the user can see.
-    messages: [
-      { role: 'system', content: summarize(messages) }, 
-      ...messages
-    ]
-  });
+  const { summary, remainingMessages } = await summarise(messages);
+  await ctx.compact([
+    { role: 'system', parts: [{ type: 'text', text: summary }] },
+    ...remainingMessages
+  ]);
 }
 ```
 

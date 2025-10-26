@@ -12,14 +12,15 @@ End-to-end snippets that show how Fastpaca fits into common workflows.
 ## Streaming chat route (Next.js + ai-sdk)
 
 ```typescript title="app/api/chat/route.ts"
-import { fastpaca } from 'fastpaca';
+import { createClient } from 'fastpaca';
 import { streamText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 
 export async function POST(req: Request) {
   const { contextId, message } = await req.json();
 
-  const ctx = await fastpaca.context(contextId).budget(1_000_000);
+  const fastpaca = createClient({ baseUrl: process.env.FASTPACA_URL || 'http://localhost:4000/v1' });
+  const ctx = await fastpaca.context(contextId, { budget: 1_000_000 });
 
   await ctx.append({
     role: 'user',
@@ -28,7 +29,7 @@ export async function POST(req: Request) {
 
   return ctx.stream((messages) =>
     streamText({ model: openai('gpt-4o-mini'), messages })
-  ).toResponse();
+  );
 }
 ```
 
@@ -37,11 +38,12 @@ export async function POST(req: Request) {
 ## Non-streaming response (Anthropic)
 
 ```typescript
-import { fastpaca } from 'fastpaca';
+import { createClient } from 'fastpaca';
 import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 
-const ctx = await fastpaca.context('chat_non_stream').budget(1_000_000);
+const fastpaca = createClient({ baseUrl: process.env.FASTPACA_URL || 'http://localhost:4000/v1' });
+const ctx = await fastpaca.context('chat_non_stream', { budget: 1_000_000 });
 
 await ctx.append({
   role: 'user',
@@ -66,29 +68,14 @@ await ctx.append({
 ## Manual compaction with LLM-generated summary
 
 ```typescript
-const context = await ctx.context();
+const { needsCompaction, messages } = await ctx.context();
 
-if (context.needsCompaction) {
-  const head = context.messages.slice(0, -8);
-
-  const { text: summary } = await generateText({
-    model: openai('gpt-4o-mini'),
-    messages: [
-      {
-        role: 'system',
-        parts: [{ type: 'text', text: 'Summarise the following chat in one paragraph.' }]
-      },
-      ...head
-    ]
-  });
-
-  await ctx.compact({
-    fromSeq: head[0].seq,
-    toSeq: head[head.length - 1].seq,
-    replacement: [
-      { role: 'system', parts: [{ type: 'text', text: summary }] }
-    ]
-  });
+if (needsCompaction) {
+  const { summary, remainingMessages } = await summarise(messages);
+  await ctx.compact([
+    { role: 'system', parts: [{ type: 'text', text: summary }] },
+    ...remainingMessages
+  ]);
 }
 ```
 
@@ -97,7 +84,8 @@ if (context.needsCompaction) {
 ## Switching providers mid-context
 
 ```typescript
-const ctx = await fastpaca.context('mixed-sources').budget(1_000_000);
+const fastpaca = createClient({ baseUrl: process.env.FASTPACA_URL || 'http://localhost:4000/v1' });
+const ctx = await fastpaca.context('mixed-sources', { budget: 1_000_000 });
 
 await ctx.append({
   role: 'user',

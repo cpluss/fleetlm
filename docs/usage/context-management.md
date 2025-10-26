@@ -32,9 +32,10 @@ curl -X PUT http://localhost:4000/v1/contexts/docs-demo \
   -H "Content-Type: application/json" \
   -d '{
     "token_budget": 1000000,
+    "trigger_ratio": 0.65,
     "policy": {
       "strategy": "last_n",
-      "config": { "limit": 400, "trigger_ratio": 0.65 }
+      "config": { "limit": 400 }
     }
   }'
 ```

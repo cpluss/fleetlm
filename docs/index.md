@@ -27,42 +27,41 @@ Fastpaca bridges that gap with an append-only history, context compaction, and s
 
 ## How Fastpaca Works
 
-1. **Choose a budget & strategy** – every context sets its token budget and compaction policy up front. Use built-ins (`last_n`, `strip_tool_results`, `budget`, time-aware) or register your own module.  
+1. **Choose a budget & context policy** – every context sets its token budget and compaction policy up front.
    ```ts
-   const ctx = await fastpaca.context('chat_42')
-     .budget(1_000_000)
-     .trigger(0.7 /* 70% */)
-     .policy({ strategy: 'last_n', config: { limit: 400 } });
+   const ctx = await fastpaca.context('chat_42', {
+     budget: 1_000_000,
+     trigger: 0.7,
+     policy: { strategy: 'last_n', config: { limit: 400 } }
+   });
    ```
-2. **Append from your backend** – Fastpaca stores every message in an append-only log (Raft, idempotent writes).  
+2. **Append from your backend** – Any message from your LLMs or your users.
    ```ts
    await ctx.append({
      role: 'user',
-     content: 'What changed in the latest release?'
+     parts: [{ type: 'text', text: 'What changed in the latest release?' }]
    });
    ```
-3. **Fetch the window & call your LLM** – ask for the token-budgeted transcript and hand it to ai-sdk, LangChain, or raw SDKs.  
+3. **Call your LLM** – Fetch the compacted context and hand it to your LLM.
    ```ts
    const stream = ctx.stream((messages) => streamText({
      model: openai('gpt-4o-mini'),
-     messages: messages
+     messages
    }));
 
    return stream.toResponse();
    ```
-4. (optional) **Compact on your terms** – `needCompaction` indicates we hit the budget, and you can rewrite history whenever you want.
+4. (optional) **Compact on your terms** – when the policy is set to `manual`.
    ```ts
-   if (window.needsCompaction) {
-     await ctx.compact({
-       messages: [
-         { role: 'system', content: summarize(messages) }, 
-         ...messages
-       ]
-     });
+   const { needsCompaction, messages } = await ctx.context();
+   if (needsCompaction) {
+     const { summary, remainingMessages } = await summarise(messages);
+     await ctx.compact([
+       { role: 'system', parts: [{ type: 'text', text: summary }] },
+       ...remainingMessages
+     ]);
    }
    ```
-
-Fastpaca never sits between your frontend and LLM. It’s backend-only: append, window, compact, replay, stream.
 
 Need the mental model? Go to [Context Management](./usage/context-management.md). Want to hack now? Hit [Quick Start](./usage/quickstart.md).
 
@@ -70,12 +69,12 @@ Need the mental model? Go to [Context Management](./usage/context-management.md)
 
 ## Why Teams Pick Fastpaca
 
-- **Stack agnostic** – works with ai-sdk, LangChain, raw OpenAI/Anthropic calls.  
-- **Durable by default** – distributed system consensus, idempotent appends, zero silent drops.  
-- **Token-smart** – enforce token budgets with plug and play compaction strategies.
-- **Self-hosted** – single container, add nodes to cluster with automatic failover, optional Postgres write-behind.  
+- **Stack agnostic** – Bring your own framework. Works natively with ai-sdk. Use LangChain, raw OpenAI/Anthropic calls, whatever you fancy.
+- **Horizontally scalable** – Distributed consensus, idempotent appends, automatic failover. Scale nodes horizontally without risk.
+- **Token-smart** – Enforce token budgets with built-in compaction policies. Stay within limits automatically.
+- **Self-hosted** – Single container by default.
 
-No agents. No RAG. No model proxy. Only context context state that doesn’t fall over.
+Context context state that doesn’t fall over.
 
 ---
 

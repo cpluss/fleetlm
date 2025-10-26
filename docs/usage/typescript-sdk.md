@@ -21,13 +21,12 @@ const fastpaca = createClient({
   apiKey: process.env.FASTPACA_API_KEY // optional
 });
 
-const ctx = fastpaca.context('123456')
-  .budget(1_000_000)  // token budget for this context
-  .trigger(0.7)       // optional trigger ratio (defaults to 0.7)
-  .policy({           // optional policy (defaults to last_n)
-    strategy: 'last_n',
-    config: { limit: 400 }
-  });
+// Idempotent create/update when options are provided
+const ctx = await fastpaca.context('123456', {
+  budget: 1_000_000,              // token budget for this context
+  trigger: 0.7,                   // optional trigger ratio (defaults to 0.7)
+  policy: { strategy: 'last_n', config: { limit: 400 } }
+});
 ```
 
 `context(id)` never creates IDs for you—you decide what to use so you can continue the same context later.
@@ -42,9 +41,13 @@ await ctx.append({
     { type: 'tool_call', name: 'lookup_manual', payload: { article: 'installing' } }
   ],
   metadata: { reasoning: 'User asked for deployment steps.' }
-}, {
-  idempotencyKey: 'msg-017'
-});
+}, { idempotencyKey: 'msg-017' });
+
+// Optionally pass known token count for accuracy
+await ctx.append({
+  role: 'assistant',
+  parts: [{ type: 'text', text: 'OK!' }]
+}, { tokenCount: 12 });
 ```
 
 Messages are stored exactly as you send them and receive a deterministic `seq` for ordering. Reuse the same `idempotencyKey` when retrying failed requests.
@@ -54,12 +57,15 @@ Messages are stored exactly as you send them and receive a deterministic `seq` f
 ```typescript
 const { usedTokens, messages, needsCompaction } = await ctx.context();
 
-const completion = await generateText({
+const { text } = await generateText({
   model: openai('gpt-4o-mini'),
   messages
 });
 
-await ctx.append(completion);
+await ctx.append({
+  role: 'assistant',
+  parts: [{ type: 'text', text }]
+});
 ```
 
 `needsCompaction` is a hint; ignore it unless you’ve opted to handle compaction yourself.
@@ -67,40 +73,38 @@ await ctx.append(completion);
 ## 4. Stream responses
 
 ```typescript
+// Returns a Response suitable for Next.js/Express.
+// Append in onFinish:
 return ctx.stream(messages =>
-  streamText({ model: openai('gpt-4o-mini'), messages })
-).toResponse();
+  streamText({
+    model: openai('gpt-4o-mini'),
+    messages,
+    onFinish: async ({ text }) => {
+      await ctx.append({ role: 'assistant', parts: [{ type: 'text', text }] });
+    },
+  })
+);
 ```
 
-Fastpaca fetches the context, calls your function, streams tokens to your caller, and appends the final assistant message. Pass `{ autoAppend: false }` if you want to append manually.
+Fastpaca fetches the context, calls your function, and streams tokens to your caller. Append the final assistant message in your `onFinish` handler.
 
 ## 5. Fetch messages for your UI
 
 ```typescript
-const tail = await ctx.get_messages({ tail_offset: 50 });        // last ~50 messages
-const previous = await ctx.get_messages({ tail_offset: 100, limit: 50 });
-const entireHistory = await ctx.get_messages();
+const latest = await ctx.getTail({ offset: 0, limit: 50 });     // last ~50 messages
+const previous = await ctx.getTail({ offset: 50, limit: 50 });  // next page back in time
 ```
 
 ## 6. Optional: manage compaction yourself
 
 ```typescript
-const ctx = fastpaca.context('manual-demo')
-  .budget(1_000_000)
-  .disable_compaction();
-
-const context = await ctx.context();
-
-if (context.needsCompaction) {
-  const head = context.messages.slice(0, -6);
-  const summary = await summarize(head);
-
-  await ctx.compact({
-    messages: [
-      { role: 'system', parts: [{ type: 'text', text: summary }] },
-      ...context.messages.slice(-6)
-    ]
-  });
+const { needsCompaction, messages } = await ctx.context();
+if (needsCompaction) {
+  const { summary, remainingMessages } = await summarise(messages);
+  await ctx.compact([
+    { role: 'system', parts: [{ type: 'text', text: summary }] },
+    ...remainingMessages
+  ]);
 }
 ```
 
@@ -111,5 +115,9 @@ This rewrites only what the LLM will see. Users still get the full message log.
 - Append conflicts return `409 Conflict` when you pass `ifVersion` (optimistic concurrency).  
 - Network retries are safe when you reuse the same `idempotencyKey`.  
 - Streaming propagates LLM errors directly; Fastpaca only appends once the stream succeeds.
+
+Notes:
+- The server computes message token counts by default; pass `tokenCount` when you have an accurate value.
+- Use `ctx.context({ budgetTokens: ... })` to temporarily override the budget.
 
 See the [REST API reference](../api/rest.md) for exact payloads.

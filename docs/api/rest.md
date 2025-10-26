@@ -16,9 +16,10 @@ Create or update a context. Idempotent (`PUT`).
 ```json title="Request body"
 {
   "token_budget": 1000000,
+  "trigger_ratio": 0.7,
   "policy": {
     "strategy": "last_n",
-    "config": { "limit": 400, "trigger_ratio": 0.7 }
+    "config": { "limit": 400 }
   },
   "metadata": {
     "project": "support"
@@ -61,6 +62,7 @@ Append a message.
       { "type": "text", "text": "Checking now…" },
       { "type": "tool_call", "name": "lookup", "payload": { "sku": "A-19" } }
     ],
+    "token_count": 128,
     "metadata": { "reasoning": "User asked for availability." }
   },
   "idempotency_key": "msg-045",
@@ -72,6 +74,7 @@ Append a message.
 { "seq": 42, "version": 42, "token_estimate": 128 }
 ```
 
+- `token_count` (optional): when provided, the server uses it verbatim. If omitted, the server computes an approximate value.
 - `idempotency_key` is optional but recommended for retries.  
 - `if_version` enforces optimistic concurrency. The server returns `409 Conflict` if the current version does not match.
 
@@ -166,19 +169,18 @@ Query parameters:
 
 ### POST `/v1/contexts/:id/compact`
 
-Rewrite part of the snapshot.  The raw log remains untouched for replay/audit.
+Rewrite the LLM context snapshot in full. The raw message log remains untouched for replay/audit. This is an all-or-nothing replacement of the current LLM window.
 
 ```json title="Request body"
 {
-  "from_seq": 1,
-  "to_seq": 340,
   "replacement": [
     {
       "role": "system",
       "parts": [
-        { "type": "text", "text": "Summary covering seq 1-340…" }
+        { "type": "text", "text": "One-paragraph summary of prior context…" }
       ]
-    }
+    },
+    { "role": "user", "parts": [{ "type": "text", "text": "The most recent question." }] }
   ],
   "if_version": 83
 }
@@ -188,7 +190,7 @@ Rewrite part of the snapshot.  The raw log remains untouched for replay/audit.
 { "version": 84 }
 ```
 
-If the server detects gaps or overlapping ranges it returns `400 Bad Request`.
+Partial ranges are not supported. To preserve a tail, include those messages in `replacement`.
 
 ## Context metadata
 

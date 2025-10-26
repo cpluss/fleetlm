@@ -97,14 +97,15 @@ Feed `messages` directly into your LLM client.
 Plug and play with ai-sdk by default in typescript!
 
 ```typescript title="app/api/chat/route.ts"
-import { fastpaca } from 'fastpaca';
+import { createClient } from 'fastpaca';
 import { streamText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 
 export async function POST(req: Request) {
   const { contextId, message } = await req.json();
 
-  const ctx = await fastpaca.context(contextId).budget(1_000_000);
+  const fastpaca = createClient({ baseUrl: process.env.FASTPACA_URL || 'http://localhost:4000/v1' });
+  const ctx = await fastpaca.context(contextId, { budget: 1_000_000 });
 
   await ctx.append({
     role: 'user',
@@ -113,7 +114,7 @@ export async function POST(req: Request) {
 
   return ctx.stream(messages =>
     streamText({ model: openai('gpt-4o-mini'), messages })
-  ).toResponse();
+  );
 }
 ```
 
