@@ -83,7 +83,7 @@ defmodule Fastpaca.Context do
       context
       | config: config,
         status: Keyword.get(opts, :status, context.status),
-        metadata: Keyword.get(opts, :metadata, context.metadata || %{}),
+        metadata: Keyword.get(opts, :metadata, context.metadata),
         updated_at: now
     }
   end
@@ -97,13 +97,16 @@ defmodule Fastpaca.Context do
 
     {new_llm_context, flag} =
       if exceeds_trigger?(llm_context.token_count, context.config) do
-        cfg = context.config.policy.config || %{}
-
         {:ok, new_llm_context, flag} =
           case context.config.policy.strategy do
-            :skip_parts -> Fastpaca.Context.Policies.SkipParts.apply(llm_context, cfg)
-            :manual -> Fastpaca.Context.Policies.Manual.apply(llm_context, cfg)
-            :last_n -> Fastpaca.Context.Policies.LastN.apply(llm_context, cfg)
+            :skip_parts ->
+              Fastpaca.Context.Policies.SkipParts.apply(llm_context, context.config.policy.config)
+
+            :manual ->
+              Fastpaca.Context.Policies.Manual.apply(llm_context, context.config.policy.config)
+
+            :last_n ->
+              Fastpaca.Context.Policies.LastN.apply(llm_context, context.config.policy.config)
           end
 
         {new_llm_context, flag}
@@ -141,9 +144,21 @@ defmodule Fastpaca.Context do
   def tombstone(%Context{} = context),
     do: %Context{context | status: :tombstoned, updated_at: NaiveDateTime.utc_now()}
 
-  @spec messages_after(t(), non_neg_integer(), pos_integer() | :infinity) :: [ui_message()]
-  def messages_after(%Context{} = context, after_seq, limit),
-    do: MessageLog.slice(context.message_log, after_seq, limit)
+  @doc """
+  Retrieves messages from the tail (newest) with offset-based pagination.
+
+  Designed for backward iteration from the most recent messages. Future-proof
+  for scenarios where older messages may be paged from disk/remote storage.
+
+  ## Parameters
+    - `offset`: Number of messages to skip from tail (0 = most recent)
+    - `limit`: Maximum messages to return
+
+  Returns messages in chronological order (oldest to newest).
+  """
+  @spec messages_tail(t(), non_neg_integer(), pos_integer()) :: [ui_message()]
+  def messages_tail(%Context{} = context, offset, limit),
+    do: MessageLog.tail_with_offset(context.message_log, offset, limit)
 
   @spec needs_compaction?(t()) :: boolean()
   def needs_compaction?(%Context{} = context) do

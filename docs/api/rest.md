@@ -75,14 +75,23 @@ Append a message.
 - `idempotency_key` is optional but recommended for retries.  
 - `if_version` enforces optimistic concurrency. The server returns `409 Conflict` if the current version does not match.
 
-### GET `/v1/contexts/:id/messages`
+### GET `/v1/contexts/:id/tail`
 
-Page through the message log. Supports `from_seq`/`to_seq`, `cursor`/`limit`, and negative offsets.
+Retrieve messages with tail-based pagination (newest to oldest). Designed for backward iteration from recent messages, ideal for infinite scroll, mobile apps, and future tiered storage.
 
-```
-GET /v1/contexts/demo/messages?from_seq=101&to_seq=120
-GET /v1/contexts/demo/messages?cursor=200&limit=50
-GET /v1/contexts/demo/messages?from_seq=-100          # last 100 messages
+Query parameters:
+- `limit` (integer, default: 100) – Maximum messages to return
+- `offset` (integer, default: 0) – Number of messages to skip from tail (0 = most recent)
+
+```bash
+# Get last 50 messages
+GET /v1/contexts/demo/tail?limit=50
+
+# Get next page (messages 51-100 from tail)
+GET /v1/contexts/demo/tail?offset=50&limit=50
+
+# Get third page (messages 101-150 from tail)
+GET /v1/contexts/demo/tail?offset=100&limit=50
 ```
 
 Response:
@@ -91,17 +100,43 @@ Response:
 {
   "messages": [
     {
-      "seq": 101,
+      "seq": 951,
       "role": "user",
       "parts": [{ "type": "text", "text": "…" }],
+      "token_count": 42,
+      "metadata": {},
       "inserted_at": "2025-01-24T12:00:00Z"
+    },
+    {
+      "seq": 952,
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "…" }],
+      "token_count": 128,
+      "metadata": {},
+      "inserted_at": "2025-01-24T12:00:15Z"
     }
-  ],
-  "next_cursor": 200
+  ]
 }
 ```
 
-Use `next_cursor` to continue paging or resume after a disconnect.
+Messages are returned in **chronological order** (oldest to newest in the result). Empty array indicates you've reached the beginning of history.
+
+**Pagination pattern:**
+```typescript
+let offset = 0;
+const limit = 100;
+
+while (true) {
+  const { messages } = await fetch(
+    `/v1/contexts/${id}/tail?offset=${offset}&limit=${limit}`
+  ).then(r => r.json());
+
+  if (messages.length === 0) break; // Reached beginning
+
+  displayMessages(messages);
+  offset += messages.length;
+}
+```
 
 ## LLM context
 

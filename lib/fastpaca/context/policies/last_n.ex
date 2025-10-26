@@ -8,12 +8,9 @@ defmodule Fastpaca.Context.Policies.LastN do
 
   alias Fastpaca.Context.LLMContext
 
-  @default_limit 200
-
   @impl true
-  def apply(%LLMContext{messages: messages} = llm_context, config) do
-    limit = config[:limit] || @default_limit
-
+  def apply(%LLMContext{messages: messages} = llm_context, %{limit: limit})
+      when is_integer(limit) and limit > 0 do
     # Messages are stored newest first, so just take the first N
     kept = Enum.take(messages, limit)
 

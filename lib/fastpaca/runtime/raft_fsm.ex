@@ -118,11 +118,15 @@ defmodule Fastpaca.Runtime.RaftFSM do
   # Queries
   # ---------------------------------------------------------------------------
 
-  def query_messages(state, lane_id, context_id, after_seq) do
+  @doc """
+  Query messages from the tail (newest) with offset-based pagination.
+
+  Optimized for backward iteration starting from most recent messages.
+  """
+  def query_messages_tail(state, lane_id, context_id, offset, limit) do
     with {:ok, lane} <- Map.fetch(state.lanes, lane_id),
          {:ok, context} <- fetch_context(lane, context_id) do
-      context
-      |> Context.messages_after(after_seq, :infinity)
+      Context.messages_tail(context, offset, limit)
     else
       _ -> []
     end

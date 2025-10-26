@@ -25,7 +25,14 @@ defmodule FastpacaWeb.FallbackController do
     |> json(%{error: "context_tombstoned"})
   end
 
-  def call(conn, {:error, reason}) when reason in [:invalid_message, :invalid_replacement] do
+  def call(conn, {:error, reason})
+      when reason in [
+             :invalid_message,
+             :invalid_replacement,
+             :invalid_replacement_message,
+             :invalid_context_config,
+             :invalid_metadata
+           ] do
     conn
     |> put_status(:bad_request)
     |> json(%{error: to_string(reason)})

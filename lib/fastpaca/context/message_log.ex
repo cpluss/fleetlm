@@ -58,34 +58,27 @@ defmodule Fastpaca.Context.MessageLog do
     |> Enum.reverse()
   end
 
-  @spec slice(t(), non_neg_integer(), pos_integer() | :infinity) :: [entry()]
-  def slice(%MessageLog{entries: entries}, after_seq, :infinity) do
+  @doc """
+  Retrieves messages from the tail (newest) with an offset and limit.
+
+  ## Parameters
+    - `offset`: Number of messages to skip from the tail (0 = most recent)
+    - `limit`: Maximum number of messages to return
+
+  ## Examples
+      # Get last 50 messages
+      tail_with_offset(log, 0, 50)
+
+      # Get messages 51-100 from the tail
+      tail_with_offset(log, 50, 50)
+
+  Returns messages in chronological order (oldest to newest in the result).
+  """
+  @spec tail_with_offset(t(), non_neg_integer(), pos_integer()) :: [entry()]
+  def tail_with_offset(%MessageLog{entries: entries}, offset, limit) do
     entries
-    |> take_while_reverse(&(&1.seq > after_seq), :infinity)
+    |> Enum.drop(offset)
+    |> Enum.take(limit)
     |> Enum.reverse()
-  end
-
-  def slice(%MessageLog{entries: entries}, after_seq, limit) do
-    entries
-    |> take_while_reverse(&(&1.seq > after_seq), limit)
-    |> Enum.reverse()
-  end
-
-  # Take while predicate is true, with limit, from a reverse-ordered list
-  defp take_while_reverse(list, pred, limit) do
-    take_while_reverse(list, pred, limit, [])
-  end
-
-  defp take_while_reverse([], _pred, _limit, acc), do: acc
-
-  defp take_while_reverse(_list, _pred, 0, acc), do: acc
-
-  defp take_while_reverse([head | tail], pred, limit, acc) do
-    if pred.(head) do
-      new_limit = if limit == :infinity, do: :infinity, else: limit - 1
-      take_while_reverse(tail, pred, new_limit, [head | acc])
-    else
-      acc
-    end
   end
 end

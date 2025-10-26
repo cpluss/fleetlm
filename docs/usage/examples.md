@@ -152,8 +152,8 @@ curl -X POST http://localhost:4000/v1/contexts/support/messages \
 ```
 
 ```bash
-# Replay the last 50 messages
-curl "http://localhost:4000/v1/contexts/support/messages?from_seq=-50"
+# Get the last 50 messages
+curl "http://localhost:4000/v1/contexts/support/tail?limit=50"
 ```
 
 ---

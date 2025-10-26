@@ -9,13 +9,9 @@ defmodule Fastpaca.Context.Policies.SkipParts do
   alias Fastpaca.Context.LLMContext
   alias Fastpaca.Context.Policies.LastN
 
-  @default_skip_kinds [:tool]
-
   @impl true
-  def apply(%LLMContext{messages: messages} = llm_context, config) do
-    skip_kinds = config[:skip_kinds] || @default_skip_kinds
-    limit = config[:limit]
-
+  def apply(%LLMContext{messages: messages} = llm_context, %{skip_kinds: skip_kinds, limit: limit})
+      when is_list(skip_kinds) and is_integer(limit) and limit > 0 do
     filtered =
       Enum.filter(messages, fn message ->
         Enum.all?(message.parts, fn %{type: type} ->
@@ -30,7 +26,7 @@ defmodule Fastpaca.Context.Policies.SkipParts do
       LastN.apply(filtered_llm_context, strategy_config)
 
     skipped = length(messages) - length(filtered)
-    metadata = Map.put(compacted_llm_context.metadata || %{}, :skipped_parts, skipped)
+    metadata = Map.put(compacted_llm_context.metadata, :skipped_parts, skipped)
 
     {:ok, %{compacted_llm_context | metadata: metadata}, flag}
   end

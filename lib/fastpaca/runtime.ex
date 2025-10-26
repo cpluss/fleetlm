@@ -37,7 +37,7 @@ defmodule Fastpaca.Runtime do
   @spec get_context(String.t()) :: {:ok, Context.t()} | {:error, term()}
   def get_context(id) when is_binary(id) do
     with {:ok, server_id, lane, _group} <- locate(id) do
-      case :ra.local_query({server_id, Node.self()}, fn state ->
+      case :ra.consistent_query(server_id, fn state ->
              RaftFSM.query_context(state, lane, id)
            end) do
         {:ok, {:ok, context}, _leader} ->
@@ -51,6 +51,9 @@ defmodule Fastpaca.Runtime do
 
         {:ok, {{_term, _index}, {:error, reason}}, _leader} ->
           {:error, reason}
+
+        {:timeout, leader} ->
+          {:error, {:timeout, leader}}
 
         other ->
           other
@@ -114,19 +117,40 @@ defmodule Fastpaca.Runtime do
     end
   end
 
-  @spec get_messages(String.t(), non_neg_integer(), non_neg_integer()) ::
+  @doc """
+  Retrieves messages from the tail (newest) with offset-based pagination.
+
+  Designed for backward iteration starting from the most recent messages.
+  Future-proof for scenarios where older messages may be paged from disk/remote storage.
+
+  ## Parameters
+    - `id`: Context ID
+    - `offset`: Number of messages to skip from tail (0 = most recent, default: 0)
+    - `limit`: Maximum messages to return (must be > 0, default: 100)
+
+  ## Examples
+      # Get last 50 messages
+      get_messages_tail("ctx-123", 0, 50)
+
+      # Get next page (messages 51-100 from tail)
+      get_messages_tail("ctx-123", 50, 50)
+
+  Returns `{:ok, messages}` where messages are in chronological order (oldest to newest).
+  """
+  @spec get_messages_tail(String.t(), non_neg_integer(), pos_integer()) ::
           {:ok, [map()]} | {:error, term()}
-  def get_messages(id, after_seq, limit)
-      when is_binary(id) and is_integer(after_seq) and is_integer(limit) and limit > 0 do
+  def get_messages_tail(id, offset \\ 0, limit \\ 100)
+      when is_binary(id) and is_integer(offset) and offset >= 0 and is_integer(limit) and
+             limit > 0 do
     with {:ok, server_id, lane, _group} <- locate(id) do
-      case :ra.local_query({server_id, Node.self()}, fn state ->
-             RaftFSM.query_messages(state, lane, id, after_seq)
+      case :ra.consistent_query(server_id, fn state ->
+             RaftFSM.query_messages_tail(state, lane, id, offset, limit)
            end) do
         {:ok, messages, _leader} when is_list(messages) ->
-          {:ok, messages |> Enum.take(limit)}
+          {:ok, messages}
 
         {:ok, {{_term, _index}, messages}, _leader} when is_list(messages) ->
-          {:ok, messages |> Enum.take(limit)}
+          {:ok, messages}
 
         {:timeout, leader} ->
           {:error, {:timeout, leader}}

@@ -16,7 +16,7 @@ defmodule FastpacaWeb.Router do
 
     # Messages
     post "/contexts/:id/messages", ContextController, :append
-    get "/contexts/:id/messages", ContextController, :list_messages
+    get "/contexts/:id/tail", ContextController, :tail
 
     # LLM interface
     get "/contexts/:id/context", ContextController, :window
