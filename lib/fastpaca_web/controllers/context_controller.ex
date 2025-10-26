@@ -54,16 +54,24 @@ defmodule FastpacaWeb.ContextController do
 
   # Messaging
 
-  def append(conn, %{
-        "id" => id,
-        "message" => %{"role" => role, "parts" => parts, "token_count" => count} = msg
-      })
-      when is_binary(role) and is_list(parts) and is_integer(count) and count >= 0 do
+  def append(conn, %{"id" => id, "message" => %{"role" => role, "parts" => parts} = msg})
+      when is_binary(role) and is_list(parts) do
     metadata = Map.get(msg, "metadata", %{})
     if_version = Map.get(conn.params, "if_version")
 
+    count_param = Map.get(msg, "token_count")
+
+    {count, source} =
+      if is_integer(count_param) and count_param >= 0 do
+        {count_param, :client}
+      else
+        {Fastpaca.Tokenizer.count_parts(parts), :server}
+      end
+
     with {:ok, [reply]} <-
            Runtime.append_messages(id, [{role, parts, metadata, count}], if_version: if_version) do
+      Fastpaca.Observability.Telemetry.message_appended(source, count, id, role)
+
       json(conn, %{seq: reply.seq, version: reply.version, token_estimate: reply.token_count})
       |> put_status(:created)
     end

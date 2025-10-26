@@ -1,47 +1,37 @@
 /**
- * FleetLM Scenario 2: REST Read/Write Mix
+ * Fastpaca Scenario 2: Context Read/Write Mix
  *
- * Validates HTTP API performance under mixed workload (reads + writes).
+ * Exercises alternating append + context window reads to model a busy chat UI.
  *
  * Profile:
- * - 50 constant VUs hammering the system (no rate limiting)
- * - Each VU alternates: POST → GET → POST → GET...
- * - Duration: 2 minutes
- * - Payload: 1KB JSON content per message
- * - Read: Fetch last 50 messages per session
- *
- * Expected Results:
- * - Throughput: Find the actual ceiling (likely 400-600 req/s)
- * - POST latency: Will increase under load
- * - GET latency: Will increase under load
- * - System should handle pressure gracefully (no crashes/errors)
+ * - 50 constant VUs (default)
+ * - Each VU alternates: append → fetch context window → append → fetch messages
+ * - Payload: configurable text size to simulate user/tool output
  *
  * Thresholds (Pass/Fail):
- * PRIMARY (hard fails):
- *   - http_req_failed < 1% (System stability - no crashes/errors)
- * SECONDARY (soft fails):
- *   - p95 < 200ms, p99 < 300ms (Performance can degrade under pressure)
+ * - http_req_failed < 1% (stability)
+ * - write_latency p95 < 120ms
+ * - window_latency p95 < 160ms
  *
  * Usage:
  *   k6 run bench/k6/2-rest-read-write-mix.js
  *
- *   # Higher load
- *   k6 run -e VUS=100 bench/k6/2-rest-read-write-mix.js
+ *   # Heavier read mix / larger payload
+ *   k6 run -e VUS=100 -e PAYLOAD_SIZE=2048 bench/k6/2-rest-read-write-mix.js
  */
 
-import http from 'k6/http';
-import { check, sleep } from 'k6';
-import { Counter, Trend, Rate } from 'k6/metrics';
+import { check } from 'k6';
+import { Counter, Trend } from 'k6/metrics';
 import * as lib from './lib.js';
 
 // ============================================================================
 // Metrics
 // ============================================================================
 
-const postsTotal = new Counter('posts_total');
-const getsTotal = new Counter('gets_total');
-const postLatency = new Trend('post_latency', true);
-const getLatency = new Trend('get_latency', true);
+const writesTotal = new Counter('writes_total');
+const readsTotal = new Counter('reads_total');
+const writeLatency = new Trend('write_latency', true);
+const windowLatency = new Trend('window_latency', true);
 const messagesReadCount = new Trend('messages_read_count', true);
 
 // ============================================================================
@@ -49,8 +39,9 @@ const messagesReadCount = new Trend('messages_read_count', true);
 // ============================================================================
 
 const vus = Number(__ENV.VUS || 50);
-const payloadSize = Number(__ENV.PAYLOAD_SIZE || 1024); // 1KB default
+const payloadSize = Number(__ENV.PAYLOAD_SIZE || 1024);
 const duration = __ENV.DURATION || '2m';
+const budgetTokens = Number(__ENV.BUDGET_OVERRIDE || 0); // optional override
 
 export const options = {
   setupTimeout: '60s',
@@ -58,20 +49,14 @@ export const options = {
   scenarios: {
     rest_mix: {
       executor: 'constant-vus',
-      vus: vus,
-      duration: duration,
+      vus,
+      duration,
     },
   },
   thresholds: {
-    // Primary: System stability under pressure
-    'http_req_failed': [
-      { threshold: 'rate<0.01', abortOnFail: true }, // < 1% errors (no crashes)
-    ],
-    // Secondary: Performance degradation acceptable under max load
-    'http_req_duration': [
-      { threshold: 'p(95)<200', abortOnFail: false }, // p95 can degrade under pressure
-      { threshold: 'p(99)<300', abortOnFail: false }, // p99 can degrade more
-    ],
+    http_req_failed: [{ threshold: 'rate<0.01', abortOnFail: true }],
+    write_latency: [{ threshold: 'p(95)<120', abortOnFail: false }],
+    window_latency: [{ threshold: 'p(95)<160', abortOnFail: false }],
   },
 };
 
@@ -80,38 +65,32 @@ export const options = {
 // ============================================================================
 
 export function setup() {
-  console.log('Setting up REST read/write mix benchmark...');
+  console.log('Setting up context read/write mix benchmark...');
   console.log(`Run ID: ${lib.config.runId}`);
-  console.log(`VUs: ${vus} (constant, no rate limiting)`);
+  console.log(`VUs: ${vus}`);
   console.log(`Payload size: ${payloadSize} bytes`);
   console.log(`Duration: ${duration}`);
 
-  const agent = lib.setupEchoAgent();
-  const agentId = agent.id;
-
-  // Pre-create one session per VU
-  console.log(`Pre-creating ${vus} sessions...`);
-  const sessions = [];
+  const contexts = [];
 
   for (let i = 0; i < vus; i++) {
-    const userId = lib.generateParticipantId('user', i);
-    const session = lib.createSession(userId, agentId, {
-      vu_slot: i,
-      type: 'rest_mix',
-      run_id: lib.config.runId,
+    const contextId = lib.contextId('rw-mix', i + 1);
+    lib.ensureContext(contextId, {
+      metadata: {
+        bench: true,
+        scenario: 'rest_mix',
+        slot: i,
+        run_id: lib.config.runId,
+      },
     });
-    sessions.push({
-      sessionId: session.id,
-      userId: userId,
-    });
+    contexts.push({ contextId, lastSeq: 0, version: 0 });
   }
 
-  console.log(`Setup complete: ${vus} sessions ready`);
-
   return {
-    agentId: agentId,
     runId: lib.config.runId,
-    sessions: sessions,
+    payloadSize,
+    budgetTokens,
+    contexts,
   };
 }
 
@@ -120,94 +99,91 @@ export function setup() {
 // ============================================================================
 
 export default function (data) {
-  const vuId = __VU;
+  const vuIndex = (__VU - 1) % data.contexts.length;
+  const ctx = data.contexts[vuIndex];
 
-  // Round-robin across pre-created sessions
-  const sessionIndex = (vuId - 1) % data.sessions.length;
-  const sessionData = data.sessions[sessionIndex];
-
-  if (!sessionData) {
-    console.error(`VU${vuId}: No session found at index ${sessionIndex}`);
+  if (!ctx) {
     return;
   }
 
-  const sessionId = sessionData.sessionId;
-  const userId = sessionData.userId;
+  const { contextId } = ctx;
+  const textContent = 'x'.repeat(data.payloadSize);
+  const phase = __ITER % 4;
 
-  // Generate payload of target size
-  const textContent = 'x'.repeat(payloadSize);
-
-  // Alternate between POST and GET
-  const iteration = __ITER;
-  const isWrite = iteration % 2 === 0;
-
-  if (isWrite) {
-    // POST: Append message
-    const startPost = Date.now();
-    const postRes = http.post(
-      `${lib.config.apiUrl}/sessions/${sessionId}/messages`,
-      JSON.stringify({
-        user_id: userId,
-        kind: 'text',
-        content: { text: textContent },
-        metadata: { bench: true, vu: vuId, iter: iteration },
-      }),
-      lib.jsonHeaders
+  if (phase === 0 || phase === 2) {
+    // Append message
+    const idempotencyKey = lib.randomId(`rw-${contextId}`);
+    const { res, json } = lib.appendMessage(
+      contextId,
+      {
+        role: phase === 0 ? 'user' : 'assistant',
+        parts: [{ type: 'text', text: textContent }],
+        metadata: {
+          bench: true,
+          scenario: 'rest_mix',
+          phase: phase === 0 ? 'user' : 'assistant',
+          vu: __VU,
+          iter: __ITER,
+        },
+      },
+      { idempotencyKey }
     );
 
-    const postDuration = Date.now() - startPost;
-    postLatency.add(postDuration);
-    postsTotal.add(1);
+    writeLatency.add(res.timings.duration);
+    writesTotal.add(1);
 
-    check(postRes, {
-      'POST status 200': (r) => r.status === 200,
+    check(res, {
+      'append ok': (r) => r.status >= 200 && r.status < 300,
     });
 
-    if (postRes.status !== 200) {
-      console.error(`VU${vuId}: POST failed with status ${postRes.status}: ${postRes.body}`);
-    }
-  } else {
-    // GET: Fetch messages
-    const startGet = Date.now();
-    const getRes = http.get(
-      `${lib.config.apiUrl}/sessions/${sessionId}/messages?limit=50`,
-      lib.jsonHeaders
-    );
-
-    const getDuration = Date.now() - startGet;
-    getLatency.add(getDuration);
-    getsTotal.add(1);
-
-    const success = check(getRes, {
-      'GET status 200': (r) => r.status === 200,
-    });
-
-    if (success) {
-      try {
-        const body = JSON.parse(getRes.body);
-        const messageCount = body.messages ? body.messages.length : 0;
-        messagesReadCount.add(messageCount);
-      } catch (e) {
-        console.error(`VU${vuId}: Failed to parse GET response: ${e.message}`);
+    if (json) {
+      if (typeof json.seq === 'number') {
+        ctx.lastSeq = json.seq;
       }
-    } else {
-      console.error(`VU${vuId}: GET failed with status ${getRes.status}: ${getRes.body}`);
+      if (typeof json.version === 'number') {
+        ctx.version = json.version;
+      }
     }
-  }
-}
-
-// ============================================================================
-// Teardown
-// ============================================================================
-
-export function teardown(data) {
-  if (data.sessions) {
-    console.log(`Cleaning up ${data.sessions.length} sessions...`);
-    for (const session of data.sessions) {
-      lib.deleteSession(session.sessionId);
-    }
+    return;
   }
 
-  console.log(`\nREST mix test complete (Run ID: ${data.runId})`);
-  console.log('Review metrics above for POST vs GET latency breakdown');
+  if (phase === 1) {
+    // Fetch current context window (LLM view)
+    const params = {};
+    if (data.budgetTokens > 0) {
+      params.budget_tokens = data.budgetTokens;
+    }
+    if (ctx.version) {
+      params.if_version = ctx.version;
+    }
+
+    const { res, json } = lib.getContextWindow(contextId, params);
+    windowLatency.add(res.timings.duration);
+    readsTotal.add(1);
+
+    check(res, {
+      'context fetch ok': (r) => r.status === 200,
+    });
+
+    if (json && Array.isArray(json.messages)) {
+      messagesReadCount.add(json.messages.length);
+    }
+    if (json && typeof json.version === 'number') {
+      ctx.version = json.version;
+    }
+    return;
+  }
+
+  // phase === 3: fetch tail slice of the log
+  const { res, json } = lib.getMessages(contextId, { from_seq: -50 });
+  windowLatency.add(res.timings.duration);
+  readsTotal.add(1);
+
+  check(res, {
+    'messages fetch ok': (r) => r.status === 200,
+  });
+
+  if (json && Array.isArray(json.messages)) {
+    messagesReadCount.add(json.messages.length);
+  }
 }

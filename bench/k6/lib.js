@@ -1,7 +1,7 @@
 /**
- * FleetLM k6 Benchmark Library
+ * Fastpaca k6 Benchmark Library
  *
- * Shared utilities and configuration for k6 benchmarks.
+ * Helpers for exercising the Fastpaca context API during load tests.
  */
 
 import http from 'k6/http';
@@ -11,12 +11,13 @@ import { check } from 'k6';
 // Configuration
 // ============================================================================
 
+const trimmedApiUrl = (__ENV.API_URL || 'http://localhost:4000/v1').replace(/\/$/, '');
+
 export const config = {
-  apiUrl: __ENV.API_URL || 'http://localhost:4000/api',
-  wsUrl: __ENV.WS_URL || 'ws://localhost:4000/socket/websocket',
-  agentId: __ENV.AGENT_ID || 'bench-echo-agent',
-  agentUrl: __ENV.AGENT_URL || 'http://localhost:4001',
+  apiUrl: trimmedApiUrl,
   runId: __ENV.RUN_ID || `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
+  defaultTokenBudget: Number(__ENV.TOKEN_BUDGET || 1_000_000),
+  defaultTriggerRatio: Number(__ENV.TRIGGER_RATIO || 0.7),
 };
 
 export const jsonHeaders = {
@@ -25,214 +26,145 @@ export const jsonHeaders = {
   },
 };
 
-// ============================================================================
-// Agent Setup
-// ============================================================================
-
-/**
- * Create or verify the echo agent exists.
- * Idempotent - safe to call multiple times.
- */
-export function setupEchoAgent() {
-  const agentId = config.agentId;
-
-  // Try to get existing agent
-  const getRes = http.get(`${config.apiUrl}/agents/${agentId}`, jsonHeaders);
-
-  if (getRes.status === 200) {
-    console.log(`Using existing agent: ${agentId}`);
-    return JSON.parse(getRes.body).agent;
+const defaultPolicy = (() => {
+  if (__ENV.CONTEXT_POLICY) {
+    try {
+      return JSON.parse(__ENV.CONTEXT_POLICY);
+    } catch (err) {
+      console.warn(`Failed to parse CONTEXT_POLICY env var, falling back to last_n: ${err}`);
+    }
   }
+  return { strategy: 'last_n', config: { limit: 400 } };
+})();
 
-  // Create new agent
-  const createRes = http.post(
-    `${config.apiUrl}/agents`,
-    JSON.stringify({
-      agent: {
-        id: agentId,
-        name: 'Bench Echo Agent',
-        origin_url: config.agentUrl,
-        webhook_path: '/webhook',
-      context: {
-        strategy: 'last_n',
-        config: { limit: 10 }
-      },
-        timeout_ms: 30000,
-        status: 'enabled',
-      },
-    }),
-    jsonHeaders
-  );
+// ============================================================================
+// Context helpers
+// ============================================================================
 
-  check(createRes, {
-    'created echo agent': (res) => res.status === 201,
-  });
+function buildUrl(path, params = {}) {
+  const query = Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join('&');
 
-  if (createRes.status !== 201) {
-    throw new Error(`Failed to create agent: ${createRes.status} ${createRes.body}`);
-  }
-
-  console.log(`Created new agent: ${agentId}`);
-  return JSON.parse(createRes.body).agent;
+  return query ? `${config.apiUrl}${path}?${query}` : `${config.apiUrl}${path}`;
 }
 
-// ============================================================================
-// Participant Management
-// ============================================================================
-
-/**
- * Generate a unique participant ID for this benchmark run.
- * Uses random UUID to ensure even distribution across storage slots.
- */
-export function generateParticipantId(prefix, vuId) {
-  // Generate random UUID to avoid hash collisions on storage slots
-  const uuid = crypto.randomUUID();
-  return `${prefix}-${uuid}`;
+export function contextId(prefix, vuId, extra = '') {
+  const suffix = extra ? `-${extra}` : '';
+  return `${prefix}-${vuId}${suffix}`;
 }
 
-// ============================================================================
-// Session Management
-// ============================================================================
+export function randomId(prefix) {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+  const rand = Math.floor(Math.random() * 1_000_000_000);
+  return `${prefix}-${Date.now()}-${rand}`;
+}
 
-/**
- * Create a new session between user and agent.
- */
-export function createSession(userId, agentId, metadata = {}) {
-  const res = http.post(
-    `${config.apiUrl}/sessions`,
-    JSON.stringify({
-      user_id: userId,
-      agent_id: agentId,
-      metadata: { ...metadata, bench: true, run_id: config.runId },
-    }),
+export function ensureContext(id, overrides = {}) {
+  const payload = {
+    token_budget: overrides.token_budget ?? config.defaultTokenBudget,
+    trigger_ratio: overrides.trigger_ratio ?? config.defaultTriggerRatio,
+    policy: overrides.policy ?? defaultPolicy,
+  };
+
+  if (overrides.metadata) {
+    payload.metadata = overrides.metadata;
+  }
+
+  const res = http.put(
+    buildUrl(`/contexts/${id}`),
+    JSON.stringify(payload),
     jsonHeaders
   );
 
   check(res, {
-    'created session': (r) => r.status === 201,
+    [`ensure context ${id}`]: (r) => r.status === 200 || r.status === 201,
   });
 
-  if (res.status !== 201) {
-    throw new Error(`Failed to create session: ${res.status} ${res.body}`);
+  if (res.status >= 400) {
+    throw new Error(`Failed to ensure context ${id}: ${res.status} ${res.body}`);
   }
 
-  return JSON.parse(res.body).session;
-}
-
-// ============================================================================
-// WebSocket Utilities
-// ============================================================================
-
-/**
- * Build WebSocket URL with user authentication.
- */
-export function buildWsUrl(userId) {
-  const encoded = encodeURIComponent(userId);
-  return `${config.wsUrl}?user_id=${encoded}&vsn=2.0.0`;
-}
-
-/**
- * Build session topic string.
- */
-export function sessionTopic(sessionId) {
-  return `session:${sessionId}`;
-}
-
-/**
- * Encode Phoenix channel message.
- */
-export function encode(event) {
-  return JSON.stringify(event);
-}
-
-/**
- * Decode Phoenix channel message.
- */
-export function decode(raw) {
   try {
-    return JSON.parse(raw);
+    return JSON.parse(res.body);
   } catch (_err) {
     return null;
   }
 }
 
-/**
- * Create a Phoenix channel join message.
- */
-export function joinMessage(topic, joinRef, payload = {}) {
-  return [`${joinRef}`, `${joinRef}`, topic, 'phx_join', payload];
-}
+export function appendMessage(contextId, message, opts = {}) {
+  const payload = {
+    message,
+  };
 
-/**
- * Create a Phoenix channel send message.
- */
-export function sendMessage(topic, ref, text, metadata = {}) {
-  return [
-    null,
-    `${ref}`,
-    topic,
-    'send',
-    {
-      content: {
-        kind: 'text',
-        content: { text },
-        metadata,
-      },
-    },
-  ];
-}
-
-/**
- * Check if a frame is a join reply.
- */
-export function isJoinReply(frame, joinRef, topic) {
-  if (!Array.isArray(frame) || frame.length < 5) {
-    return false;
+  if (opts.idempotencyKey) {
+    payload.idempotency_key = opts.idempotencyKey;
   }
-  const [_joinRefMsg, refMsg, topicMsg, eventMsg] = frame;
-  return eventMsg === 'phx_reply' && refMsg === `${joinRef}` && topicMsg === topic;
-}
 
-/**
- * Check if a frame is a message event.
- */
-export function isMessageEvent(frame, topic) {
-  if (!Array.isArray(frame) || frame.length < 5) {
-    return false;
+  if (opts.ifVersion !== undefined && opts.ifVersion !== null) {
+    payload.if_version = opts.ifVersion;
   }
-  const [_joinRefMsg, _refMsg, topicMsg, eventMsg] = frame;
-  return eventMsg === 'message' && topicMsg === topic;
+
+  const res = http.post(
+    buildUrl(`/contexts/${contextId}/messages`),
+    JSON.stringify(payload),
+    jsonHeaders
+  );
+
+  return {
+    res,
+    json: safeParse(res.body),
+  };
 }
 
-// ============================================================================
-// Cleanup
-// ============================================================================
+export function getContextWindow(contextId, params = {}) {
+  const res = http.get(
+    buildUrl(`/contexts/${contextId}/context`, params),
+    jsonHeaders
+  );
 
-/**
- * Delete a resource (session or participant).
- */
-export function safeDelete(url) {
-  const res = http.del(url, null, jsonHeaders);
-  if (res.status !== 204 && res.status !== 404) {
-    console.error(`Cleanup ${url} failed with status=${res.status}`);
+  return {
+    res,
+    json: safeParse(res.body),
+  };
+}
+
+export function getMessages(contextId, params = {}) {
+  const res = http.get(
+    buildUrl(`/contexts/${contextId}/messages`, params),
+    jsonHeaders
+  );
+
+  return {
+    res,
+    json: safeParse(res.body),
+  };
+}
+
+export function compactContext(contextId, payload) {
+  const res = http.post(
+    buildUrl(`/contexts/${contextId}/compact`),
+    JSON.stringify(payload),
+    jsonHeaders
+  );
+
+  return {
+    res,
+    json: safeParse(res.body),
+  };
+}
+
+export function deleteContext(contextId) {
+  return http.del(buildUrl(`/contexts/${contextId}`), null, jsonHeaders);
+}
+
+function safeParse(body) {
+  try {
+    return JSON.parse(body);
+  } catch (_err) {
+    return null;
   }
-}
-
-/**
- * Delete a session.
- */
-export function deleteSession(sessionId) {
-  safeDelete(`${config.apiUrl}/sessions/${sessionId}`);
-}
-
-// ============================================================================
-// Timing Utilities
-// ============================================================================
-
-export function nowMs() {
-  return Date.now();
-}
-
-export function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

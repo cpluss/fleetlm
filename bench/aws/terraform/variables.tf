@@ -16,30 +16,6 @@ variable "instance_type" {
   default     = "c5d.large"  # 2 vCPU, 4GB RAM, 50GB NVMe instance store (smallest c5d)
 }
 
-variable "db_instance_class" {
-  description = "RDS instance class"
-  type        = string
-  default     = "db.t3.small"  # Upgraded for load testing (2GB RAM, more connections)
-}
-
-variable "db_name" {
-  description = "Database name"
-  type        = string
-  default     = "fleetlm_dev"
-}
-
-variable "db_username" {
-  description = "Database master username"
-  type        = string
-  default     = "postgres"
-}
-
-variable "db_password" {
-  description = "Database master password"
-  type        = string
-  default     = "postgres"
-}
-
 variable "key_name" {
   description = "SSH key pair name (must exist in AWS)"
   type        = string

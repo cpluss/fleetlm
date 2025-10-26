@@ -11,16 +11,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TERRAFORM_DIR="$SCRIPT_DIR/../terraform"
 K6_DIR="$SCRIPT_DIR/../../k6"
 
-echo -e "${GREEN}=== FleetLM k6 Benchmark ===${NC}"
+echo -e "${GREEN}=== Fastpaca k6 Benchmark ===${NC}"
 
-# Check if k6 is installed
 if ! command -v k6 &> /dev/null; then
   echo -e "${RED}Error: k6 is not installed${NC}"
   echo "Install it from: https://k6.io/docs/get-started/installation/"
   exit 1
 fi
 
-# Get Terraform outputs
 cd "$TERRAFORM_DIR"
 INSTANCE_IPS=$(terraform output -json instance_ips | jq -r '.[]')
 
@@ -30,54 +28,35 @@ if [ -z "$INSTANCE_IPS" ]; then
 fi
 
 FIRST_IP=$(echo "$INSTANCE_IPS" | head -n1)
+API_URL="http://$FIRST_IP:4000/v1"
 
-# Build URLs
-API_URL="http://$FIRST_IP:4000/api"
-WS_URL="ws://$FIRST_IP:4000/socket/websocket"
+BENCHMARK="${1:-1-hot-path-throughput}"
+SCRIPT_PATH="$K6_DIR/$BENCHMARK.js"
 
-echo "Target instance: $FIRST_IP"
-echo "API URL: $API_URL"
-echo "WS URL: $WS_URL"
-echo ""
-
-# Default benchmark parameters
-BENCHMARK="${1:-message-throughput}"
-MAX_VUS="${MAX_VUS:-10}"
-PIPELINE_DEPTH="${PIPELINE_DEPTH:-5}"
-RAMP_DURATION="${RAMP_DURATION:-30s}"
-STEADY_DURATION="${STEADY_DURATION:-1m}"
-RAMP_DOWN_DURATION="${RAMP_DOWN_DURATION:-10s}"
-
-echo -e "${YELLOW}Benchmark configuration:${NC}"
-echo "  Script: $BENCHMARK.js"
-echo "  Max VUs: $MAX_VUS"
-echo "  Pipeline depth: $PIPELINE_DEPTH"
-echo "  Ramp: $RAMP_DURATION → Steady: $STEADY_DURATION → Down: $RAMP_DOWN_DURATION"
-echo ""
-
-# Check if benchmark script exists
-BENCHMARK_SCRIPT="$K6_DIR/$BENCHMARK.js"
-if [ ! -f "$BENCHMARK_SCRIPT" ]; then
-  echo -e "${RED}Error: Benchmark script not found: $BENCHMARK_SCRIPT${NC}"
+if [ ! -f "$SCRIPT_PATH" ]; then
+  echo -e "${RED}Error: Benchmark script not found: $SCRIPT_PATH${NC}"
   echo "Available benchmarks:"
   ls -1 "$K6_DIR"/*.js 2>/dev/null || echo "  (none found)"
   exit 1
 fi
 
+echo "Target instance: $FIRST_IP"
+echo "API URL: $API_URL"
+echo ""
+
+echo -e "${YELLOW}Benchmark configuration:${NC}"
+echo "  Script: $BENCHMARK.js"
+echo ""
+
+cd "$K6_DIR"
+RUN_ID="aws-local-$(date +%s)"
+
 echo -e "${YELLOW}Starting k6 benchmark...${NC}"
 echo ""
 
-# Run k6 with environment variables
-cd "$K6_DIR"
 k6 run \
   -e API_URL="$API_URL" \
-  -e WS_URL="$WS_URL" \
-  -e AGENT_ID="bench-echo-agent" \
-  -e MAX_VUS="$MAX_VUS" \
-  -e PIPELINE_DEPTH="$PIPELINE_DEPTH" \
-  -e RAMP_DURATION="$RAMP_DURATION" \
-  -e STEADY_DURATION="$STEADY_DURATION" \
-  -e RAMP_DOWN_DURATION="$RAMP_DOWN_DURATION" \
+  -e RUN_ID="$RUN_ID" \
   "$BENCHMARK.js"
 
 echo ""

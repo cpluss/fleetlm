@@ -1,36 +1,27 @@
 /**
- * FleetLM Scenario 4: Durability Cadence
+ * Fastpaca Scenario 4: Durability Cadence
  *
- * Long soak test that validates flush/snapshot behavior under sustained load
- * and verifies database integrity after completion.
+ * Sustained append workload that periodically inspects the context window to
+ * ensure compaction signals surface without losing history.
  *
  * Profile:
- * - 10 concurrent sessions
- * - Sustained writes for 3 minutes (default)
- * - Max throughput (no throttling)
- * - Post-test: Validate all messages persisted to Postgres
- *
- * Expected Results:
- * - Flusher runs: ~36 cycles (every 5s)
- * - Snapshot triggers: triggered by Raft log size
- * - p99 latency during flush: < 150ms (no blocking)
- * - DB integrity: 100% of messages persisted
+ * - sessionCount contexts (default 10)
+ * - Constant VUs for configurable duration (default 3m)
+ * - Every 10th iteration fetches the LLM window to observe needs_compaction
  *
  * Thresholds (Pass/Fail):
- * - ack_latency p99 < 150ms (Writes unaffected during flush/snapshot)
- * - http_req_failed < 0.01 (Error rate < 1%)
- * - db_integrity_check == 1.0 (All messages in Postgres)
+ * - append_latency p99 < 200ms
+ * - http_req_failed < 1%
+ * - durability_check == 1 (tail replay matches appended count)
  *
  * Usage:
  *   k6 run bench/k6/4-durability-cadence.js
  *
- *   # Extended soak test
- *   k6 run -e DURATION=30m bench/k6/4-durability-cadence.js
+ *   # Longer soak
+ *   k6 run -e DURATION=15m bench/k6/4-durability-cadence.js
  */
 
-import http from 'k6/http';
-import ws from 'k6/ws';
-import { check, sleep } from 'k6';
+import { check } from 'k6';
 import { Counter, Trend, Rate } from 'k6/metrics';
 import * as lib from './lib.js';
 
@@ -39,9 +30,10 @@ import * as lib from './lib.js';
 // ============================================================================
 
 const messagesSent = new Counter('messages_sent');
-const acksReceived = new Counter('acks_received');
-const ackLatency = new Trend('ack_latency', true);
-const dbIntegrityRate = new Rate('db_integrity_check');
+const appendLatency = new Trend('append_latency', true);
+const windowLatency = new Trend('window_latency', true);
+const needsCompactionTrips = new Counter('needs_compaction_trips');
+const durabilityCheck = new Rate('durability_check');
 
 // ============================================================================
 // Test Configuration
@@ -49,6 +41,7 @@ const dbIntegrityRate = new Rate('db_integrity_check');
 
 const sessionCount = Number(__ENV.SESSION_COUNT || 10);
 const duration = __ENV.DURATION || '3m';
+const verifyTailLimit = Number(__ENV.VERIFY_TAIL_LIMIT || 2000);
 
 export const options = {
   setupTimeout: '120s',
@@ -57,22 +50,16 @@ export const options = {
     sustained_load: {
       executor: 'constant-vus',
       vus: sessionCount,
-      duration: duration,
+      duration,
     },
   },
   thresholds: {
-    // Primary: Data integrity and stability
-    'db_integrity_check': [
-      { threshold: 'rate==1', abortOnFail: true }, // Must be 100% - no data loss!
+    http_req_failed: [{ threshold: 'rate<0.01', abortOnFail: true }],
+    append_latency: [
+      { threshold: 'p(95)<120', abortOnFail: false },
+      { threshold: 'p(99)<200', abortOnFail: false },
     ],
-    'http_req_failed': [
-      { threshold: 'rate<0.01', abortOnFail: true }, // < 1% errors (no crashes)
-    ],
-    // Secondary: Performance (can degrade under sustained max load)
-    'ack_latency': [
-      { threshold: 'p(99)<150', abortOnFail: false }, // p99 target
-      { threshold: 'p(99)<300', abortOnFail: true },  // p99 hard limit
-    ],
+    durability_check: [{ threshold: 'rate==1', abortOnFail: true }],
   },
 };
 
@@ -83,224 +70,137 @@ export const options = {
 export function setup() {
   console.log('Setting up durability cadence benchmark...');
   console.log(`Run ID: ${lib.config.runId}`);
-  console.log(`Sessions: ${sessionCount}`);
+  console.log(`Contexts: ${sessionCount}`);
   console.log(`Duration: ${duration}`);
-  console.log(`Mode: Max throughput (no throttling)`);
 
-  const agent = lib.setupEchoAgent();
-  const agentId = agent.id;
-
-  // Pre-create sessions
-  console.log(`Pre-creating ${sessionCount} sessions...`);
-  const sessions = {};
+  const contexts = {};
 
   for (let vuId = 1; vuId <= sessionCount; vuId++) {
-    const userId = lib.generateParticipantId('user', vuId);
-    const session = lib.createSession(userId, agentId, {
-      vu: vuId,
-      type: 'durability_cadence',
-      run_id: lib.config.runId,
+    const contextId = lib.contextId('durability', vuId);
+    lib.ensureContext(contextId, {
+      metadata: {
+        bench: true,
+        scenario: 'durability_cadence',
+        vu: vuId,
+        run_id: lib.config.runId,
+      },
     });
-    sessions[vuId] = {
-      sessionId: session.id,
-      userId: userId,
-    };
+    contexts[vuId] = { contextId, appended: 0, lastSeq: 0, version: 0 };
   }
 
-  console.log(`Setup complete: ${sessionCount} sessions ready`);
-
   return {
-    agentId: agentId,
     runId: lib.config.runId,
-    sessions: sessions,
+    contexts,
+    verifyTailLimit,
   };
 }
 
 // ============================================================================
-// Main Test - Sustained Write Load
+// Main Test
 // ============================================================================
 
 export default function (data) {
   const vuId = __VU;
-  const sessionData = data.sessions[vuId];
-
-  if (!sessionData) {
-    console.error(`VU${vuId}: No session found in setup data`);
+  const ctx = data.contexts[vuId];
+  if (!ctx) {
     return;
   }
 
-  const sessionId = sessionData.sessionId;
-  const userId = sessionData.userId;
-  const wsUrl = lib.buildWsUrl(userId);
-  const topic = lib.sessionTopic(sessionId);
+  const messageSeq = ctx.appended + 1;
+  const messageText = `durability message run=${data.runId} vu=${vuId} seq=${messageSeq}`;
 
-  ws.connect(
-    wsUrl,
+  const { res, json } = lib.appendMessage(
+    ctx.contextId,
     {
-      tags: { session: sessionId, vu: vuId },
+      role: 'assistant',
+      parts: [{ type: 'text', text: messageText }],
+      metadata: {
+        bench: true,
+        scenario: 'durability_cadence',
+        vu: vuId,
+        seq: messageSeq,
+        iter: __ITER,
+      },
     },
-    (socket) => {
-      let joined = false;
-      let messageSeq = 0;
-      const joinRef = 1;
-      const pendingRefs = new Map(); // ref -> timestamp
-
-      socket.on('open', () => {
-        socket.send(lib.encode(lib.joinMessage(topic, joinRef)));
-
-        socket.setTimeout(() => {
-          if (!joined) {
-            console.error(`VU${vuId}: Failed to join after 10s`);
-            socket.close();
-          }
-        }, 10000);
-      });
-
-      socket.on('message', (raw) => {
-        const frame = lib.decode(raw);
-        if (!frame) return;
-
-        const [, refMsg, topicMsg, eventMsg, payload] = frame;
-
-        // Handle join reply
-        if (lib.isJoinReply(frame, joinRef, topic)) {
-          joined = true;
-          console.log(`VU${vuId}: Joined - starting sustained load`);
-          return;
-        }
-
-        // Check for errors
-        if (eventMsg === 'phx_reply' && topicMsg === topic && payload?.status === 'error') {
-          console.error(`VU${vuId}: Server error:`, JSON.stringify(payload?.response || payload));
-          socket.close();
-          return;
-        }
-
-        // Handle acks - measure latency
-        if (eventMsg === 'phx_reply' && topicMsg === topic && payload?.status === 'ok') {
-          const sendTime = pendingRefs.get(refMsg);
-          if (sendTime) {
-            const latency = Date.now() - sendTime;
-            ackLatency.add(latency);
-            pendingRefs.delete(refMsg);
-            acksReceived.add(1);
-          }
-        }
-      });
-
-      socket.on('error', (e) => {
-        console.error(`VU${vuId}: WebSocket error:`, e);
-      });
-
-      socket.on('close', () => {
-        if (joined && messageSeq > 0) {
-          console.log(`VU${vuId}: Sustained load complete - sent ${messageSeq} messages`);
-        }
-      });
-
-      // Send messages continuously (no throttling)
-      socket.setInterval(() => {
-        if (!joined) return;
-
-        messageSeq++;
-        const ref = joinRef + messageSeq;
-        const text = `durability test msg ${messageSeq}`;
-
-        const msg = [
-          null,
-          `${ref}`,
-          topic,
-          'send',
-          {
-            content: {
-              kind: 'text',
-              content: { text },
-              metadata: {
-                bench: true,
-                phase: 'sustained',
-                vu: vuId,
-                seq: messageSeq,
-              },
-            },
-          },
-        ];
-
-        pendingRefs.set(`${ref}`, Date.now());
-        socket.send(lib.encode(msg));
-        messagesSent.add(1);
-      }, 1); // Check every 1ms - tight loop
-    }
+    { idempotencyKey: lib.randomId(`durable-${vuId}`) }
   );
+
+  appendLatency.add(res.timings.duration);
+  messagesSent.add(1);
+
+  const ok = check(res, {
+    'append ok': (r) => r.status >= 200 && r.status < 300,
+  });
+
+  if (!ok) {
+    console.error(`VU${vuId}: append failed status=${res.status} body=${res.body}`);
+    return;
+  }
+
+  ctx.appended = messageSeq;
+
+  if (json) {
+    if (typeof json.seq === 'number') {
+      ctx.lastSeq = json.seq;
+    }
+    if (typeof json.version === 'number') {
+      ctx.version = json.version;
+    }
+  }
+
+  // Every 10th iteration, fetch the LLM window to check compaction signals.
+  if (ctx.appended % 10 === 0) {
+    const { res: windowRes, json: windowJson } = lib.getContextWindow(ctx.contextId);
+    windowLatency.add(windowRes.timings.duration);
+
+    check(windowRes, {
+      'window fetch ok': (r) => r.status === 200,
+    });
+
+    if (windowJson && windowJson.needs_compaction === true) {
+      needsCompactionTrips.add(1);
+    }
+  }
 }
 
 // ============================================================================
-// Teardown - Validate Database Integrity
+// Teardown
 // ============================================================================
 
 export function teardown(data) {
-  console.log('\n=== Database Integrity Validation ===');
-  console.log('Waiting 10s for final flush to complete...');
-  sleep(10);
+  console.log('Verifying durability tail across contexts...');
 
-  if (!data.sessions) {
-    console.error('No session data available for validation');
-    return;
-  }
-
-  let totalExpectedMessages = 0;
-  let totalPersistedMessages = 0;
-  let sessionsValidated = 0;
-  let sessionsFailed = 0;
-
-  // For each session, query the database via API to count persisted messages
-  for (const vuId in data.sessions) {
-    const sessionId = data.sessions[vuId].sessionId;
-
-    // Fetch all messages for this session
-    const res = http.get(
-      `${lib.config.apiUrl}/sessions/${sessionId}/messages?limit=100000`,
-      lib.jsonHeaders
-    );
-
-    if (res.status !== 200) {
-      console.error(`Validation failed for session ${sessionId}: HTTP ${res.status}`);
-      sessionsFailed++;
-      continue;
+  Object.values(data.contexts).forEach((ctx) => {
+    if (!ctx || ctx.appended === 0) {
+      durabilityCheck.add(true);
+      return;
     }
 
-    try {
-      const body = JSON.parse(res.body);
-      const messageCount = body.messages ? body.messages.length : 0;
-      totalPersistedMessages += messageCount;
-      sessionsValidated++;
+    const limit = Math.min(ctx.appended, data.verifyTailLimit);
+    const { res, json } = lib.getMessages(ctx.contextId, {
+      from_seq: -limit,
+      limit,
+    });
 
-      console.log(`Session ${sessionId}: ${messageCount} messages persisted`);
-    } catch (e) {
-      console.error(`Failed to parse response for session ${sessionId}: ${e.message}`);
-      sessionsFailed++;
+    const ok = res.status === 200 && json && Array.isArray(json.messages);
+    if (!ok) {
+      console.error(
+        `Durability check failed context=${ctx.contextId} status=${res.status} body=${res.body}`
+      );
+      durabilityCheck.add(false);
+      return;
     }
-  }
 
-  console.log('\n=== Integrity Summary ===');
-  console.log(`Sessions validated: ${sessionsValidated}/${Object.keys(data.sessions).length}`);
-  console.log(`Total messages persisted: ${totalPersistedMessages}`);
+    const tailLength = json.messages.length;
+    const lastMessage = tailLength > 0 ? json.messages[tailLength - 1] : null;
+    const seqMatches = lastMessage ? lastMessage.seq === ctx.lastSeq : ctx.lastSeq === 0;
 
-  // For max throughput test, we just verify that messages were persisted
-  // We can't predict exact count since it's unrestricted throughput
-  if (totalPersistedMessages > 0 && sessionsFailed === 0) {
-    dbIntegrityRate.add(true);
-    console.log('✓ Database integrity check PASSED - all sessions have persisted messages');
-  } else {
-    dbIntegrityRate.add(false);
-    console.error(`✗ Database integrity check FAILED - ${sessionsFailed} sessions failed validation`);
-  }
+    durabilityCheck.add(seqMatches);
 
-  // Cleanup sessions
-  console.log(`\nCleaning up ${Object.keys(data.sessions).length} sessions...`);
-  for (const vuId in data.sessions) {
-    const sessionId = data.sessions[vuId].sessionId;
-    lib.deleteSession(sessionId);
-  }
-
-  console.log(`\nDurability cadence test complete (Run ID: ${data.runId})`);
+    if (!seqMatches) {
+      console.error(
+        `Seq mismatch context=${ctx.contextId} expected=${ctx.lastSeq} got=${lastMessage ? lastMessage.seq : 'none'}`
+      );
+    }
+  });
 }

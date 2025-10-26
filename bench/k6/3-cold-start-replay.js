@@ -1,35 +1,27 @@
 /**
- * FleetLM Scenario 3: Cold-Start Replay
+ * Fastpaca Scenario 3: Cold-Start Replay
  *
- * Simulates agent reconnection after downtime, validates backlog replay performance.
+ * Simulates a worker reconnecting after downtime: first build backlog,
+ * then replay the full transcript while new writes continue.
  *
  * Profile:
- * - 5 sessions with large backlogs
- * - Phase 1: Accumulate backlog (30s of max throughput writes)
- * - Phase 2: Reconnect and replay from after_seq=0 while writers continue
- * - Duration: 30s backlog → 1m replay under active writes
- * - Max throughput (no throttling)
- *
- * Expected Results:
- * - Replay latency: 100-500ms depending on backlog size
- * - DB fallback: depends on ETS ring capacity
- * - Active writes unaffected by concurrent reads
+ * - backlogSessions contexts (default 5)
+ * - Phase 1: accumulate backlog for BACKLOG_DURATION
+ * - Phase 2: replay entire context while continuing to append
  *
  * Thresholds (Pass/Fail):
- * - replay_latency p95 < 500ms (Time to fetch large backlog)
- * - active_write_latency p95 < 20ms (Writes unaffected during replay)
- * - http_req_failed < 0.01 (Error rate < 1%)
+ * - replay_latency p95 < 500ms
+ * - active_write_latency p95 < 200ms
+ * - http_req_failed < 1%
  *
  * Usage:
  *   k6 run bench/k6/3-cold-start-replay.js
  *
- *   # Larger backlog stress test
+ *   # Larger backlog
  *   k6 run -e BACKLOG_SIZE=5000 -e BACKLOG_SESSIONS=10 bench/k6/3-cold-start-replay.js
  */
 
-import http from 'k6/http';
-import ws from 'k6/ws';
-import { check, sleep } from 'k6';
+import { check } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
 import * as lib from './lib.js';
 
@@ -57,7 +49,6 @@ export const options = {
   setupTimeout: '120s',
   teardownTimeout: '60s',
   scenarios: {
-    // Phase 1: Accumulate backlog
     accumulate_backlog: {
       executor: 'constant-vus',
       vus: backlogSessions,
@@ -65,7 +56,6 @@ export const options = {
       exec: 'accumulateBacklog',
       startTime: '0s',
     },
-    // Phase 2: Replay backlog while continuing writes
     replay_under_load: {
       executor: 'constant-vus',
       vus: backlogSessions,
@@ -75,17 +65,9 @@ export const options = {
     },
   },
   thresholds: {
-    // Primary: System stability
-    'http_req_failed': [
-      { threshold: 'rate<0.01', abortOnFail: true }, // < 1% errors (no crashes)
-    ],
-    // Secondary: Performance targets (can degrade under max pressure)
-    'replay_latency': [
-      { threshold: 'p(95)<500', abortOnFail: false }, // Replay should be fast
-    ],
-    'active_write_latency': [
-      { threshold: 'p(95)<200', abortOnFail: false }, // Writes acceptable under pressure
-    ],
+    http_req_failed: [{ threshold: 'rate<0.01', abortOnFail: true }],
+    replay_latency: [{ threshold: 'p(95)<500', abortOnFail: false }],
+    active_write_latency: [{ threshold: 'p(95)<200', abortOnFail: false }],
   },
 };
 
@@ -96,37 +78,30 @@ export const options = {
 export function setup() {
   console.log('Setting up cold-start replay benchmark...');
   console.log(`Run ID: ${lib.config.runId}`);
-  console.log(`Sessions: ${backlogSessions}`);
-  console.log(`Target backlog per session: ${backlogSize} messages`);
+  console.log(`Contexts: ${backlogSessions}`);
+  console.log(`Target backlog size: ${backlogSize} messages`);
   console.log(`Backlog phase: ${backlogDuration}`);
   console.log(`Replay phase: ${replayDuration}`);
 
-  const agent = lib.setupEchoAgent();
-  const agentId = agent.id;
-
-  // Pre-create sessions
-  console.log(`Pre-creating ${backlogSessions} sessions...`);
-  const sessions = {};
+  const contexts = {};
 
   for (let vuId = 1; vuId <= backlogSessions; vuId++) {
-    const userId = lib.generateParticipantId('user', vuId);
-    const session = lib.createSession(userId, agentId, {
-      vu: vuId,
-      type: 'cold_start_replay',
-      run_id: lib.config.runId,
+    const contextId = lib.contextId('cold-replay', vuId);
+    lib.ensureContext(contextId, {
+      metadata: {
+        bench: true,
+        scenario: 'cold_replay',
+        vu: vuId,
+        run_id: lib.config.runId,
+      },
     });
-    sessions[vuId] = {
-      sessionId: session.id,
-      userId: userId,
-    };
+    contexts[vuId] = { contextId, lastSeq: 0, version: 0 };
   }
 
-  console.log(`Setup complete: ${backlogSessions} sessions ready`);
-
   return {
-    agentId: agentId,
     runId: lib.config.runId,
-    sessions: sessions,
+    backlogSize,
+    contexts,
   };
 }
 
@@ -136,32 +111,43 @@ export function setup() {
 
 export function accumulateBacklog(data) {
   const vuId = __VU;
-  const sessionData = data.sessions[vuId];
-
-  if (!sessionData) {
+  const ctx = data.contexts[vuId];
+  if (!ctx) {
     return;
   }
 
-  const sessionId = sessionData.sessionId;
-  const userId = sessionData.userId;
+  const messageText = `backlog message vu=${vuId} iter=${__ITER} run=${data.runId}`;
 
-  // Send messages via REST API (faster than WebSocket for bulk writes)
-  const res = http.post(
-    `${lib.config.apiUrl}/sessions/${sessionId}/messages`,
-    JSON.stringify({
-      user_id: userId,
-      kind: 'text',
-      content: { text: `backlog message ${__ITER}` },
-      metadata: { bench: true, phase: 'backlog', vu: vuId },
-    }),
-    lib.jsonHeaders
+  const { res, json } = lib.appendMessage(
+    ctx.contextId,
+    {
+      role: 'user',
+      parts: [{ type: 'text', text: messageText }],
+      metadata: {
+        bench: true,
+        scenario: 'cold_replay',
+        phase: 'backlog',
+        vu: vuId,
+        iter: __ITER,
+      },
+    },
+    { idempotencyKey: lib.randomId(`backlog-${vuId}`) }
   );
 
   backlogWrites.add(1);
 
   check(res, {
-    'backlog write success': (r) => r.status === 200,
+    'backlog append ok': (r) => r.status >= 200 && r.status < 300,
   });
+
+  if (json) {
+    if (typeof json.seq === 'number') {
+      ctx.lastSeq = json.seq;
+    }
+    if (typeof json.version === 'number') {
+      ctx.version = json.version;
+    }
+  }
 }
 
 // ============================================================================
@@ -170,81 +156,64 @@ export function accumulateBacklog(data) {
 
 export function replayUnderLoad(data) {
   const vuId = __VU;
-  const sessionData = data.sessions[vuId];
-
-  if (!sessionData) {
+  const ctx = data.contexts[vuId];
+  if (!ctx) {
     return;
   }
 
-  const sessionId = sessionData.sessionId;
-  const userId = sessionData.userId;
-
-  // First iteration: Replay backlog
   if (__ITER === 0) {
-    console.log(`VU${vuId}: Replaying backlog for session ${sessionId}`);
-
-    const startReplay = Date.now();
-    const replayRes = http.get(
-      `${lib.config.apiUrl}/sessions/${sessionId}/messages?after_seq=0&limit=10000`,
-      lib.jsonHeaders
-    );
-    const replayDuration = Date.now() - startReplay;
-
-    replayLatency.add(replayDuration);
-    replaysTotal.add(1);
-
-    const success = check(replayRes, {
-      'replay success': (r) => r.status === 200,
+    const { res, json } = lib.getMessages(ctx.contextId, {
+      from_seq: -data.backlogSize,
+      limit: data.backlogSize,
     });
 
-    if (success) {
-      try {
-        const body = JSON.parse(replayRes.body);
-        const messageCount = body.messages ? body.messages.length : 0;
-        messagesReplayed.add(messageCount);
-        console.log(`VU${vuId}: Replayed ${messageCount} messages in ${replayDuration}ms`);
-      } catch (e) {
-        console.error(`VU${vuId}: Failed to parse replay response: ${e.message}`);
-      }
+    replayLatency.add(res.timings.duration);
+    replaysTotal.add(1);
+
+    const ok = check(res, {
+      'replay fetch ok': (r) => r.status === 200,
+    });
+
+    if (ok && json && Array.isArray(json.messages)) {
+      messagesReplayed.add(json.messages.length);
+      console.log(
+        `VU${vuId}: Replayed ${json.messages.length} messages in ${res.timings.duration}ms from context ${ctx.contextId}`
+      );
+    } else if (!ok) {
+      console.error(`VU${vuId}: replay failed status=${res.status} body=${res.body}`);
     }
   }
 
-  // Continue writing while replay happens (simulates active traffic)
-  const startWrite = Date.now();
-  const writeRes = http.post(
-    `${lib.config.apiUrl}/sessions/${sessionId}/messages`,
-    JSON.stringify({
-      user_id: userId,
-      kind: 'text',
-      content: { text: `active message ${__ITER}` },
-      metadata: { bench: true, phase: 'active', vu: vuId },
-    }),
-    lib.jsonHeaders
+  const appendText = `active message vu=${vuId} iter=${__ITER} run=${data.runId}`;
+  const { res, json } = lib.appendMessage(
+    ctx.contextId,
+    {
+      role: 'assistant',
+      parts: [{ type: 'text', text: appendText }],
+      metadata: {
+        bench: true,
+        scenario: 'cold_replay',
+        phase: 'active',
+        vu: vuId,
+        iter: __ITER,
+      },
+    },
+    { idempotencyKey: lib.randomId(`active-${vuId}`) }
   );
-  const writeDuration = Date.now() - startWrite;
 
-  activeWriteLatency.add(writeDuration);
+  activeWriteLatency.add(res.timings.duration);
   activeWrites.add(1);
 
-  check(writeRes, {
-    'active write success': (r) => r.status === 200,
+  check(res, {
+    'active append ok': (r) => r.status >= 200 && r.status < 300,
   });
-}
 
-// ============================================================================
-// Teardown
-// ============================================================================
-
-export function teardown(data) {
-  if (data.sessions) {
-    const sessionCount = Object.keys(data.sessions).length;
-    console.log(`Cleaning up ${sessionCount} sessions...`);
-    for (const vuId in data.sessions) {
-      const sessionId = data.sessions[vuId].sessionId;
-      lib.deleteSession(sessionId);
+  if (json) {
+    if (typeof json.seq === 'number') {
+      ctx.lastSeq = json.seq;
+    }
+    if (typeof json.version === 'number') {
+      ctx.version = json.version;
     }
   }
-
-  console.log(`\nCold-start replay test complete (Run ID: ${data.runId})`);
-  console.log('Check replay_latency vs active_write_latency to verify no interference');
 }
