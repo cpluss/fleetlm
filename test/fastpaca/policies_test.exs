@@ -51,7 +51,7 @@ defmodule Fastpaca.PoliciesTest do
           build_message("assistant", 4, 8, [%{type: "text"}])
         ])
 
-      {:ok, compacted, flag} = SkipParts.apply(llm_context, %{limit: 10})
+      {:ok, compacted, flag} = SkipParts.apply(llm_context, %{skip_kinds: [:tool], limit: 10})
 
       assert flag == :compact
       assert Enum.map(compacted.messages, & &1.role) == ["assistant", "user"]

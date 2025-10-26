@@ -11,12 +11,20 @@ defmodule Fastpaca.RuntimeTest do
     # Clean up any existing Raft groups
     for group_id <- 0..(RaftManager.num_groups() - 1) do
       server_id = RaftManager.server_id(group_id)
+      full_server_id = {server_id, Node.self()}
 
       case Process.whereis(server_id) do
         nil ->
-          :ok
+          # Even if process is dead, Ra might still have it registered
+          # Force delete from Ra's internal registry
+          try do
+            :ra.force_delete_server(:default, full_server_id)
+          catch
+            _, _ -> :ok
+          end
 
         pid ->
+          # Stop the server gracefully first
           ref = Process.monitor(pid)
           Process.exit(pid, :kill)
 
@@ -25,11 +33,21 @@ defmodule Fastpaca.RuntimeTest do
           after
             1000 -> :ok
           end
+
+          # Now force delete from Ra's registry
+          try do
+            :ra.force_delete_server(:default, full_server_id)
+          catch
+            _, _ -> :ok
+          end
       end
     end
 
     # Remove residual Raft data on disk
     Fastpaca.Runtime.TestHelper.reset()
+
+    # Give Ra time to fully clean up
+    Process.sleep(100)
 
     :ok
   end
@@ -161,23 +179,119 @@ defmodule Fastpaca.RuntimeTest do
     end
   end
 
-  describe "Runtime.get_messages/3" do
-    test "retrieves messages after a given sequence" do
+  # Helper to generate truly unique context IDs that won't collide with existing tests
+  defp unique_ctx_id(prefix) do
+    "#{prefix}-#{System.unique_integer([:positive, :monotonic])}-#{:rand.uniform(999_999_999)}"
+  end
+
+  describe "Runtime.get_messages_tail/3" do
+    test "retrieves last N messages with default offset" do
       config = %Config{
         token_budget: 100_000,
         trigger_ratio: 0.7,
         policy: %{strategy: :last_n, config: %{limit: 100}}
       }
 
-      {:ok, _ctx} = Runtime.upsert_context("ctx-6", config)
+      ctx_id = unique_ctx_id("tail-last-n")
+      {:ok, _ctx} = Runtime.upsert_context(ctx_id, config)
 
-      inbound = for _ <- 1..5, do: {"user", [%{type: "text"}], %{}, 10}
-      {:ok, _} = Runtime.append_messages("ctx-6", inbound)
+      # Add 10 messages
+      inbound = for _ <- 1..10, do: {"user", [%{type: "text"}], %{}, 10}
+      {:ok, _} = Runtime.append_messages(ctx_id, inbound)
 
-      {:ok, messages} = Runtime.get_messages("ctx-6", 2, 10)
+      # Get last 3 messages
+      {:ok, messages} = Runtime.get_messages_tail(ctx_id, 0, 3)
 
       assert length(messages) == 3
-      assert Enum.all?(messages, &(&1.seq > 2))
+      assert Enum.map(messages, & &1.seq) == [8, 9, 10]
+    end
+
+    test "retrieves messages with offset from tail" do
+      config = %Config{
+        token_budget: 100_000,
+        trigger_ratio: 0.7,
+        policy: %{strategy: :last_n, config: %{limit: 100}}
+      }
+
+      ctx_id = unique_ctx_id("tail-offset")
+      {:ok, _ctx} = Runtime.upsert_context(ctx_id, config)
+
+      inbound = for _ <- 1..10, do: {"user", [%{type: "text"}], %{}, 10}
+      {:ok, _} = Runtime.append_messages(ctx_id, inbound)
+
+      # Skip last 3, get next 4 (should be seq 4, 5, 6, 7)
+      {:ok, messages} = Runtime.get_messages_tail(ctx_id, 3, 4)
+
+      assert length(messages) == 4
+      assert Enum.map(messages, & &1.seq) == [4, 5, 6, 7]
+    end
+
+    test "pagination through entire message history" do
+      config = %Config{
+        token_budget: 100_000,
+        trigger_ratio: 0.7,
+        policy: %{strategy: :last_n, config: %{limit: 100}}
+      }
+
+      ctx_id = unique_ctx_id("tail-pages")
+      {:ok, _ctx} = Runtime.upsert_context(ctx_id, config)
+
+      inbound = for _ <- 1..10, do: {"user", [%{type: "text"}], %{}, 10}
+      {:ok, _} = Runtime.append_messages(ctx_id, inbound)
+
+      # Page 1: last 3 messages
+      {:ok, page1} = Runtime.get_messages_tail(ctx_id, 0, 3)
+      assert Enum.map(page1, & &1.seq) == [8, 9, 10]
+
+      # Page 2: next 3 messages
+      {:ok, page2} = Runtime.get_messages_tail(ctx_id, 3, 3)
+      assert Enum.map(page2, & &1.seq) == [5, 6, 7]
+
+      # Page 3: next 3 messages
+      {:ok, page3} = Runtime.get_messages_tail(ctx_id, 6, 3)
+      assert Enum.map(page3, & &1.seq) == [2, 3, 4]
+
+      # Page 4: remaining messages
+      {:ok, page4} = Runtime.get_messages_tail(ctx_id, 9, 3)
+      assert Enum.map(page4, & &1.seq) == [1]
+    end
+
+    test "returns empty list when offset exceeds count" do
+      config = %Config{
+        token_budget: 100_000,
+        trigger_ratio: 0.7,
+        policy: %{strategy: :last_n, config: %{limit: 100}}
+      }
+
+      ctx_id = unique_ctx_id("tail-empty")
+      {:ok, _ctx} = Runtime.upsert_context(ctx_id, config)
+
+      inbound = for _ <- 1..5, do: {"user", [%{type: "text"}], %{}, 10}
+      {:ok, _} = Runtime.append_messages(ctx_id, inbound)
+
+      {:ok, messages} = Runtime.get_messages_tail(ctx_id, 100, 10)
+
+      assert messages == []
+    end
+
+    test "uses default parameters when not specified" do
+      config = %Config{
+        token_budget: 100_000,
+        trigger_ratio: 0.7,
+        policy: %{strategy: :last_n, config: %{limit: 100}}
+      }
+
+      ctx_id = unique_ctx_id("tail-defaults")
+      {:ok, _ctx} = Runtime.upsert_context(ctx_id, config)
+
+      inbound = for _ <- 1..10, do: {"user", [%{type: "text"}], %{}, 10}
+      {:ok, _} = Runtime.append_messages(ctx_id, inbound)
+
+      # Should use defaults: offset=0, limit=100
+      {:ok, messages} = Runtime.get_messages_tail(ctx_id)
+
+      assert length(messages) == 10
+      assert Enum.map(messages, & &1.seq) == Enum.to_list(1..10)
     end
   end
 
@@ -267,7 +381,7 @@ defmodule Fastpaca.RuntimeTest do
         assert hd(results2).seq >= 2
 
         # Verify both messages exist
-        {:ok, messages} = Runtime.get_messages("ctx-failover", 0, 10)
+        {:ok, messages} = Runtime.get_messages_tail("ctx-failover", 0, 10)
         texts = Enum.map(messages, &(&1.parts |> hd() |> Map.get(:text)))
 
         assert "before crash" in texts
@@ -351,7 +465,7 @@ defmodule Fastpaca.RuntimeTest do
       assert window.token_count == 60
 
       # Full message log should still have all 3 messages
-      {:ok, messages} = Runtime.get_messages("ctx-compact", 0, 100)
+      {:ok, messages} = Runtime.get_messages_tail("ctx-compact", 0, 100)
       assert length(messages) == 3
     end
 

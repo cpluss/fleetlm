@@ -156,8 +156,8 @@ defmodule Fastpaca.ContextTest do
     end
   end
 
-  describe "Context.messages_after/3" do
-    test "returns messages after a given sequence number" do
+  describe "Context.messages_tail/3" do
+    test "returns last N messages when offset is 0" do
       config = %Config{
         token_budget: 100_000,
         trigger_ratio: 0.7,
@@ -166,35 +166,70 @@ defmodule Fastpaca.ContextTest do
 
       context = Context.new("ctx-1", config)
 
-      inbound = [
-        {"user", [%{type: "text"}], %{}, 10},
-        {"assistant", [%{type: "text"}], %{}, 10},
-        {"user", [%{type: "text"}], %{}, 10}
-      ]
-
-      {context, _appended, _flag} = Context.append(context, inbound)
-
-      messages = Context.messages_after(context, 1, :infinity)
-
-      assert length(messages) == 2
-      assert Enum.all?(messages, &(&1.seq > 1))
-    end
-
-    test "respects limit parameter" do
-      config = %Config{
-        token_budget: 100_000,
-        trigger_ratio: 0.7,
-        policy: %{strategy: :last_n, config: %{limit: 100}}
-      }
-
-      context = Context.new("ctx-1", config)
-
+      # Add 10 messages (seq 1..10)
       inbound = for _i <- 1..10, do: {"user", [%{type: "text"}], %{}, 10}
       {context, _appended, _flag} = Context.append(context, inbound)
 
-      messages = Context.messages_after(context, 0, 5)
+      # Get last 3 messages (should be seq 8, 9, 10)
+      messages = Context.messages_tail(context, 0, 3)
 
-      assert length(messages) == 5
+      assert length(messages) == 3
+      assert Enum.map(messages, & &1.seq) == [8, 9, 10]
+    end
+
+    test "returns messages with offset from tail" do
+      config = %Config{
+        token_budget: 100_000,
+        trigger_ratio: 0.7,
+        policy: %{strategy: :last_n, config: %{limit: 100}}
+      }
+
+      context = Context.new("ctx-1", config)
+
+      # Add 10 messages (seq 1..10)
+      inbound = for _i <- 1..10, do: {"user", [%{type: "text"}], %{}, 10}
+      {context, _appended, _flag} = Context.append(context, inbound)
+
+      # Skip last 3 messages, get next 3 (should be seq 5, 6, 7)
+      messages = Context.messages_tail(context, 3, 3)
+
+      assert length(messages) == 3
+      assert Enum.map(messages, & &1.seq) == [5, 6, 7]
+    end
+
+    test "returns empty list when offset exceeds message count" do
+      config = %Config{
+        token_budget: 100_000,
+        trigger_ratio: 0.7,
+        policy: %{strategy: :last_n, config: %{limit: 100}}
+      }
+
+      context = Context.new("ctx-1", config)
+
+      inbound = for _i <- 1..5, do: {"user", [%{type: "text"}], %{}, 10}
+      {context, _appended, _flag} = Context.append(context, inbound)
+
+      messages = Context.messages_tail(context, 10, 5)
+
+      assert messages == []
+    end
+
+    test "returns messages in chronological order (oldest to newest)" do
+      config = %Config{
+        token_budget: 100_000,
+        trigger_ratio: 0.7,
+        policy: %{strategy: :last_n, config: %{limit: 100}}
+      }
+
+      context = Context.new("ctx-1", config)
+
+      inbound = for _i <- 1..5, do: {"user", [%{type: "text"}], %{}, 10}
+      {context, _appended, _flag} = Context.append(context, inbound)
+
+      messages = Context.messages_tail(context, 0, 5)
+
+      seqs = Enum.map(messages, & &1.seq)
+      assert seqs == Enum.sort(seqs)
     end
   end
 
@@ -203,7 +238,7 @@ defmodule Fastpaca.ContextTest do
       config = %Config{
         token_budget: 100,
         trigger_ratio: 0.7,
-        policy: %{strategy: :last_n, config: %{}}
+        policy: %{strategy: :last_n, config: %{limit: 200}}
       }
 
       context = Context.new("ctx-1", config)
@@ -218,7 +253,7 @@ defmodule Fastpaca.ContextTest do
       config = %Config{
         token_budget: 100,
         trigger_ratio: 0.7,
-        policy: %{strategy: :last_n, config: %{}}
+        policy: %{strategy: :last_n, config: %{limit: 200}}
       }
 
       context = Context.new("ctx-1", config)
@@ -235,7 +270,7 @@ defmodule Fastpaca.ContextTest do
       config = %Config{
         token_budget: 100_000,
         trigger_ratio: 0.7,
-        policy: %{strategy: :last_n, config: %{}}
+        policy: %{strategy: :last_n, config: %{limit: 200}}
       }
 
       context = Context.new("ctx-1", config)
