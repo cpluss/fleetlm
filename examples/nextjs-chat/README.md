@@ -88,7 +88,6 @@ All Fastpaca logic is hidden in the backend. Frontend is pure ai-sdk.
 
 - `app/page.tsx` - Chat UI (standard `useChat`)
 - `app/api/chat/route.ts` - Fastpaca integration + streaming
-- `lib/fastpaca.ts` - Helper functions for Fastpaca REST calls
 
 ## Running
 
