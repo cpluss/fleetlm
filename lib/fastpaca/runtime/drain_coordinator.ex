@@ -221,9 +221,7 @@ defmodule Fastpaca.Runtime.DrainCoordinator do
   defp mark_draining(meta) do
     ts = timestamp()
 
-    update_presence_meta(
-      Map.merge(meta, %{status: :draining, draining_at: ts, updated_at: ts})
-    )
+    update_presence_meta(Map.merge(meta, %{status: :draining, draining_at: ts, updated_at: ts}))
   end
 
   defp maybe_restore_presence(nil, _restore?, _status), do: :ok

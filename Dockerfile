@@ -28,8 +28,6 @@ COPY config ./config
 
 RUN mix deps.get --only ${MIX_ENV} && \
     mix deps.compile
-
-COPY priv priv
 COPY lib lib
 
 RUN mix compile
@@ -57,7 +55,7 @@ WORKDIR /app
 RUN groupadd --gid 1000 app && \
     useradd --uid 1000 --gid app --home /app --shell /bin/bash app
 
-COPY --from=build /app/_build/prod/rel/fleetlm ./fleetlm
+COPY --from=build /app/_build/prod/rel/fastpaca ./fastpaca
 COPY docker-entrypoint.sh /app/entrypoint.sh
 
 RUN chmod +x /app/entrypoint.sh && \
