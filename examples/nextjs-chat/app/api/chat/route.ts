@@ -1,5 +1,5 @@
 import { openai } from '@ai-sdk/openai';
-import { streamText } from 'ai';
+import { streamText, convertToModelMessages, UIMessage } from 'ai';
 import { createClient } from 'fastpaca';
 
 export const maxDuration = 30;
@@ -33,18 +33,10 @@ export async function POST(req: Request) {
   }
 
   // 3. Stream to OpenAI via Fastpaca helper
-  return ctx.stream(async (contextMessages) => {
-    const aiMessages = contextMessages.map((msg) => ({
-      role: msg.role as 'user' | 'assistant' | 'system',
-      content: msg.parts
-        .filter((p) => p.type === 'text')
-        .map((p) => (p as any).text)
-        .join(' '),
-    }));
-
+  return ctx.stream(async (contextMessages: UIMessage[]) => {
     return streamText({
       model: openai('gpt-4o-mini'),
-      messages: aiMessages as any,
+      messages: convertToModelMessages(contextMessages),
       // Explicitly append on finish
       onFinish: async ({ text }) => {
         await ctx.append({
