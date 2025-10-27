@@ -48,6 +48,10 @@ if cluster_nodes && cluster_nodes != "" do
     ]
 end
 
+if raft_dir = System.get_env("FASTPACA_RAFT_DATA_DIR") do
+  config :fastpaca, :raft_data_dir, raft_dir
+end
+
 if config_env() == :prod do
   # Optional: Override slot log directory (for mounting NVMe, etc)
   if slot_log_dir = System.get_env("SLOT_LOG_DIR") do

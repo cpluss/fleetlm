@@ -30,4 +30,38 @@ defmodule Fastpaca.Observability.Telemetry do
 
     :ok
   end
+
+  @doc """
+  Emit an event describing the result of a runtime drain.
+
+  Measurements:
+    - `:elapsed_ms` – total time spent draining
+
+  Metadata:
+    - `:status` – `:ok`, `:partial`, or `:eviction_timeout`
+    - `:total_groups` – total number of local groups inspected
+    - `:snapshot_ok` – snapshots completed successfully
+    - `:snapshot_errors` – snapshots that failed or timed out
+    - `:eviction` – `:ok` or `:timeout` while waiting for membership removal
+  """
+  @spec drain_result(atom(), non_neg_integer(), non_neg_integer(), non_neg_integer(), atom(), non_neg_integer()) ::
+          :ok
+  def drain_result(status, total_groups, snapshot_ok, snapshot_errors, eviction, elapsed_ms)
+      when is_atom(status) and is_atom(eviction) and is_integer(total_groups) and total_groups >= 0 and
+             is_integer(snapshot_ok) and snapshot_ok >= 0 and is_integer(snapshot_errors) and
+             snapshot_errors >= 0 and is_integer(elapsed_ms) and elapsed_ms >= 0 do
+    :telemetry.execute(
+      [:fastpaca, :runtime, :drain],
+      %{elapsed_ms: elapsed_ms},
+      %{
+        status: status,
+        total_groups: total_groups,
+        snapshot_ok: snapshot_ok,
+        snapshot_errors: snapshot_errors,
+        eviction: eviction
+      }
+    )
+
+    :ok
+  end
 end

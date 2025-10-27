@@ -23,6 +23,8 @@ defmodule Fastpaca.Runtime.RaftManager do
   @num_groups 256
   @num_lanes 16
   @replication_factor 3
+  @join_backoff_base_ms 100
+  @join_backoff_max_ms 5_000
 
   @doc false
   def num_groups, do: @num_groups
@@ -178,9 +180,9 @@ defmodule Fastpaca.Runtime.RaftManager do
         :ok
 
       {:error, :enoent} ->
-        # Cluster doesn't exist yet, retry
-        # Exponential backoff, not great to sleep but what can we do
-        backoff_ms = 100 * :math.pow(2, attempts)
+        # Cluster doesn't exist yet, retry with capped exponential backoff
+        exponent = round(:math.pow(2, attempts))
+        backoff_ms = min(@join_backoff_max_ms, @join_backoff_base_ms * exponent)
         Logger.warning("RaftManager: Cluster doesn't exist yet, retrying in #{backoff_ms}ms")
         Process.sleep(backoff_ms)
 

@@ -1,6 +1,8 @@
 defmodule FastpacaWeb.HealthController do
   use FastpacaWeb, :controller
 
+  alias Fastpaca.Runtime.RaftTopology
+
   @doc """
   GET /health/live
 
@@ -16,8 +18,12 @@ defmodule FastpacaWeb.HealthController do
   Readiness probe - returns ok when Raft groups have leaders.
   """
   def ready(conn, _params) do
-    # TODO: Check if Raft groups are ready
-    # For now, just return ok
-    json(conn, %{status: "ok"})
+    if RaftTopology.ready?() do
+      json(conn, %{status: "ok"})
+    else
+      conn
+      |> put_status(:service_unavailable)
+      |> json(%{status: "starting", reason: "raft_sync"})
+    end
   end
 end

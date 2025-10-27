@@ -25,6 +25,18 @@ defmodule FastpacaWeb.FallbackController do
     |> json(%{error: "context_tombstoned"})
   end
 
+  def call(conn, {:timeout, _leader}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "raft_timeout"})
+  end
+
+  def call(conn, {:error, {:no_available_replicas, _failures}}) do
+    conn
+    |> put_status(:service_unavailable)
+    |> json(%{error: "raft_unavailable"})
+  end
+
   def call(conn, {:error, reason})
       when reason in [
              :invalid_message,

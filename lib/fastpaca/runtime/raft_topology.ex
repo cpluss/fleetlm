@@ -35,6 +35,9 @@ defmodule Fastpaca.Runtime.RaftTopology do
   @rebalance_debounce_ms 5_000
   @readiness_interval_ms 1_000
 
+  @doc false
+  def presence_topic, do: @presence_topic
+
   defmodule Presence do
     @moduledoc """
     We use phoenix presence as a CRDT to maintain a list of nodes available / seen / present
@@ -64,6 +67,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
     |> Enum.filter(&(&1[:status] == :ready))
     |> Enum.map(& &1[:node])
     |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
     |> Enum.sort()
   end
@@ -74,8 +78,8 @@ defmodule Fastpaca.Runtime.RaftTopology do
   """
   def all_nodes do
     Presence.list(@presence_topic)
-    |> Enum.map(fn {_key, %{metas: metas}} -> metas end)
-    |> List.flatten()
+    |> Enum.flat_map(fn {_key, %{metas: metas}} -> metas end)
+    |> Enum.filter(&(Map.get(&1, :status) != :draining))
     |> Enum.map(& &1[:node])
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
@@ -314,7 +318,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
 
         # Add members first, then wait for commit, then remove
         unless Enum.empty?(to_add) do
-          Enum.each(to_add, fn member -> add_member(group_id, member) end)
+          Enum.each(to_add, fn member -> add_member(group_id, ref, member) end)
 
           # Poll until adds are committed (no blind sleeps!)
           case wait_for_membership_change(ref, desired, timeout_ms: 10000) do
@@ -329,7 +333,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
         end
 
         # Only remove after adds are fully committed
-        Enum.each(to_remove, fn member -> remove_member(group_id, member) end)
+        Enum.each(to_remove, fn member -> remove_member(group_id, ref, member) end)
 
       {:error, :noproc} ->
         :ok
@@ -346,16 +350,14 @@ defmodule Fastpaca.Runtime.RaftTopology do
     :ok
   end
 
-  defp add_member(group_id, {server_id, node} = member) do
-    my_server = {server_id, Node.self()}
-
+  defp add_member(group_id, ref, {server_id, node} = member) do
     Logger.debug("RaftTopology: adding #{inspect(node)} to group #{group_id}")
 
     # Ensure the group is started on the target node first
     :rpc.call(node, RaftManager, :start_group, [group_id])
 
     # Use server reference (not cluster name atom)
-    case :ra.add_member(my_server, member) do
+    case :ra.add_member(ref, member) do
       {:ok, _members, _leader} ->
         Logger.debug("RaftTopology: added #{inspect(node)} to group #{group_id}")
         :ok
@@ -377,13 +379,11 @@ defmodule Fastpaca.Runtime.RaftTopology do
     end
   end
 
-  defp remove_member(group_id, {server_id, node} = member) do
-    my_server = {server_id, Node.self()}
-
+  defp remove_member(group_id, ref, {server_id, node} = member) do
     Logger.debug("RaftTopology: removing #{inspect(node)} from group #{group_id}")
 
     # Use server reference (not cluster name atom)
-    case :ra.remove_member(my_server, member) do
+    case :ra.remove_member(ref, member) do
       {:ok, _members, _leader} ->
         Logger.debug("RaftTopology: removed #{inspect(node)} from group #{group_id}")
         :rpc.call(node, :ra, :stop_server, [:default, {server_id, node}])
