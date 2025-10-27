@@ -34,7 +34,7 @@ jobs:
       - name: Build site
         working-directory: docs-site
         env:
-          DOCUSAURUS_SITE_URL: https://docs.fleetlm.com
+          DOCUSAURUS_SITE_URL: https://docs.fastpaca.com
           DOCUSAURUS_BASE_URL: /
         run: npm run build
 
