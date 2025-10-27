@@ -55,8 +55,31 @@ fi
 
 kill $NODE3_PIDS
 echo "  ✓ Node3 killed (PIDs: $NODE3_PIDS)"
-echo "  Waiting 5s for cluster to detect failure..."
-sleep 5
+wait_for_ready() {
+  local attempts=$1
+  local interval=$2
+  local url=$3
+
+  for ((i = 1; i <= attempts; i++)); do
+    health=$(curl -sf "$url" || true)
+
+    if echo "$health" | grep -q '"status":"ok"'; then
+      echo -e "  ✓ Cluster ready after $((i * interval))s"
+      return 0
+    elif echo "$health" | grep -q '"status":"starting"'; then
+      echo -e "  ✓ Cluster functional (status=starting) after $((i * interval))s"
+      return 0
+    fi
+
+    sleep "$interval"
+  done
+
+  echo -e "  ${YELLOW}⚠ Cluster not ready after $((attempts * interval))s${NC}"
+  return 1
+}
+
+echo "  Waiting for cluster to detect failure (polling readiness)..."
+wait_for_ready 15 1 "http://localhost:4001/health/ready"
 echo ""
 
 # Step 3: Verify cluster still works (should have 4 healthy nodes)
@@ -84,8 +107,8 @@ fi
 
 kill $NODE4_PIDS
 echo "  ✓ Node4 killed (PIDs: $NODE4_PIDS)"
-echo "  Waiting 5s for cluster to detect failure..."
-sleep 5
+echo "  Waiting for cluster to detect second failure..."
+wait_for_ready 15 1 "http://localhost:4001/health/ready"
 echo ""
 
 # Step 5: Verify cluster still works with 3 nodes (minimum for quorum with 3-replica groups)
@@ -131,8 +154,8 @@ echo "Step 7: Restarting node3 (simulating node recovery)..."
 CLUSTER_NODES="node1@127.0.0.1,node2@127.0.0.1,node3@127.0.0.1,node4@127.0.0.1,node5@127.0.0.1" PORT=4002 elixir --name node3@127.0.0.1 -S mix phx.server > logs/node3-restart.log 2>&1 &
 NODE3_NEW_PID=$!
 echo "  ✓ Node3 restarted (PID: $NODE3_NEW_PID)"
-echo "  Waiting 10s for node to rejoin cluster..."
-sleep 10
+echo "  Waiting for node3 to rejoin cluster..."
+wait_for_ready 30 1 "http://localhost:4002/health/ready"
 echo ""
 
 # Step 8: Verify node3 rejoined and can serve requests

@@ -55,9 +55,31 @@ echo -e "  ✓ Node1 killed (PIDs: $NODE1_PIDS)"
 echo ""
 
 # Wait for Raft to elect new leader
-echo "4. Waiting 3s for Raft leader election..."
-sleep 3
-echo -e "  ✓ Election period complete"
+echo "4. Waiting for cluster to recover (polling readiness)..."
+wait_for_readiness() {
+  local attempts=$1
+  local interval=$2
+  local url=$3
+
+  for ((i = 1; i <= attempts; i++)); do
+    health=$(curl -sf "$url" || true)
+
+    if echo "$health" | grep -q '"status":"ok"'; then
+      echo -e "  ✓ Cluster ready after $((i * interval))s"
+      return 0
+    elif echo "$health" | grep -q '"status":"starting"'; then
+      echo -e "  ✓ Cluster functional (status=starting) after $((i * interval))s"
+      return 0
+    fi
+
+    sleep "$interval"
+  done
+
+  echo -e "  ${YELLOW}⚠ Cluster not ready after $((attempts * interval))s${NC}"
+  return 1
+}
+
+wait_for_readiness 15 1 "http://localhost:4001/health/ready"
 echo ""
 
 # Try to write via node2 (should work via new leader)
