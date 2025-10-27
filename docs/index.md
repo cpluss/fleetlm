@@ -11,6 +11,7 @@ sidebar_position: 0
 - **[Quick Start](./usage/quickstart.md)** – ship a context endpoint in minutes  
 - **[Getting Started](./usage/getting-started.md)** – understand how the pieces fit  
 - **[API Reference](./api/rest.md)** – REST & websocket surfaces
+* **[View source](https://github.com/fastpaca/fastpaca)** - view the source code
 
 ---
 
