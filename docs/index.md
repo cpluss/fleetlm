@@ -4,7 +4,7 @@ slug: /
 sidebar_position: 0
 ---
 
-# Fastpaca
+# [Fastpaca](https://fastpaca.com)
 
 **Context infra for LLM apps.** Fastpaca keeps full history and maintains your LLM context window in one backend service. 
 
