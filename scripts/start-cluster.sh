@@ -1,5 +1,5 @@
 #!/bin/bash
-# Start a 3-node local Raft cluster for testing
+# Start a 5-node local Raft cluster for testing
 
 set -e
 
@@ -9,7 +9,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}Starting 3-node FleetLM Raft cluster...${NC}"
+echo -e "${GREEN}Starting 5-node FleetLM Raft cluster...${NC}"
 echo ""
 
 # Check if already running
@@ -29,7 +29,7 @@ echo -e "${GREEN}Raft data cleaned${NC}"
 echo ""
 
 # Start all nodes with CLUSTER_NODES env for libcluster discovery
-CLUSTER_NODES="node1@127.0.0.1,node2@127.0.0.1,node3@127.0.0.1"
+CLUSTER_NODES="node1@127.0.0.1,node2@127.0.0.1,node3@127.0.0.1,node4@127.0.0.1,node5@127.0.0.1"
 
 echo -e "${GREEN}Starting node1@127.0.0.1 on port 4000...${NC}"
 CLUSTER_NODES="$CLUSTER_NODES" PORT=4000 elixir --name node1@127.0.0.1 -S mix phx.server > logs/node1.log 2>&1 &
@@ -46,6 +46,16 @@ CLUSTER_NODES="$CLUSTER_NODES" PORT=4002 elixir --name node3@127.0.0.1 -S mix ph
 NODE3_PID=$!
 echo "  PID: $NODE3_PID"
 
+echo -e "${GREEN}Starting node4@127.0.0.1 on port 4003...${NC}"
+CLUSTER_NODES="$CLUSTER_NODES" PORT=4003 elixir --name node4@127.0.0.1 -S mix phx.server > logs/node4.log 2>&1 &
+NODE4_PID=$!
+echo "  PID: $NODE4_PID"
+
+echo -e "${GREEN}Starting node5@127.0.0.1 on port 4004...${NC}"
+CLUSTER_NODES="$CLUSTER_NODES" PORT=4004 elixir --name node5@127.0.0.1 -S mix phx.server > logs/node5.log 2>&1 &
+NODE5_PID=$!
+echo "  PID: $NODE5_PID"
+
 echo ""
 echo -e "${GREEN}Cluster started!${NC}"
 echo ""
@@ -53,11 +63,15 @@ echo "Nodes (libcluster CLUSTER_NODES=$CLUSTER_NODES):"
 echo "  node1@127.0.0.1 - http://localhost:4000 (PID: $NODE1_PID)"
 echo "  node2@127.0.0.1 - http://localhost:4001 (PID: $NODE2_PID)"
 echo "  node3@127.0.0.1 - http://localhost:4002 (PID: $NODE3_PID)"
+echo "  node4@127.0.0.1 - http://localhost:4003 (PID: $NODE4_PID)"
+echo "  node5@127.0.0.1 - http://localhost:4004 (PID: $NODE5_PID)"
 echo ""
 echo "Logs:"
 echo "  tail -f logs/node1.log"
 echo "  tail -f logs/node2.log"
 echo "  tail -f logs/node3.log"
+echo "  tail -f logs/node4.log"
+echo "  tail -f logs/node5.log"
 echo ""
 echo "Test cluster connectivity:"
 echo "  ./scripts/test-cluster.sh"

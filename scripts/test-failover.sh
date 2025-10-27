@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test Raft leader failover by killing a node
+# Test Raft leader failover by killing nodes (5-node cluster)
 
 set -e
 
@@ -8,32 +8,42 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${YELLOW}Testing Raft leader failover...${NC}"
+echo -e "${YELLOW}Testing Raft leader failover (5-node cluster)...${NC}"
 echo ""
 
-# Check cluster is running
-if ! pgrep -f "node1@127.0.0.1" > /dev/null; then
-  echo -e "${RED}Cluster not running. Start it first:${NC}"
+# Check cluster is running (check at least 3 nodes)
+running_nodes=0
+for node in node1@127.0.0.1 node2@127.0.0.1 node3@127.0.0.1 node4@127.0.0.1 node5@127.0.0.1; do
+  if pgrep -f "$node" > /dev/null; then
+    running_nodes=$((running_nodes + 1))
+  fi
+done
+
+if [ $running_nodes -lt 3 ]; then
+  echo -e "${RED}Cluster not running (only $running_nodes nodes). Start it first:${NC}"
   echo "  ./scripts/start-cluster.sh"
   exit 1
 fi
 
-# Create a test session
-echo "1. Creating test session..."
-USER_ID="failover-test-$(date +%s)"
-SESSION=$(curl -s http://localhost:4000/api/sessions \
-  -H "Content-Type: application/json" \
-  -d "{\"user_id\":\"$USER_ID\",\"agent_id\":\"bench-echo-agent\",\"metadata\":{}}")
+echo -e "${GREEN}Found $running_nodes running nodes${NC}"
+echo ""
 
-SESSION_ID=$(echo $SESSION | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-echo -e "  ✓ Session: $SESSION_ID"
+# Create a test context
+echo "1. Creating test context..."
+CONTEXT_ID="failover-test-$(date +%s)"
+
+CONTEXT=$(curl -s -X PUT http://localhost:4000/v1/contexts/$CONTEXT_ID \
+  -H "Content-Type: application/json" \
+  -d "{\"token_budget\":100000,\"metadata\":{}}")
+
+echo -e "  ✓ Context: $CONTEXT_ID"
 echo ""
 
 # Write a message
 echo "2. Writing initial message to node1..."
-curl -s http://localhost:4000/api/sessions/$SESSION_ID/messages \
+curl -s -X POST http://localhost:4000/v1/contexts/$CONTEXT_ID/messages \
   -H "Content-Type: application/json" \
-  -d "{\"user_id\":\"$USER_ID\",\"kind\":\"text\",\"content\":{\"text\":\"before failover\"},\"metadata\":{}}" > /dev/null
+  -d "{\"message\":{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"before failover\"}]}}" > /dev/null
 echo -e "  ✓ Message written"
 echo ""
 
@@ -52,9 +62,9 @@ echo ""
 
 # Try to write via node2 (should work via new leader)
 echo "5. Writing message via node2 (tests failover)..."
-FAILOVER_RESP=$(curl -s http://localhost:4001/api/sessions/$SESSION_ID/messages \
+FAILOVER_RESP=$(curl -s -X POST http://localhost:4001/v1/contexts/$CONTEXT_ID/messages \
   -H "Content-Type: application/json" \
-  -d "{\"user_id\":\"$USER_ID\",\"kind\":\"text\",\"content\":{\"text\":\"after failover\"},\"metadata\":{}}")
+  -d "{\"message\":{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"after failover\"}]}}")
 
 if echo "$FAILOVER_RESP" | grep -q '"seq"'; then
   echo -e "  ${GREEN}✓ Write succeeded after failover!${NC}"
@@ -67,18 +77,77 @@ echo ""
 
 # Read from node3 (should have both messages)
 echo "6. Reading messages from node3..."
-MSGS=$(curl -s "http://localhost:4002/api/sessions/$SESSION_ID/messages?limit=10")
-COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l)
+for i in {1..20}; do
+  MSGS=$(curl -s "http://localhost:4002/v1/contexts/$CONTEXT_ID/tail?limit=10")
+  COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l)
 
-if [ "$COUNT" -ge 2 ]; then
-  echo -e "  ${GREEN}✓ Both messages present ($COUNT total)${NC}"
-else
-  echo -e "  ${YELLOW}⚠ Only $COUNT messages found (expected 2+)${NC}"
-fi
+  if [ "$COUNT" -ge 2 ]; then
+    if [ $i -gt 1 ]; then
+      echo -e "  ${GREEN}✓ Both messages present ($COUNT total, took $i retries)${NC}"
+    else
+      echo -e "  ${GREEN}✓ Both messages present ($COUNT total)${NC}"
+    fi
+    break
+  fi
+
+  if [ $i -eq 20 ]; then
+    echo -e "  ${YELLOW}⚠ Only $COUNT messages found (expected 2+)${NC}"
+  fi
+
+  sleep 0.05
+done
+echo ""
+
+# Verify messages on node4 and node5 as well
+echo "7. Reading messages from node4..."
+for i in {1..20}; do
+  MSGS=$(curl -s "http://localhost:4003/v1/contexts/$CONTEXT_ID/tail?limit=10")
+  COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l)
+
+  if [ "$COUNT" -ge 2 ]; then
+    if [ $i -gt 1 ]; then
+      echo -e "  ${GREEN}✓ Both messages present on node4 ($COUNT total, took $i retries)${NC}"
+    else
+      echo -e "  ${GREEN}✓ Both messages present on node4 ($COUNT total)${NC}"
+    fi
+    break
+  fi
+
+  if [ $i -eq 20 ]; then
+    echo -e "  ${YELLOW}⚠ Only $COUNT messages found on node4 (expected 2+)${NC}"
+  fi
+
+  sleep 0.05
+done
+echo ""
+
+echo "8. Reading messages from node5..."
+for i in {1..20}; do
+  MSGS=$(curl -s "http://localhost:4004/v1/contexts/$CONTEXT_ID/tail?limit=10")
+  COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l)
+
+  if [ "$COUNT" -ge 2 ]; then
+    if [ $i -gt 1 ]; then
+      echo -e "  ${GREEN}✓ Both messages present on node5 ($COUNT total, took $i retries)${NC}"
+    else
+      echo -e "  ${GREEN}✓ Both messages present on node5 ($COUNT total)${NC}"
+    fi
+    break
+  fi
+
+  if [ $i -eq 20 ]; then
+    echo -e "  ${YELLOW}⚠ Only $COUNT messages found on node5 (expected 2+)${NC}"
+  fi
+
+  sleep 0.05
+done
 echo ""
 
 # Cleanup
-curl -s -X DELETE http://localhost:4001/api/sessions/$SESSION_ID > /dev/null
+echo "9. Cleaning up test context..."
+curl -s -X DELETE http://localhost:4001/v1/contexts/$CONTEXT_ID > /dev/null
+echo -e "  ✓ Context deleted"
+echo ""
 
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}✓ Failover test passed!${NC}"
@@ -86,14 +155,14 @@ echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━
 echo ""
 echo "Raft handled node failure:"
 echo "  - Node1 killed"
-echo "  - Leader re-elected among node2/node3"
+echo "  - Leader re-elected among remaining nodes"
 echo "  - Writes continued via new leader"
-echo "  - Data replicated across remaining nodes"
+echo "  - Data replicated across all remaining nodes (node2-node5)"
 echo ""
-echo "Cluster now running 2-of-3 nodes (degraded but operational)"
+echo "Cluster now running 4-of-5 nodes (one node down, still fully operational)"
 echo ""
 echo "To restart node1:"
-echo "  RAFT_DATA_DIR=priv/raft/node1 PORT=4000 elixir --sname node1@127.0.0.1 -S mix phx.server &"
+echo "  CLUSTER_NODES=node1@127.0.0.1,node2@127.0.0.1,node3@127.0.0.1,node4@127.0.0.1,node5@127.0.0.1 PORT=4000 elixir --name node1@127.0.0.1 -S mix phx.server > logs/node1.log 2>&1 &"
 echo ""
 echo "To stop remaining nodes:"
 echo "  ./scripts/stop-cluster.sh"

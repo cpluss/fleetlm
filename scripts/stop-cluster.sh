@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stop the local 3-node Raft cluster
+# Stop the local 5-node Raft cluster
 
 set -e
 
@@ -11,7 +11,7 @@ NC='\033[0m'
 echo -e "${YELLOW}Stopping FleetLM Raft cluster...${NC}"
 
 # Find and kill all nodes
-for node in node1@127.0.0.1 node2@127.0.0.1 node3@127.0.0.1; do
+for node in node1@127.0.0.1 node2@127.0.0.1 node3@127.0.0.1 node4@127.0.0.1 node5@127.0.0.1; do
   pids=$(pgrep -f "$node" || true)
   if [ -n "$pids" ]; then
     echo "Stopping $node (PIDs: $pids)"
@@ -25,7 +25,7 @@ done
 sleep 2
 
 # Force kill if still running
-for node in node1@127.0.0.1 node2@127.0.0.1 node3@127.0.0.1; do
+for node in node1@127.0.0.1 node2@127.0.0.1 node3@127.0.0.1 node4@127.0.0.1 node5@127.0.0.1; do
   pids=$(pgrep -f "$node" || true)
   if [ -n "$pids" ]; then
     echo "Force killing $node (PIDs: $pids)"

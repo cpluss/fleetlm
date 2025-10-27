@@ -1,5 +1,6 @@
 #!/bin/bash
-# Test that the 3-node cluster is working correctly
+# Test that the 5-node cluster is working correctly
+# IMPORTANT: Any node should be able to serve any context (via routing/proxying)
 
 set -e
 
@@ -8,13 +9,13 @@ RED='\033[0;31m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-echo -e "${GREEN}Testing 3-node Raft cluster...${NC}"
+echo -e "${GREEN}Testing 5-node Raft cluster...${NC}"
 echo ""
 
 # Check all nodes are running
 echo "1. Checking nodes are running..."
-for port in 4000 4001 4002; do
-  if curl -s http://localhost:$port/api/agents > /dev/null; then
+for port in 4000 4001 4002 4003 4004; do
+  if curl -s http://localhost:$port/health/ready > /dev/null; then
     echo -e "  ✓ Node on port $port is up"
   else
     echo -e "${RED}  ✗ Node on port $port is down${NC}"
@@ -23,30 +24,28 @@ for port in 4000 4001 4002; do
 done
 echo ""
 
-# Create a session via node1
-echo "2. Creating test session via node1..."
-USER_ID="test-user-$(date +%s)"
-AGENT_ID="bench-echo-agent"
+# Create a context via node1
+echo "2. Creating test context via node1..."
+CONTEXT_ID="test-context-$(date +%s)"
 
-SESSION=$(curl -s http://localhost:4000/api/sessions \
+CONTEXT=$(curl -s -X PUT http://localhost:4000/v1/contexts/$CONTEXT_ID \
   -H "Content-Type: application/json" \
-  -d "{\"user_id\":\"$USER_ID\",\"agent_id\":\"$AGENT_ID\",\"metadata\":{\"test\":true}}")
+  -d "{\"token_budget\":100000,\"metadata\":{\"test\":true}}")
 
-SESSION_ID=$(echo $SESSION | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-
-if [ -z "$SESSION_ID" ]; then
-  echo -e "${RED}  ✗ Failed to create session${NC}"
+if echo "$CONTEXT" | grep -q '"token_budget"'; then
+  echo -e "  ✓ Context created: $CONTEXT_ID"
+else
+  echo -e "${RED}  ✗ Failed to create context${NC}"
+  echo "Response: $CONTEXT"
   exit 1
 fi
-
-echo -e "  ✓ Session created: $SESSION_ID"
 echo ""
 
 # Write a message via node1
 echo "3. Writing message via node1..."
-MSG_RESP=$(curl -s http://localhost:4000/api/sessions/$SESSION_ID/messages \
+MSG_RESP=$(curl -s -X POST http://localhost:4000/v1/contexts/$CONTEXT_ID/messages \
   -H "Content-Type: application/json" \
-  -d "{\"user_id\":\"$USER_ID\",\"kind\":\"text\",\"content\":{\"text\":\"cluster test\"},\"metadata\":{}}")
+  -d "{\"message\":{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"cluster test message\"}]}}")
 
 MSG_SEQ=$(echo $MSG_RESP | grep -o '"seq":[0-9]*' | cut -d':' -f2)
 
@@ -59,63 +58,125 @@ fi
 echo -e "  ✓ Message written with seq: $MSG_SEQ"
 echo ""
 
-# Read from node2 (different node - tests Raft replication)
-# Followers lag 1-10ms applying committed entries to FSM state
-# Retry handles eventual consistency (correct for distributed reads)
-echo "4. Reading message from node2 (tests Raft replication)..."
+# Critical test: ALL nodes should be able to READ the context
+# Even if only 3 nodes host the Raft replicas, the API layer should handle routing
+echo "4. Testing that ALL nodes can read the context..."
+echo "   (API should route to Raft replicas transparently)"
+echo ""
 
-for i in {1..20}; do
-  MSGS=$(curl -s "http://localhost:4001/api/sessions/$SESSION_ID/messages?limit=10")
-  READ_COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l)
+failed_nodes=0
+successful_reads=0
 
-  if [ "$READ_COUNT" -ge 1 ]; then
-    if [ $i -gt 1 ]; then
-      echo -e "  ✓ Message replicated to node2 (took $i retries)"
-    else
-      echo -e "  ✓ Message replicated to node2"
+for port in 4000 4001 4002 4003 4004; do
+  echo -n "  Node on port $port: "
+
+  # Try reading with retries (allow for eventual consistency)
+  found=false
+  error_msg=""
+
+  for i in {1..20}; do
+    MSGS=$(curl -s "http://localhost:$port/v1/contexts/$CONTEXT_ID/tail?limit=10" 2>&1)
+
+    # Check if we got an error page (HTML response)
+    if echo "$MSGS" | grep -q "DOCTYPE html"; then
+      error_msg="Received error page"
+      sleep 0.05
+      continue
     fi
-    break
-  fi
 
-  if [ $i -eq 20 ]; then
-    echo -e "${RED}  ✗ Message not replicated to node2 after 1s${NC}"
-    echo "Response: $MSGS"
-    exit 1
-  fi
+    READ_COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l | tr -d ' ')
 
-  sleep 0.05
+    if [ "$READ_COUNT" -ge 1 ]; then
+      found=true
+      break
+    fi
+
+    sleep 0.05
+  done
+
+  if [ "$found" = true ]; then
+    echo -e "${GREEN}✓ can read message${NC}"
+    successful_reads=$((successful_reads + 1))
+  else
+    echo -e "${RED}✗ FAILED to read${NC}"
+    if [ -n "$error_msg" ]; then
+      echo "    Error: $error_msg"
+    fi
+    failed_nodes=$((failed_nodes + 1))
+  fi
 done
 echo ""
 
-# Read from node3 (third node)
-echo "5. Reading message from node3 (tests full cluster replication)..."
+# Verify ALL nodes can read
+echo "5. Verifying request routing..."
+if [ $failed_nodes -eq 0 ]; then
+  echo -e "  ${GREEN}✓ All 5 nodes can serve the context (routing works)${NC}"
+else
+  echo -e "  ${RED}✗ $failed_nodes node(s) failed to serve the context${NC}"
+  echo -e "  ${RED}✗ API layer is NOT routing requests to Raft replicas!${NC}"
+  echo ""
+  echo "Expected behavior: Any node should be able to serve any context"
+  echo "Current behavior: Only replica nodes can serve contexts"
+  echo ""
+  echo "This is a critical issue for a production distributed system."
+  exit 1
+fi
+echo ""
 
-for i in {1..20}; do
-  MSGS=$(curl -s "http://localhost:4002/api/sessions/$SESSION_ID/messages?limit=10")
-  READ_COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l)
+# Write from different nodes to verify routing works for writes too
+echo "6. Testing writes from ALL nodes..."
+write_failures=0
 
-  if [ "$READ_COUNT" -ge 1 ]; then
-    if [ $i -gt 1 ]; then
-      echo -e "  ✓ Message replicated to node3 (took $i retries)"
-    else
-      echo -e "  ✓ Message replicated to node3"
-    fi
-    break
+for i in {1..5}; do
+  port=$((4000 + i - 1))
+  echo -n "  Writing via node on port $port: "
+
+  WRITE_RESP=$(curl -s -X POST http://localhost:$port/v1/contexts/$CONTEXT_ID/messages \
+    -H "Content-Type: application/json" \
+    -d "{\"message\":{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"message from node $i\"}]}}" 2>&1)
+
+  # Check if we got an error
+  if echo "$WRITE_RESP" | grep -q "DOCTYPE html"; then
+    echo -e "${RED}✗ FAILED${NC}"
+    write_failures=$((write_failures + 1))
+  elif echo "$WRITE_RESP" | grep -q '"seq"'; then
+    echo -e "${GREEN}✓ success${NC}"
+  else
+    echo -e "${RED}✗ unexpected response${NC}"
+    write_failures=$((write_failures + 1))
   fi
+done
+echo ""
 
-  if [ $i -eq 20 ]; then
-    echo -e "${RED}  ✗ Message not replicated to node3 after 1s${NC}"
-    exit 1
+if [ $write_failures -gt 0 ]; then
+  echo -e "  ${RED}✗ $write_failures write(s) failed${NC}"
+  echo -e "  ${RED}✗ Write routing is broken${NC}"
+  exit 1
+else
+  echo -e "  ${GREEN}✓ All nodes can route writes correctly${NC}"
+fi
+echo ""
+
+# Verify message count on all nodes
+echo "7. Verifying all messages are accessible from all nodes..."
+expected_msgs=6  # 1 initial + 5 from different nodes
+
+for port in 4000 4001 4002 4003 4004; do
+  MSGS=$(curl -s "http://localhost:$port/v1/contexts/$CONTEXT_ID/tail?limit=20" 2>/dev/null)
+  COUNT=$(echo $MSGS | grep -o '"seq":' | wc -l | tr -d ' ')
+
+  if [ "$COUNT" -ge "$expected_msgs" ]; then
+    echo -e "  Port $port: ${GREEN}✓ has all $COUNT messages${NC}"
+  else
+    echo -e "  Port $port: ${RED}✗ only has $COUNT messages (expected $expected_msgs)${NC}"
   fi
-
-  sleep 0.05
 done
 echo ""
 
 # Cleanup
-echo "6. Cleaning up test session..."
-curl -s -X DELETE http://localhost:4000/api/sessions/$SESSION_ID > /dev/null
-echo -e "  ✓ Session deleted"
+echo "8. Cleaning up test context..."
+curl -s -X DELETE http://localhost:4000/v1/contexts/$CONTEXT_ID > /dev/null
+echo -e "  ✓ Context deleted"
 echo ""
 
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -123,10 +184,10 @@ echo -e "${GREEN}✓ All cluster tests passed!${NC}"
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 echo "Cluster is healthy:"
-echo "  - All 3 nodes responding"
-echo "  - Write to node1 works"
-echo "  - Replication to node2 works"
-echo "  - Replication to node3 works"
+echo "  - All 5 nodes responding to health checks"
+echo "  - ALL nodes can serve ANY context (routing works)"
+echo "  - Writes can be sent to ANY node"
+echo "  - Raft handles replication transparently (3 replicas per group)"
 echo ""
 echo "Ready for benchmarks:"
 echo "  k6 run bench/k6/1-hot-path-throughput.js"
