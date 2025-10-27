@@ -14,6 +14,7 @@ Fastpaca is built to run in your own infrastructure.  This page covers recommend
 - **CPU:** 2+ vCPUs per node (Raft + token accounting are CPU-bound).  
 - **Memory:** 4 GB RAM per node for typical workloads.  Increase if you retain very large snapshots.  
 - **Disk:** Fast SSD/NVMe for the Raft log (append-heavy).  Mount `/data` on dedicated storage.  
+- Set `FASTPACA_RAFT_DATA_DIR` to the mounted volume path so Raft logs survive restarts.  
 - **Network:** Low-latency links between nodes.  For production, keep Raft replicas within the same AZ or region (&lt;5 ms RTT).
 
 ---
@@ -107,6 +108,7 @@ Logs follow JSON structure with fields like `type`, `context_id`, and `seq`. For
 - **Sharding:** Not required for most workloads — 256 Raft groups provide sufficient horizontal fan-out.  
 - **Read replicas:** Not needed; every node can serve reads.  Use Postgres replicas if you run heavy analytics.
 
+
 ---
 
 ## Configuration summary
@@ -115,6 +117,7 @@ Logs follow JSON structure with fields like `type`, `context_id`, and `seq`. For
 | --- | --- | --- |
 | `FASTPACA_NODE_NAME` | Random UUID | Human-readable node identifier (shows up in logs/metrics) |
 | `FASTPACA_CLUSTER_SEED` | None | Comma-separated list of peer hosts (`host:port`). Required for multi-node. |
+| `FASTPACA_RAFT_DATA_DIR` | `priv/raft` | Filesystem path for Raft logs and snapshots (mount durable storage here). |
 | `FASTPACA_TOKEN_ESTIMATOR` | `tiktoken:gpt-4o` | Token estimator to use for budget tracking. |
 | `FASTPACA_STREAM_MAX_CONNECTIONS` | 512 | Per-node websocket limit. |
 | `FASTPACA_API_KEY` | None | Optional bearer token for REST/Websocket auth. |
