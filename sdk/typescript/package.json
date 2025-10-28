@@ -16,16 +16,10 @@
   ],
   "author": "Fastpaca",
   "license": "Apache-2.0",
-  "devDependencies": {
-    "ai": "^4.3.19",
-    "typescript": "^5.3.3"
-  },
   "peerDependencies": {
-    "ai": "^4.0.0"
+    "ai": ">=5.0.0"
   },
-  "peerDependenciesMeta": {
-    "ai": {
-      "optional": true
-    }
+  "devDependencies": {
+    "typescript": "^5.3.3"
   }
 }

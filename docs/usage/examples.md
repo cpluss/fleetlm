@@ -27,9 +27,15 @@ export async function POST(req: Request) {
     parts: [{ type: 'text', text: message }]
   });
 
-  return ctx.stream((messages) =>
-    streamText({ model: openai('gpt-4o-mini'), messages })
-  );
+  const { messages } = await ctx.context();
+  return streamText({
+    model: openai('gpt-4o-mini'),
+    messages,
+  }).toUIMessageStreamResponse({
+    onFinish: async ({ responseMessage }) => {
+      await ctx.append(responseMessage);
+    },
+  });
 }
 ```
 
@@ -68,9 +74,9 @@ await ctx.append({
 ## Manual compaction with LLM-generated summary
 
 ```typescript
-const { needsCompaction, messages } = await ctx.context();
+const { needs_compaction, messages } = await ctx.context();
 
-if (needsCompaction) {
+if (needs_compaction) {
   const { summary, remainingMessages } = await summarise(messages);
   await ctx.compact([
     { role: 'system', parts: [{ type: 'text', text: summary }] },

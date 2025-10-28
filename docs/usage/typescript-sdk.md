@@ -5,7 +5,7 @@ sidebar_position: 4
 
 # TypeScript SDK
 
-These helpers mirror the REST API shown in the Quick Start / Getting Started guides. They expect ai-sdk style messages (`UIMessage`) and keep the same method names you’ve already seen there.
+These helpers mirror the REST API shown in the Quick Start / Getting Started guides. They accept plain messages with `role` and `parts` (each part has a `type` string). This shape is fully compatible with ai-sdk v5 `UIMessage`, but the SDK does not depend on ai-sdk.
 
 ```bash
 npm install fastpaca
@@ -31,7 +31,7 @@ const ctx = await fastpaca.context('123456', {
 
 `context(id)` never creates IDs for you—you decide what to use so you can continue the same context later.
 
-## 2. Append messages (ai-sdk `UIMessage`)
+## 2. Append messages
 
 ```typescript
 await ctx.append({
@@ -55,7 +55,7 @@ Messages are stored exactly as you send them and receive a deterministic `seq` f
 ## 3. Build the LLM context and call your model
 
 ```typescript
-const { usedTokens, messages, needsCompaction } = await ctx.context();
+const { used_tokens, messages, needs_compaction } = await ctx.context();
 
 const { text } = await generateText({
   model: openai('gpt-4o-mini'),
@@ -68,25 +68,26 @@ await ctx.append({
 });
 ```
 
-`needsCompaction` is a hint; ignore it unless you’ve opted to handle compaction yourself.
+`needs_compaction` is a hint; ignore it unless you’ve opted to handle compaction yourself.
 
 ## 4. Stream responses
 
 ```typescript
-// Returns a Response suitable for Next.js/Express.
-// Append in onFinish:
-return ctx.stream(messages =>
-  streamText({
-    model: openai('gpt-4o-mini'),
-    messages,
-    onFinish: async ({ text }) => {
-      await ctx.append({ role: 'assistant', parts: [{ type: 'text', text }] });
-    },
-  })
-);
+// Fetch context messages
+const { messages } = await ctx.context();
+
+// Stream response with ai-sdk and append in onFinish
+return streamText({
+  model: openai('gpt-4o-mini'),
+  messages,
+}).toUIMessageStreamResponse({
+  onFinish: async ({ responseMessage }) => {
+    await ctx.append(responseMessage);
+  },
+});
 ```
 
-Fastpaca fetches the context, calls your function, and streams tokens to your caller. Append the final assistant message in your `onFinish` handler.
+The `onFinish` callback receives `{ responseMessage }` in the ai-sdk v5 message shape. Pass it directly to `ctx.append()` to persist to context.
 
 ## 5. Fetch messages for your UI
 
@@ -98,8 +99,8 @@ const previous = await ctx.getTail({ offset: 50, limit: 50 });  // next page bac
 ## 6. Optional: manage compaction yourself
 
 ```typescript
-const { needsCompaction, messages } = await ctx.context();
-if (needsCompaction) {
+const { needs_compaction, messages } = await ctx.context();
+if (needs_compaction) {
   const { summary, remainingMessages } = await summarise(messages);
   await ctx.compact([
     { role: 'system', parts: [{ type: 'text', text: summary }] },
@@ -117,7 +118,10 @@ This rewrites only what the LLM will see. Users still get the full message log.
 - Streaming propagates LLM errors directly; Fastpaca only appends once the stream succeeds.
 
 Notes:
-- The server computes message token counts by default; pass `tokenCount` when you have an accurate value.
+- The server computes message token counts by default; pass `tokenCount` when you have an accurate value (e.g., from your model provider).
 - Use `ctx.context({ budgetTokens: ... })` to temporarily override the budget.
+
+Token usage with ai-sdk v5:
+- `streamText` and `generateText` expose `usage`/`totalUsage`. If your provider returns completion token counts, pass that as `{ tokenCount }` when appending the assistant’s response for maximum accuracy.
 
 See the [REST API reference](../api/rest.md) for exact payloads.

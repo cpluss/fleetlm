@@ -45,17 +45,20 @@ Fastpaca bridges that gap with an append-only history, context compaction, and s
    ```
 3. **Call your LLM** – Fetch the compacted context and hand it to your LLM.
    ```ts
-   const stream = ctx.stream((messages) => streamText({
+   const { messages } = await ctx.context();
+   return streamText({
      model: openai('gpt-4o-mini'),
-     messages
-   }));
-
-   return stream.toResponse();
+     messages,
+   }).toUIMessageStreamResponse({
+     onFinish: async ({ responseMessage }) => {
+       await ctx.append(responseMessage);
+     },
+   });
    ```
 4. (optional) **Compact on your terms** – when the policy is set to `manual`.
    ```ts
-   const { needsCompaction, messages } = await ctx.context();
-   if (needsCompaction) {
+   const { needs_compaction, messages } = await ctx.context();
+   if (needs_compaction) {
      const { summary, remainingMessages } = await summarise(messages);
      await ctx.compact([
        { role: 'system', parts: [{ type: 'text', text: summary }] },
@@ -70,7 +73,7 @@ Need the mental model? Go to [Context Management](./usage/context-management.md)
 
 ## Why Teams Pick Fastpaca
 
-- **Stack agnostic** – Bring your own framework. Works natively with ai-sdk. Use LangChain, raw OpenAI/Anthropic calls, whatever you fancy.
+- **Stack agnostic** – Bring your own framework. Works natively with ai-sdk v5 (messages are structurally compatible), but ai-sdk is not required. Use LangChain, raw OpenAI/Anthropic calls, whatever you fancy.
 - **Horizontally scalable** – Distributed consensus, idempotent appends, automatic failover. Scale nodes horizontally without risk.
 - **Token-smart** – Enforce token budgets with built-in compaction policies. Stay within limits automatically.
 - **Self-hosted** – Single container by default.

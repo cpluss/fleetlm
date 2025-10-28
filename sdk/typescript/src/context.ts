@@ -1,6 +1,4 @@
-import type { UIMessage } from 'ai';
-import type { ContextWindow, AppendResponse } from './types';
-
+import type { ContextWindow, AppendResponse, FastpacaMessage } from './types';
 
 /**
  * Context class - represents a single context
@@ -15,11 +13,11 @@ export class Context {
   /**
    * Append a message to the context
    *
-   * @param message - UIMessage from AI SDK
+   * @param message - Any object with `role` and `parts` (FastpacaMessage-compatible)
    * @param opts - Optional parameters including token count override and version guard
    */
   async append(
-    message: UIMessage,
+    message: { role: string; parts: readonly { type: string; [key: string]: unknown }[] },
     opts?: { ifVersion?: number; tokenCount?: number }
   ): Promise<AppendResponse> {
 
@@ -73,37 +71,10 @@ export class Context {
   }
 
   /**
-   * Stream a response using ai-sdk
-   *
-   * @param fn - Function that receives messages and returns an ai-sdk stream result
-   * @returns Response object suitable for returning from API routes
-   *
-   * @example
-   * ```ts
-   * return ctx.stream(async (messages) => {
-   *   return streamText({
-   *     model: openai('gpt-4o-mini'),
-   *     messages: convertToModelMessages(messages)
-   *   });
-   * });
-   * ```
-   */
-  async stream(
-    fn: (messages: UIMessage[]) => Promise<{ toDataStreamResponse: () => Response }>
-  ): Promise<Response> {
-    const window = await this.context();
-    const streamResult = await fn(window.messages);
-    if (!streamResult || typeof streamResult.toDataStreamResponse !== 'function') {
-      throw new Error('ctx.stream expects an ai-sdk v4 stream result with toDataStreamResponse()');
-    }
-    return streamResult.toDataStreamResponse();
-  }
-
-  /**
    * Manual compaction
    */
   async compact(
-    replacement: UIMessage[],
+    replacement: FastpacaMessage[],
     opts?: { ifVersion?: number }
   ): Promise<{ version: number }> {
     const response = await fetch(`${this.baseUrl}/contexts/${this.contextId}/compact`, {
@@ -128,7 +99,7 @@ export class Context {
   /**
    * Get messages (for replay/list)
    */
-  async getTail(opts?: { offset?: number; limit?: number }): Promise<{ messages: UIMessage[] }> {
+  async getTail(opts?: { offset?: number; limit?: number }): Promise<{ messages: FastpacaMessage[] }> {
     const params = new URLSearchParams();
     if (typeof opts?.offset === 'number') params.set('offset', String(opts.offset));
     if (typeof opts?.limit === 'number') params.set('limit', String(opts.limit));

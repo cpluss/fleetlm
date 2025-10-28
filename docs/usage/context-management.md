@@ -24,7 +24,7 @@ For example, with a budget of `8000` tokens and a trigger at `80%` you would tri
 
 - Configure once when you create the context: `token_budget: 1_000_000`
 - Every call to `ctx.context()` (or `GET /v1/contexts/:id/context`) respects that ceiling
-- When the snapshot + tail cross the trigger ratio (default `0.7`), `needsCompaction` flips to `true`
+- When the snapshot + tail cross the trigger ratio (default `0.7`), `needs_compaction` flips to `true`
 - Override the trigger ratio per context if you want earlier/later warnings
 
 ```bash
@@ -58,9 +58,9 @@ These strategies dictate *what we do when we approach the token budget* within t
 | --- | --- | --- |
 | `last_n` | Keep the latest *N* messages (with token and message limits). | Short chats where recent turns matter most. |
 | `skip_parts` | Drop `tool*` & `reasoning` messages, then apply `last_n`. | Agents that generate huge tool outputs or research agents that accrue a lot of reasoning messages. |
-| `manual` | Keep everything until the trigger ratio trips, then flip flag `needsCompaction`. | Workflows where you summarise in larger batches. |
+| `manual` | Keep everything until the trigger ratio trips, then flip flag `needs_compaction`. | Workflows where you summarise in larger batches. |
 
-You can also use & implement your own strategy by setting the strategy to `manual` and using `needsCompaction` to rewrite the context for the agent by yourself.
+You can also use & implement your own strategy by setting the strategy to `manual` and using `needs_compaction` to rewrite the context for the agent by yourself.
 
 ## Changing policies
 

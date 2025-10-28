@@ -93,8 +93,6 @@ Feed `messages` directly into your LLM client.
 
 ## 5. Stream a response (Next.js + ai-sdk)
 
-Plug and play with ai-sdk by default in typescript!
-
 ```typescript title="app/api/chat/route.ts"
 import { createClient } from 'fastpaca';
 import { streamText } from 'ai';
@@ -106,14 +104,24 @@ export async function POST(req: Request) {
   const fastpaca = createClient({ baseUrl: process.env.FASTPACA_URL || 'http://localhost:4000/v1' });
   const ctx = await fastpaca.context(contextId, { budget: 1_000_000 });
 
+  // Append user message
   await ctx.append({
     role: 'user',
     parts: [{ type: 'text', text: message }]
   });
 
-  return ctx.stream(messages =>
-    streamText({ model: openai('gpt-4o-mini'), messages })
-  );
+  // Get context messages
+  const { messages } = await ctx.context();
+
+  // Stream response with auto-append
+  return streamText({
+    model: openai('gpt-4o-mini'),
+    messages,
+  }).toUIMessageStreamResponse({
+    onFinish: async ({ responseMessage }) => {
+      await ctx.append(responseMessage);
+    },
+  });
 }
 ```
 

@@ -12,17 +12,15 @@ npm install fastpaca
 
 ```typescript
 import { createClient } from 'fastpaca';
-import { streamText } from 'ai';
+import { streamText, convertToModelMessages } from 'ai';
 import { openai } from '@ai-sdk/openai';
 
 // Create client
-const fastpaca = createClient({
-  baseUrl: 'http://localhost:4000/v1'
-});
+const fastpaca = createClient({ baseUrl: 'http://localhost:4000/v1' });
 
 // Create or get context (idempotent when options provided)
 const ctx = await fastpaca.context('chat-123', {
-  budget: 400_000,      // gpt-4o-mini context window
+  budget: 400_000,      // e.g., gpt-4o-mini context window
   trigger: 0.7,
   policy: { strategy: 'last_n', config: { limit: 400 } }
 });
@@ -39,13 +37,16 @@ await ctx.append({
   parts: [{ type: 'text', text: 'Hi there!' }]
 }, { tokenCount: 12 });
 
-// Get context window
+// Get context messages and stream a response
 const { messages } = await ctx.context();
+const result = streamText({ model: openai('gpt-4o-mini'), messages: convertToModelMessages(messages) });
 
-// Stream response (ai-sdk)
-return ctx.stream(messages =>
-  streamText({ model: openai('gpt-4o-mini'), messages })
-);
+return result.toUIMessageStreamResponse({
+  onFinish: async ({ responseMessage }) => {
+    // Optionally pass a known completion token count if your provider returns it
+    await ctx.append(responseMessage);
+  },
+});
 ```
 
 ## API

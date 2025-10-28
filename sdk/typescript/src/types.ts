@@ -1,9 +1,18 @@
-import type { UIMessage } from 'ai';
-
 /**
- * Re-export UIMessage from AI SDK
+ * Loose message types to avoid coupling to ai-sdk.
+ * Shape matches our API: role + parts with a type discriminator.
  */
-export type { UIMessage };
+export type FastpacaMessagePart = {
+  type: string;
+  [key: string]: unknown;
+};
+
+export interface FastpacaMessage {
+  id?: string;
+  role: string;
+  parts: FastpacaMessagePart[];
+  metadata?: Record<string, unknown>;
+}
 
 /**
  * Context policy
@@ -29,7 +38,7 @@ export interface ContextConfig {
  */
 export interface ContextWindow {
   version: number;
-  messages: UIMessage[];
+  messages: FastpacaMessage[];
   used_tokens: number;
   needs_compaction: boolean;
   segments?: Array<{

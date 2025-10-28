@@ -36,7 +36,7 @@ This context acts as your soruce of truth to recognise a context in the future, 
 
 ## Appending messages
 
-Messages are appended to fastpaca using ai-sdk's protocol to avoid reinventing the wheel, specifically [`UIMessage`](https://ai-sdk.dev/docs/reference/ai-sdk-core/ui-message). It allows us to granularly express messages from LLMs and users including all their parts & components.
+Messages are plain objects with a `role` and an array of `parts`. Each part must include a `type` string. This structure is fully compatible with ai-sdk v5 `UIMessage`, but Fastpaca does not require ai-sdk and works with any message that follows this shape.
 
 ```typescript
 await ctx.append({
@@ -49,14 +49,14 @@ await ctx.append({
 });
 ```
 
-Fastpaca doesn't care about the shape of the parts, nor metadata, and only require each part to have a `type`. Note that each message is assigned a determinsitic sequence number (`seq`) which is used to order them (total order) within a context.
+Fastpaca doesn't care about the specific shape of parts, nor metadata—only that each part has a `type`. Each message is assigned a deterministic sequence number (`seq`) used to order them within a context.
 
 ## Calling your LLM
 
 Request the context whenever you need to call your LLM.
 
 ```typescript
-const { usedTokens, messages, needsCompaction } = await ctx.context();
+const { used_tokens, messages, needs_compaction } = await ctx.context();
 const result = await generateText({
   model: openai('gpt-4o-mini'),
   messages
@@ -66,20 +66,25 @@ const result = await generateText({
 await ctx.append({ role: 'assistant', parts: [{ type: 'text', text: result.text }] });
 ```
 
-The context also stores an *estimated* size of how many tokens it includes, as well as a flag whether compaction is necessary or not. The compaction flag can be safely ignored unless you have explicitly disabled compaction and want to manage it yourself.
+The context also stores an estimated `used_tokens` count and a `needs_compaction` flag. You can safely ignore `needs_compaction` unless you've opted to manage compaction yourself.
 
 ## Streaming with your LLM
 
-The best UX streams intermediary results directly to the UI, but not to worry: fastpaca supports this out of the box so you don't need to manually add each part to the context.
+Stream intermediary results directly to the UI while persisting them to context.
 
 ```typescript
-return ctx.stream((messages) => streamText({
+const { messages } = await ctx.context();
+return streamText({
   model: openai('gpt-4o-mini'),
-  messages
-}));
+  messages,
+}).toUIMessageStreamResponse({
+  onFinish: async ({ responseMessage }) => {
+    await ctx.append(responseMessage);
+  },
+});
 ```
 
-This will automatically consume the stream results and append them to the context as they arrive, and still allows you to build a responsive product on top.
+The `onFinish` callback receives `{ responseMessage }` with the properly formatted UIMessage when streaming completes. Pass it directly to `ctx.append()` to persist to context. Users see tokens stream in real-time while the full message is persisted.
 
 ## Getting messages
 
@@ -104,8 +109,8 @@ const onePageUp = await ctx.getTail({ offset: 50, limit: 50 });
 Fastpaca works best when managing compaction for you so you don't need to think about it, but in case you have a product requirement where you need to manage it by yourself it is supported out of the box.
 
 ```typescript
-const { needsCompaction, messages } = await ctx.context();
-if (needsCompaction) {
+const { needs_compaction, messages } = await ctx.context();
+if (needs_compaction) {
   const { summary, remainingMessages } = await summarise(messages);
   await ctx.compact([
     { role: 'system', parts: [{ type: 'text', text: summary }] },
