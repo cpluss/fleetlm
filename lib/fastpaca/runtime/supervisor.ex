@@ -9,18 +9,14 @@ defmodule Fastpaca.Runtime.Supervisor do
   def init(_arg) do
     archive_children =
       if archive_enabled?() do
-        adapter_opts =
-          case System.get_env("FASTPACA_POSTGRES_URL") || System.get_env("DATABASE_URL") do
-            nil -> nil
-            url -> [adapter: Fastpaca.Archive.Adapter.Postgres, adapter_opts: [url: url]]
-          end
-
-        base = [flush_interval_ms: archive_interval()]
-
-        case adapter_opts do
-          nil -> []
-          opts -> [{Fastpaca.Archive, base ++ opts}]
-        end
+        [
+          {Fastpaca.Archive,
+           [
+             flush_interval_ms: archive_interval(),
+             adapter: Fastpaca.Archive.Adapter.Postgres,
+             adapter_opts: []
+           ]}
+        ]
       else
         []
       end

@@ -189,6 +189,9 @@ defmodule Fastpaca.Archive do
 
       {[], _} ->
         Enum.reverse(acc)
+
+      :"$end_of_table" ->
+        Enum.reverse(acc)
     end
   end
 

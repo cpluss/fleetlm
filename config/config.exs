@@ -8,6 +8,7 @@
 import Config
 
 config :fastpaca,
+  ecto_repos: [Fastpaca.Repo],
   raft_data_dir: "priv/raft",
   raft_flush_interval_ms: 5000
 

@@ -11,6 +11,8 @@ defmodule Fastpaca.Application do
       [
         # PromEx metrics
         Fastpaca.Observability.PromEx,
+        # Ecto Repo for archive storage (only if archiving is enabled)
+        repo_spec(),
         pubsub_spec(),
         Fastpaca.Runtime.Supervisor,
         FastpacaWeb.Endpoint,
@@ -21,6 +23,24 @@ defmodule Fastpaca.Application do
 
     opts = [strategy: :one_for_one, name: Fastpaca.Supervisor]
     Supervisor.start_link(children, opts)
+  end
+
+  defp repo_spec do
+    if archive_enabled?() do
+      Fastpaca.Repo
+    else
+      nil
+    end
+  end
+
+  defp archive_enabled? do
+    from_env =
+      case System.get_env("FASTPACA_ARCHIVER_ENABLED") do
+        nil -> false
+        val -> val not in ["", "false", "0", "no", "off"]
+      end
+
+    Application.get_env(:fastpaca, :archive_enabled, false) || from_env
   end
 
   defp pubsub_spec do

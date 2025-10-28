@@ -43,6 +43,9 @@ defmodule Fastpaca.MixProject do
     [
       {:phoenix, "~> 1.8.1"},
       {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_ecto, "~> 4.4"},
+      {:ecto_sql, "~> 3.10"},
+      {:postgrex, "~> 0.17"},
       {:cachex, "~> 3.6"},
       {:prom_ex, "~> 1.11"},
       {:libcluster, "~> 3.3"},
@@ -65,8 +68,10 @@ defmodule Fastpaca.MixProject do
   # See the documentation for `Mix` for more info on aliases.
   defp aliases do
     [
-      setup: ["deps.get"],
-      test: ["test"],
+      setup: ["deps.get", "ecto.setup"],
+      "ecto.setup": ["ecto.create", "ecto.migrate"],
+      "ecto.reset": ["ecto.drop", "ecto.setup"],
+      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       precommit: ["compile --warning-as-errors", "deps.unlock --unused", "format", "test"]
     ]
   end

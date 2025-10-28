@@ -1,5 +1,13 @@
 import Config
 
+# Configure database (optional - only needed if archiving is enabled)
+config :fastpaca, Fastpaca.Repo,
+  url: System.get_env("DATABASE_URL") || "ecto://postgres:postgres@localhost:5432/fastpaca_dev",
+  pool_size: 10,
+  # Don't fail if DB is not available
+  queue_target: 5000,
+  queue_interval: 1000
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #

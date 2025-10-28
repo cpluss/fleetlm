@@ -59,24 +59,33 @@ Repeat with `FASTPACA_NODE_NAME=fastpaca-2/3`. Nodes automatically discover peer
 
 ---
 
-## Optional Postgres write-behind
+## Optional archival (Postgres/S3)
 
-Fastpaca does not require Postgres for correctness.  Configure it if you need:
+Fastpaca does not require external storage for correctness. Configure an archive if you need:
 
-- Long-term archival beyond the Raft snapshot retention window.  
+- Long-term history beyond the Raft tail.  
 - Analytics / BI queries on the full log.  
 - Faster cold-start recovery for very old contexts.
 
-Set environment variables:
+Current release:
+
+- Raft keeps a bounded tail and an LLM window. An external archiver can write messages to Postgres/S3 and then acknowledge a high-water mark to Raft to trim older tail segments.
+- Archiver implementation and telemetry will land in a follow-up. This page reserves the knobs for that integration.
+
+Archiver environment variables:
 
 ```bash
+-e FASTPACA_ARCHIVER_ENABLED=true
 -e FASTPACA_POSTGRES_URL=postgres://user:password@host/db
--e FASTPACA_POSTGRES_POOL_SIZE=20
--e FASTPACA_FLUSH_INTERVAL_MS=5000
--e FASTPACA_FLUSH_BATCH_SIZE=5000
+-e FASTPACA_ARCHIVE_FLUSH_INTERVAL_MS=5000
+-e FASTPACA_ARCHIVER_BATCH_SIZE=5000
 ```
 
-The flusher retries on failure and does not block the hot path.
+Tail retention (active now):
+
+```bash
+-e FASTPACA_TAIL_KEEP=1000   # messages retained in Raft tail (minimum); Raft never evicts messages newer than the archived watermark
+```
 
 ---
 
@@ -84,11 +93,16 @@ The flusher retries on failure and does not block the hot path.
 
 Prometheus metrics are exposed on `/metrics`.  Key series:
 
-- `fastpaca_append_latency_ms` (p50/p95)  
-- `fastpaca_context_latency_ms`  
-- `fastpaca_snapshot_token_count` (per context)  
-- `fastpaca_compaction_requests_total`  
-- `fastpaca_raft_pending_flush_messages`
+- `fastpaca_messages_append_total` – total messages appended (by role/source)
+- `fastpaca_messages_token_count` – token count per appended message (distribution)
+- `fastpaca_archive_pending_rows` – rows pending in the archive queue (ETS)
+- `fastpaca_archive_pending_contexts` – contexts pending in the archive queue
+- `fastpaca_archive_flush_duration_ms` – flush tick duration
+- `fastpaca_archive_attempted_total` / `fastpaca_archive_inserted_total` – rows attempted/inserted
+- `fastpaca_archive_lag` – per-context lag (last_seq - archived_seq)
+- `fastpaca_archive_tail_size` – Raft tail size after trim (per context)
+- `fastpaca_archive_trimmed_total` – entries trimmed from Raft tail
+- `fastpaca_archive_llm_token_count` – LLM window token count (per context)
 
 Logs follow JSON structure with fields like `type`, `context_id`, and `seq`. Forward them to your logging stack for audit trails.
 
