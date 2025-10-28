@@ -51,4 +51,4 @@ return result.toUIMessageStreamResponse({
 
 ## API
 
-See `docs/` for full API reference.
+See [the docs](https://docs.fastpaca.com/) for full API reference.
