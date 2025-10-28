@@ -18,7 +18,7 @@ npm install @fastpaca/fastpaca
 ## Usage
 
 ```typescript
-import { createClient } from 'fastpaca';
+import { createClient } from '@fastpaca/fastpaca';
 import { streamText, convertToModelMessages } from 'ai';
 import { openai } from '@ai-sdk/openai';
 

@@ -94,7 +94,7 @@ Feed `messages` directly into your LLM client.
 ## 5. Stream a response (Next.js + ai-sdk)
 
 ```typescript title="app/api/chat/route.ts"
-import { createClient } from 'fastpaca';
+import { createClient } from '@fastpaca/fastpaca';
 import { streamText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 

@@ -17,7 +17,7 @@ Fastpaca works on the concept of *context contexts*. Each context contains two t
 Contexts are created with a unique identifier that you create yourself, as long as it is globally unique it works. That way you can track & reuse contexts in your product.
 
 ```typescript
-import { createClient } from 'fastpaca';
+import { createClient } from '@fastpaca/fastpaca';
 
 const fastpaca = createClient({ baseUrl: process.env.FASTPACA_URL || 'http://localhost:4000/v1' });
 const ctx = await fastpaca.context('123456', {

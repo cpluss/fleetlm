@@ -1,6 +1,6 @@
 import { openai } from '@ai-sdk/openai';
 import { streamText, convertToModelMessages, UIMessage } from 'ai';
-import { createClient } from 'fastpaca';
+import { createClient } from '@fastpaca/fastpaca';
 
 export const maxDuration = 30;
 

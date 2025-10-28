@@ -1,4 +1,4 @@
-import { createClient } from 'fastpaca';
+import { createClient } from '@fastpaca/fastpaca';
 
 const FASTPACA_URL = process.env.FASTPACA_URL || 'http://localhost:4000/v1';
 

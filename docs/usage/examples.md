@@ -12,7 +12,7 @@ End-to-end snippets that show how Fastpaca fits into common workflows.
 ## Streaming chat route (Next.js + ai-sdk)
 
 ```typescript title="app/api/chat/route.ts"
-import { createClient } from 'fastpaca';
+import { createClient } from '@fastpaca/fastpaca';
 import { streamText } from 'ai';
 import { openai } from '@ai-sdk/openai';
 
@@ -44,7 +44,7 @@ export async function POST(req: Request) {
 ## Non-streaming response (Anthropic)
 
 ```typescript
-import { createClient } from 'fastpaca';
+import { createClient } from '@fastpaca/fastpaca';
 import { generateText } from 'ai';
 import { anthropic } from '@ai-sdk/anthropic';
 

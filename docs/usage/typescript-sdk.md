@@ -8,13 +8,13 @@ sidebar_position: 4
 These helpers mirror the REST API shown in the Quick Start / Getting Started guides. They accept plain messages with `role` and `parts` (each part has a `type` string). This shape is fully compatible with ai-sdk v5 `UIMessage`, but the SDK does not depend on ai-sdk.
 
 ```bash
-npm install fastpaca
+npm install @fastpaca/fastpaca
 ```
 
 ## 1. Create (or load) a context
 
 ```typescript
-import { createClient } from 'fastpaca';
+import { createClient } from '@fastpaca/fastpaca';
 
 const fastpaca = createClient({
   baseUrl: process.env.FASTPACA_URL ?? 'http://localhost:4000/v1',
