@@ -16,11 +16,11 @@ export class Context {
    * Append a message to the context
    *
    * @param message - UIMessage from AI SDK
-   * @param opts - Optional parameters including token count override
+   * @param opts - Optional parameters including token count override and version guard
    */
   async append(
     message: UIMessage,
-    opts?: { idempotencyKey?: string; ifVersion?: number; tokenCount?: number }
+    opts?: { ifVersion?: number; tokenCount?: number }
   ): Promise<AppendResponse> {
 
     const response = await fetch(`${this.baseUrl}/contexts/${this.contextId}/messages`, {
@@ -35,7 +35,6 @@ export class Context {
           parts: message.parts,
           ...(typeof opts?.tokenCount === 'number' ? { token_count: opts!.tokenCount } : {}),
         },
-        idempotency_key: opts?.idempotencyKey,
         if_version: opts?.ifVersion,
       }),
     });

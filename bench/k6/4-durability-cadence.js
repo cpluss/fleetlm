@@ -121,8 +121,7 @@ export default function (data) {
         seq: messageSeq,
         iter: __ITER,
       },
-    },
-    { idempotencyKey: lib.randomId(`durable-${vuId}`) }
+    }
   );
 
   appendLatency.add(res.timings.duration);

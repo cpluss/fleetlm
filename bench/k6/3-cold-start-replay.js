@@ -130,8 +130,7 @@ export function accumulateBacklog(data) {
         vu: vuId,
         iter: __ITER,
       },
-    },
-    { idempotencyKey: lib.randomId(`backlog-${vuId}`) }
+    }
   );
 
   backlogWrites.add(1);
@@ -197,8 +196,7 @@ export function replayUnderLoad(data) {
         vu: vuId,
         iter: __ITER,
       },
-    },
-    { idempotencyKey: lib.randomId(`active-${vuId}`) }
+    }
   );
 
   activeWriteLatency.add(res.timings.duration);

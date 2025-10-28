@@ -56,8 +56,7 @@ APPEND_RESPONSE=$(curl -s -o /tmp/context_append.json -w "%{http_code}" \
       "role": "user",
       "parts": [{"type": "text", "text": "Hello from Fastpaca smoke test"}],
       "metadata": {"source": "smoke-test"}
-    },
-    "idempotency_key": "smoke-1"
+    }
   }')
 
 if [ "$APPEND_RESPONSE" -lt 200 ] || [ "$APPEND_RESPONSE" -ge 300 ]; then

@@ -114,7 +114,6 @@ export default function (data) {
 
   for (let i = 0; i < pipelineDepth; i++) {
     const text = `fastpaca hot-path run=${data.runId} vu=${vuId} iter=${__ITER} idx=${i}`;
-    const idempotencyKey = lib.randomId(`hot-${vuId}`);
     const { res, json } = lib.appendMessage(
       contextId,
       {
@@ -127,8 +126,7 @@ export default function (data) {
           iter: __ITER,
           idx: i,
         },
-      },
-      { idempotencyKey }
+      }
     );
 
     appendLatency.add(res.timings.duration);

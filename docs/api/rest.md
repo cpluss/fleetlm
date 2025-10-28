@@ -65,7 +65,6 @@ Append a message.
     "token_count": 128,
     "metadata": { "reasoning": "User asked for availability." }
   },
-  "idempotency_key": "msg-045",
   "if_version": 41
 }
 ```
@@ -75,8 +74,7 @@ Append a message.
 ```
 
 - `token_count` (optional): when provided, the server uses it verbatim. If omitted, the server computes an approximate value.
-- `idempotency_key` is optional but recommended for retries.  
-- `if_version` enforces optimistic concurrency. The server returns `409 Conflict` if the current version does not match.
+- `if_version` (optional): Enforces optimistic concurrency control. The server returns `409 Conflict` if the current context version does not match the supplied value. Use this to prevent race conditions when multiple clients append simultaneously.
 
 ### GET `/v1/contexts/:id/tail`
 
@@ -216,7 +214,7 @@ Upsert custom metadata associated with the context.  Metadata is stored alongsid
 | `400` | Invalid payload | Schema or validation failure |
 | `401` | Unauthorized | Missing/invalid API key (when enabled) |
 | `404` | Not found | Context does not exist |
-| `409` | Conflict | Version guard failed or context tombstoned |
+| `409` | Conflict | Version guard failed (`if_version` mismatch) or context tombstoned |
 | `429` | Rate limited | Per-node rate limiting (configurable) |
 | `500` | Internal error | Unexpected server failure |
 | `503` | Unavailable | No Raft quorum available (retry with backoff) |
@@ -229,3 +227,15 @@ Errors follow a consistent shape:
   "message": "Context version changed (expected 83, found 84)"
 }
 ```
+
+### Handling version conflicts (409)
+
+When `if_version` is supplied, the server checks the current context version before appending. A `409 Conflict` response indicates the version has changed since your last read.
+
+**Retry pattern for network failures:**
+1. Read current context version (from `GET /contexts/:id` or append response)
+2. Append with `if_version` matching the current version
+3. On timeout or 5xx errors, retry the same request (version unchanged)
+4. On `409 Conflict`, read the context again to get the updated version, then retry with the new version
+
+This provides optimistic concurrency control without requiring per-message idempotency keys.

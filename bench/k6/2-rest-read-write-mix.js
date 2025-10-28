@@ -112,7 +112,6 @@ export default function (data) {
 
   if (phase === 0 || phase === 2) {
     // Append message
-    const idempotencyKey = lib.randomId(`rw-${contextId}`);
     const { res, json } = lib.appendMessage(
       contextId,
       {
@@ -125,8 +124,7 @@ export default function (data) {
           vu: __VU,
           iter: __ITER,
         },
-      },
-      { idempotencyKey }
+      }
     );
 
     writeLatency.add(res.timings.duration);

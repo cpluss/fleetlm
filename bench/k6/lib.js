@@ -100,10 +100,6 @@ export function appendMessage(contextId, message, opts = {}) {
     message,
   };
 
-  if (opts.idempotencyKey) {
-    payload.idempotency_key = opts.idempotencyKey;
-  }
-
   if (opts.ifVersion !== undefined && opts.ifVersion !== null) {
     payload.if_version = opts.ifVersion;
   }

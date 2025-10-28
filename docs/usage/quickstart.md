@@ -48,8 +48,7 @@ curl -X POST http://localhost:4000/v1/contexts/demo-chat/messages \
     "message": {
       "role": "user",
       "parts": [{ "type": "text", "text": "How do I deploy this?" }]
-    },
-    "idempotency_key": "msg-001"
+    }
   }'
 ```
 
@@ -59,7 +58,7 @@ Fastpaca replies with the assigned sequence number and version:
 { "seq": 1, "version": 1, "token_estimate": 24 }
 ```
 
-Retry with the same `idempotency_key` if the network flakes; duplicates are ignored.
+To prevent race conditions when multiple clients append simultaneously, use `if_version`. See the [REST API docs](../api/rest.md#handling-version-conflicts-409) for retry patterns.
 
 ---
 

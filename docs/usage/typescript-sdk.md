@@ -41,7 +41,7 @@ await ctx.append({
     { type: 'tool_call', name: 'lookup_manual', payload: { article: 'installing' } }
   ],
   metadata: { reasoning: 'User asked for deployment steps.' }
-}, { idempotencyKey: 'msg-017' });
+});
 
 // Optionally pass known token count for accuracy
 await ctx.append({
@@ -50,7 +50,7 @@ await ctx.append({
 }, { tokenCount: 12 });
 ```
 
-Messages are stored exactly as you send them and receive a deterministic `seq` for ordering. Reuse the same `idempotencyKey` when retrying failed requests.
+Messages are stored exactly as you send them and receive a deterministic `seq` for ordering.
 
 ## 3. Build the LLM context and call your model
 
@@ -112,8 +112,8 @@ This rewrites only what the LLM will see. Users still get the full message log.
 
 ## Error handling
 
-- Append conflicts return `409 Conflict` when you pass `ifVersion` (optimistic concurrency).  
-- Network retries are safe when you reuse the same `idempotencyKey`.  
+- Append conflicts return `409 Conflict` when you pass `ifVersion` and the context version changed (optimistic concurrency control). On 409, read the current context version and retry with the updated version.
+- Network retries: On timeout or 5xx errors, retry the same request (version unchanged). On `409 Conflict`, read context to get updated version, then retry.
 - Streaming propagates LLM errors directly; Fastpaca only appends once the stream succeeds.
 
 Notes:
