@@ -5,17 +5,20 @@ import { createClient } from 'fastpaca';
 export const maxDuration = 30;
 
 const FASTPACA_URL = process.env.FASTPACA_URL || 'http://localhost:4000/v1';
-const CONTEXT_ID = 'nextjs-demo-chat';  // Simple demo: one global context
 
 // Create Fastpaca client
 const fastpaca = createClient({ baseUrl: FASTPACA_URL });
 
 export async function POST(req: Request) {
-  const { messages } = await req.json();
+  const { messages, contextId } = await req.json();
+
+  if (!contextId) {
+    return Response.json({ error: 'contextId is required' }, { status: 400 });
+  }
 
   // 1. Get or create context (idempotent PUT if config provided)
-  const ctx = await fastpaca.context(CONTEXT_ID, {
-    budget: 400_000,  // gpt-4o-mini context window
+  const ctx = await fastpaca.context(contextId, {
+    budget: 128_000,  // gpt-4o-mini context window
     trigger: 0.7,
     policy: {
       strategy: 'last_n',
@@ -26,24 +29,20 @@ export async function POST(req: Request) {
   // 2. Append user message (last message in array)
   const lastMessage = messages[messages.length - 1];
   if (lastMessage) {
-    await ctx.append({
-      role: lastMessage.role,
-      parts: lastMessage.parts,
-    });
+    await ctx.append(lastMessage);
   }
 
-  // 3. Stream to OpenAI via Fastpaca helper
-  return ctx.stream(async (contextMessages: UIMessage[]) => {
-    return streamText({
-      model: openai('gpt-4o-mini'),
-      messages: convertToModelMessages(contextMessages),
-      // Explicitly append on finish
-      onFinish: async ({ text }) => {
-        await ctx.append({
-          role: 'assistant',
-          parts: [{ type: 'text', text }],
-        });
-      },
-    });
+  // 3. Get context messages from fastpaca
+  const { messages: contextMessages } = await ctx.context();
+
+  // 4. Stream response
+  return streamText({
+    model: openai('gpt-4o-mini'),
+    messages: convertToModelMessages(contextMessages),
+  }).toUIMessageStreamResponse({
+    onFinish: async ({ responseMessage }) => {
+      // FastpacaMessage accepts any object with role and parts
+      await ctx.append(responseMessage);
+    },
   });
 }

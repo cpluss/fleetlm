@@ -1,26 +1,132 @@
 'use client';
 
 import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport } from 'ai';
+import { useState, useEffect, useRef } from 'react';
 
 export default function Chat() {
-  const { messages, input, handleInputChange, handleSubmit, isLoading } = useChat();
+  const [input, setInput] = useState('');
+  // Initialize contextId immediately from localStorage or generate new one
+  const [contextId, setContextId] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('fastpaca-context-id');
+      if (saved) return saved;
+      const newId = `chat-${Date.now()}`;
+      localStorage.setItem('fastpaca-context-id', newId);
+      return newId;
+    }
+    return `chat-${Date.now()}`;
+  });
+  const [isLoadingHistory, setIsLoadingHistory] = useState(true);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const { messages, setMessages, sendMessage, status } = useChat({
+    transport: new DefaultChatTransport({
+      body: { contextId },
+    }),
+  });
+
+  const isLoading = status === 'submitted' || status === 'streaming';
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, status]);
+
+  // Fetch history on mount
+  useEffect(() => {
+    // Fetch message history
+    fetch('/api/chat/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contextId }),
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.messages && data.messages.length > 0) {
+          setMessages(data.messages);
+        }
+      })
+      .catch(err => console.error('Failed to load history:', err))
+      .finally(() => setIsLoadingHistory(false));
+  }, [contextId, setMessages]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
+
+    // Send message with contextId in body
+    sendMessage({ text: input }, { body: { contextId } });
+    setInput('');
+  };
+
+  const handleContextChange = (newContextId: string) => {
+    setContextId(newContextId);
+    localStorage.setItem('fastpaca-context-id', newContextId);
+    setMessages([]);
+
+    // Fetch history for new context
+    setIsLoadingHistory(true);
+    fetch('/api/chat/history', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contextId: newContextId }),
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.messages && data.messages.length > 0) {
+          setMessages(data.messages);
+        }
+      })
+      .catch(err => console.error('Failed to load history:', err))
+      .finally(() => setIsLoadingHistory(false));
+  };
+
+  const handleNewChat = () => {
+    const newContextId = `chat-${Date.now()}`;
+    handleContextChange(newContextId);
+  };
 
   return (
-    <div className="min-h-screen text-slate-100">
-      <header className="border-b border-white/10">
+    <div className="flex h-screen flex-col text-slate-100">
+      <header className="sticky top-0 z-10 border-b border-white/10 bg-slate-900">
         <div className="mx-auto max-w-4xl px-4 py-4">
-          <h1 className="text-xl font-semibold tracking-tight">Fastpaca Chat Example</h1>
-          <p className="text-sm text-slate-400">Using gpt-4o-mini (400k context window)</p>
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-xl font-semibold tracking-tight">Fastpaca Chat Example</h1>
+              <p className="text-sm text-slate-400">Using gpt-4o-mini (128k context window)</p>
+            </div>
+            <button
+              onClick={handleNewChat}
+              className="rounded-lg bg-white/10 px-4 py-2 text-sm font-medium transition hover:bg-white/20"
+            >
+              New Chat
+            </button>
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            <label className="text-sm text-slate-400">Context ID:</label>
+            <input
+              type="text"
+              value={contextId}
+              onChange={(e) => handleContextChange(e.target.value)}
+              className="flex-1 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30"
+              placeholder="Enter context ID..."
+            />
+          </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-4xl px-4 py-6">
-        {messages.length === 0 && (
+      <main className="mx-auto flex-1 w-full max-w-4xl overflow-y-auto px-4 py-6">
+        {isLoadingHistory ? (
+          <div className="text-center text-slate-400">
+            <p className="mb-2 text-base font-medium">Loading conversation...</p>
+          </div>
+        ) : messages.length === 0 ? (
           <div className="text-center text-slate-400">
             <p className="mb-2 text-base font-medium">Start a conversation</p>
             <p className="text-sm">Fastpaca manages context on the backend</p>
           </div>
-        )}
+        ) : null}
 
         <div className="flex flex-col gap-3">
           {messages.map((message) => (
@@ -54,15 +160,17 @@ export default function Chat() {
               </div>
             </div>
           )}
+          {/* Scroll anchor */}
+          <div ref={messagesEndRef} />
         </div>
       </main>
 
-      <footer className="sticky bottom-0 bg-slate-900/40 backdrop-blur border-t border-white/10">
+      <footer className="border-t border-white/10 bg-slate-900">
         <div className="mx-auto max-w-4xl px-4 py-4">
           <form onSubmit={handleSubmit} className="flex gap-2">
             <input
               value={input}
-              onChange={handleInputChange}
+              onChange={(e) => setInput(e.target.value)}
               placeholder="Type your message..."
               className="flex-1 rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-slate-100 placeholder:text-slate-400 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-500/30"
               disabled={isLoading}
