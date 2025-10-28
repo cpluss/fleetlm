@@ -280,4 +280,29 @@ defmodule Fastpaca.ContextTest do
       assert NaiveDateTime.compare(tombstoned.updated_at, context.updated_at) == :gt
     end
   end
+
+  describe "Context.persist_ack/2 (archival trim)" do
+    test "trims acknowledged range while retaining bounded tail" do
+      config = %Config{
+        token_budget: 100_000,
+        trigger_ratio: 0.7,
+        policy: %{strategy: :last_n, config: %{limit: 100}}
+      }
+
+      # Set a small tail_keep for predictable trimming
+      context = Context.new("ctx-arch", config, tail_keep: 2)
+
+      inbound = for _ <- 1..10, do: {"user", [%{type: "text"}], %{}, 1}
+      {context, _appended, _flag} = Context.append(context, inbound)
+
+      # Acknowledge archival up to seq 5
+      {context, trimmed} = Context.persist_ack(context, 5)
+
+      assert context.archived_seq == 5
+      # Should keep seq 6..10 and retain up to 2 below boundary (5 and 4)
+      kept_seqs = context.message_log |> MessageLog.entries() |> Enum.map(& &1.seq)
+      assert Enum.sort(kept_seqs) == Enum.sort([4, 5, 6, 7, 8, 9, 10])
+      assert trimmed == 3
+    end
+  end
 end

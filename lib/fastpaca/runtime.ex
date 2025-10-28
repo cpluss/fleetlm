@@ -189,6 +189,36 @@ defmodule Fastpaca.Runtime do
     end)
   end
 
+  # ---------------------------------------------------------------------------
+  # Archival acknowledgements (tiered storage integration point)
+  # ---------------------------------------------------------------------------
+
+  @spec ack_archived(String.t(), non_neg_integer()) :: {:ok, map()} | {:error, term()} | {:timeout, term()}
+  def ack_archived(id, upto_seq) when is_binary(id) and is_integer(upto_seq) and upto_seq >= 0 do
+    group = RaftManager.group_for_context(id)
+
+    call_on_replica(group, :ack_archived_local, [id, upto_seq], fn ->
+      ack_archived_local(id, upto_seq)
+    end)
+  end
+
+  @doc false
+  def ack_archived_local(id, upto_seq) when is_binary(id) and is_integer(upto_seq) and upto_seq >= 0 do
+    with {:ok, server_id, lane, group} <- locate(id),
+         :ok <- ensure_group_started(group) do
+      case :ra.process_command(
+             {server_id, Node.self()},
+             {:ack_archived, lane, id, upto_seq},
+             @timeout
+           ) do
+        {:ok, {:reply, {:ok, reply}}, _leader} -> {:ok, reply}
+        {:ok, {:reply, {:error, reason}}, _leader} -> {:error, reason}
+        {:timeout, leader} -> {:timeout, leader}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
   @doc false
   def get_messages_tail_local(id, offset, limit)
       when is_binary(id) and is_integer(offset) and offset >= 0 and is_integer(limit) and

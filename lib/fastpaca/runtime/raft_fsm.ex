@@ -52,6 +52,7 @@ defmodule Fastpaca.Runtime.RaftFSM do
       policy: context.config.policy,
       version: context.version,
       last_seq: context.last_seq,
+      archived_seq: context.archived_seq,
       metadata: context.metadata,
       inserted_at: NaiveDateTime.to_iso8601(context.inserted_at),
       updated_at: NaiveDateTime.to_iso8601(context.updated_at)
@@ -112,6 +113,22 @@ defmodule Fastpaca.Runtime.RaftFSM do
   @impl true
   def apply(_meta, :force_snapshot, state) do
     {state, {:reply, :ok}}
+  end
+
+  @impl true
+  def apply(_meta, {:ack_archived, lane_id, context_id, upto_seq}, state) do
+    lane = Map.fetch!(state.lanes, lane_id)
+
+    with {:ok, context} <- fetch_context(lane, context_id) do
+      {updated_context, trimmed} = Context.persist_ack(context, upto_seq)
+
+      new_lane = %{lane | contexts: Map.put(lane.contexts, context_id, updated_context)}
+      new_state = put_in(state.lanes[lane_id], new_lane)
+
+      {new_state, {:reply, {:ok, %{archived_seq: updated_context.archived_seq, trimmed: trimmed}}}}
+    else
+      {:error, reason} -> {state, {:reply, {:error, reason}}}
+    end
   end
 
   # ---------------------------------------------------------------------------

@@ -81,4 +81,29 @@ defmodule Fastpaca.Context.MessageLog do
     |> Enum.take(limit)
     |> Enum.reverse()
   end
+
+  @doc """
+  Trim acknowledged messages while retaining a bounded tail.
+
+  Drops all entries with `seq <= upto_seq`, but retains up to `tail_keep`
+  additional entries immediately below that boundary if present. Always keeps
+  entries with `seq > upto_seq`.
+
+  Returns the updated log and the number of entries removed.
+  """
+  @spec trim_ack(t(), non_neg_integer(), pos_integer()) :: {t(), non_neg_integer()}
+  def trim_ack(%MessageLog{entries: entries} = log, upto_seq, tail_keep)
+      when is_integer(upto_seq) and upto_seq >= 0 and is_integer(tail_keep) and tail_keep > 0 do
+    # entries are newest-first; split by boundary
+    {newer, older_or_equal} = Enum.split_with(entries, fn %{seq: seq} -> seq > upto_seq end)
+
+    # From the older_or_equal side (newest-first), retain up to tail_keep entries
+    # immediately below the boundary
+    retained_from_older = older_or_equal |> Enum.take(tail_keep)
+
+    kept = newer ++ retained_from_older
+    removed = length(entries) - length(kept)
+
+    {%MessageLog{log | entries: kept}, max(removed, 0)}
+  end
 end

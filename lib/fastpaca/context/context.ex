@@ -25,6 +25,7 @@ defmodule Fastpaca.Context do
     :message_log,
     :llm_context,
     :last_seq,
+    :archived_seq,
     :version,
     :inserted_at,
     :updated_at
@@ -36,10 +37,12 @@ defmodule Fastpaca.Context do
     :message_log,
     :llm_context,
     :last_seq,
+    :archived_seq,
     :version,
     :inserted_at,
     :updated_at,
-    :metadata
+    :metadata,
+    :retention
   ]
 
   @type t :: %Context{
@@ -51,15 +54,19 @@ defmodule Fastpaca.Context do
           # What the LLM cares about: the LLM context
           llm_context: LLMContext.t(),
           last_seq: non_neg_integer(),
+          archived_seq: non_neg_integer(),
           version: non_neg_integer(),
           inserted_at: NaiveDateTime.t(),
           updated_at: NaiveDateTime.t(),
-          metadata: %{optional(atom()) => term()}
+          metadata: %{optional(atom()) => term()},
+          retention: %{tail_keep: pos_integer()}
         }
 
   @spec new(String.t(), Config.t(), keyword()) :: t()
   def new(id, %Config{} = config, opts \\ []) do
     now = Keyword.get(opts, :timestamp, NaiveDateTime.utc_now())
+    tail_keep =
+      opts[:tail_keep] || Application.get_env(:fastpaca, :tail_keep, 1_000)
 
     %Context{
       id: id,
@@ -69,9 +76,11 @@ defmodule Fastpaca.Context do
       message_log: MessageLog.new(),
       llm_context: LLMContext.new(),
       last_seq: 0,
+      archived_seq: 0,
       version: 0,
       inserted_at: now,
-      updated_at: now
+      updated_at: now,
+      retention: %{tail_keep: tail_keep}
     }
   end
 
@@ -172,4 +181,22 @@ defmodule Fastpaca.Context do
        do: token_count > trunc(budget * ratio)
 
   defp exceeds_trigger?(_, _), do: false
+
+  @doc """
+  Apply an archive acknowledgement up to `upto_seq`, trimming the log while
+  retaining a bounded tail below the boundary.
+  """
+  @spec persist_ack(t(), non_neg_integer()) :: {t(), non_neg_integer()}
+  def persist_ack(%Context{} = context, upto_seq) when is_integer(upto_seq) and upto_seq >= 0 do
+    tail_keep = context.retention.tail_keep
+    archived_seq = max(context.archived_seq, upto_seq)
+    {message_log, trimmed} = MessageLog.trim_ack(context.message_log, archived_seq, tail_keep)
+
+    {%Context{
+       context
+       | archived_seq: archived_seq,
+         message_log: message_log,
+         updated_at: NaiveDateTime.utc_now()
+     }, trimmed}
+  end
 end
