@@ -39,7 +39,7 @@ curl -X PUT http://localhost:4000/v1/contexts/demo-chat \
 
 ## 3. Append a message
 
-Adds a user message with `How do I deploy this?` as text.
+Add a user message with `How do I deploy this?` as text.
 
 ```bash
 curl -X POST http://localhost:4000/v1/contexts/demo-chat/messages \
@@ -58,7 +58,7 @@ Fastpaca replies with the assigned sequence number and version:
 { "seq": 1, "version": 1, "token_estimate": 24 }
 ```
 
-To prevent race conditions when multiple clients append simultaneously, use `if_version`. See the [REST API docs](../api/rest.md#handling-version-conflicts-409) for retry patterns.
+To prevent race conditions when multiple clients append simultaneously, use `if_version`. See the [REST API docs](../api/rest.md#messages) for retry patterns.
 
 ---
 

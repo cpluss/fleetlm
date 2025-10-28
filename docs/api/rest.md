@@ -5,7 +5,7 @@ sidebar_position: 1
 
 # REST API
 
-All endpoints live under `/v1`.  Requests must include `Content-Type: application/json` where applicable.  Responses are JSON unless stated otherwise.
+All endpoints live under `/v1`. Requests must include `Content-Type: application/json` where applicable. Responses are JSON unless stated otherwise.
 
 ## Contexts
 
@@ -81,8 +81,8 @@ Append a message.
 Retrieve messages with tail-based pagination (newest to oldest). Designed for backward iteration from recent messages, ideal for infinite scroll, mobile apps, and future tiered storage.
 
 Query parameters:
-- `limit` (integer, default: 100) – Maximum messages to return
-- `offset` (integer, default: 0) – Number of messages to skip from tail (0 = most recent)
+- `limit` (integer, default: 100): maximum messages to return
+- `offset` (integer, default: 0): number of messages to skip from tail (0 = most recent)
 
 ```bash
 # Get last 50 messages
@@ -120,7 +120,7 @@ Response:
 }
 ```
 
-Messages are returned in **chronological order** (oldest to newest in the result). Empty array indicates you've reached the beginning of history.
+Messages are returned in **chronological order** (oldest to newest in the result). An empty array indicates you've reached the beginning of history.
 
 **Pagination pattern:**
 ```typescript
@@ -147,8 +147,8 @@ Returns the current LLM context (the slice you send to your LLM).
 
 Query parameters:
 
-- `budget_tokens` (optional) – temporarily override the configured budget.  
-- `if_version` (optional) – fail with `409` if the snapshot changed since the supplied version.
+- `budget_tokens` (optional): temporarily override the configured budget.  
+- `if_version` (optional): fail with `409` if the snapshot changed since the supplied version.
 
 ```json title="Response"
 {
@@ -194,7 +194,7 @@ Partial ranges are not supported. To preserve a tail, include those messages in 
 
 ### PATCH `/v1/contexts/:id/metadata`
 
-Upsert custom metadata associated with the context.  Metadata is stored alongside the snapshot and returned by `GET /v1/contexts/:id`.
+Upsert custom metadata associated with the context. Metadata is stored alongside the snapshot and returned by `GET /v1/contexts/:id`.
 
 ```json
 { "metadata": { "customer": "acme-corp", "priority": "gold" } }
@@ -202,8 +202,8 @@ Upsert custom metadata associated with the context.  Metadata is stored alongsid
 
 ## Health endpoints
 
-- `GET /health/live` – returns `{"status":"ok"}` when the node is accepting traffic.  
-- `GET /health/ready` – returns `{"status":"ok"}` when the node has joined the cluster and can serve requests.
+- `GET /health/live` - returns `{"status":"ok"}` when the node is accepting traffic.  
+- `GET /health/ready` - returns `{"status":"ok"}` when the node has joined the cluster and can serve requests.
 
 ---
 

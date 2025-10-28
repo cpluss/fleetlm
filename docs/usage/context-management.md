@@ -5,18 +5,18 @@ sidebar_position: 3
 
 # Context Management
 
-Managing your context context is key to scaling an LLM product. Users want full history, but your LLM or agent is operating on a stricter limit where you can only send a certain number of input tokens to it - dictated by its context window. 
+Managing your context is key to scaling an LLM product. Users want full history, but your LLM or agent operates under a limit: you can only send a certain number of input tokens, dictated by its context window.
 
-It usually works quite well to send all messages to the LLM up until you hit the input token limit (and exceed the context window), but once you reach that you either need to stop processing a context or reduce the data to give your user the illusion of a product that can take all of it into account on each request.
+Sending all messages to the LLM works until you hit the input token limit. Once you reach it, you either stop processing or reduce the input so users can keep interacting as if everything is considered on each request.
 
 ---
 
 ## Token budgets & triggers
 
-To determine _when_ it is time to reduce the size of the input (messages) you send to your LLM you usually define
+To determine when to reduce the size of the input (messages) you send to your LLM, define:
 
-1. A **token budget**, ie. how many tokens you can send as input to the LLM. Popular LLMs have well-defined token budgets, for example claude 4.5 sonnet accepts up to 1M tokens.
-2. A **trigger ratio**, which is a percentage of the token budget that you want to compact at. As usually once you hit the complete budget (or limit) you may end up trying to send too much data, which your model provider won't accept and reject the call.
+1. A **token budget**, i.e., how many tokens you can send as input to the LLM. Popular LLMs have well-defined token budgets; for example, Claude 4.5 Sonnet accepts up to 1M tokens.
+2. A **trigger ratio**, which is a percentage of the token budget at which you want to compact. If you hit the full budget (or limit), you may send too much data and your provider will reject the call.
 
 For example, with a budget of `8000` tokens and a trigger at `80%` you would trigger context compaction once the input exceeds `6400` tokens. This gives you breathing room in case the context grows larger when processing the next request without risking hitting a limit (your budget) and entering an unrecoverable state.
 
@@ -42,15 +42,15 @@ curl -X PUT http://localhost:4000/v1/contexts/docs-demo \
 
 ## Context compaction strategy
 
-"Compaction" is the act of reducing the input to your llm while retaining useful data, and throwing away that which you do not need. It is commonly done with strategies such as
+"Compaction" is the act of reducing the input to your LLM while retaining useful data and dropping what you don't need. Common strategies:
 
-* Keep the latest *N* messages, and throw away the rest.
-* Strip away detail that the LLM most likely do not need further, e.g. tool calls, reasoning, media too large, etc.
-* Maintain a running initial "summary" message at the top, which another LLM continuously builds on by taking new messages and updating it.
+* Keep the latest *N* messages and throw away the rest.
+* Strip away detail the LLM likely does not need, e.g., tool calls, reasoning, media too large, etc.
+* Maintain a running initial "summary" at the top, which another LLM updates by incorporating new messages.
 
-There are other creative & more complex ways to manage context such as involving a RAG or Vector DB to save facts about each context for later, but those are not covered by fastpaca since they're quite convoluted and usually aren't needed.
+There are other ways to manage context, such as using RAG or a vector DB to save facts per context, but those are not covered by Fastpaca.
 
-These strategies dictate *what we do when we approach the token budget* within the context context.
+These strategies dictate what to do as you approach the token budget within the context.
 
 ## Built-in strategies in fastpaca
 
@@ -60,13 +60,13 @@ These strategies dictate *what we do when we approach the token budget* within t
 | `skip_parts` | Drop `tool*` & `reasoning` messages, then apply `last_n`. | Agents that generate huge tool outputs or research agents that accrue a lot of reasoning messages. |
 | `manual` | Keep everything until the trigger ratio trips, then flip flag `needs_compaction`. | Workflows where you summarise in larger batches. |
 
-You can also use & implement your own strategy by setting the strategy to `manual` and using `needs_compaction` to rewrite the context for the agent by yourself.
+You can also implement your own strategy by setting the strategy to `manual` and using `needs_compaction` to decide when to rewrite the context yourself.
 
 ## Changing policies
 
-If you fetch a context again but change your policy during the setup it will automatically change the policy on the context going forward. The next time context compaction triggers it will use the new policy rather than the old.
+If you fetch a context again and change your policy during setup, the context adopts the new policy going forward. The next time compaction triggers, it uses the new policy.
 
-*NOTE: fastpaca does not rebuild the entire context from scratch when you change policies, since that can be an incredibly expensive operation. You can do so manually however by rewriting the context by calling `compact` manually.*
+*NOTE: Fastpaca does not rebuild the entire context when you change policies because that can be expensive. You can do so manually by rewriting the context via `compact`.*
 
 ## Choosing a starting policy
 
@@ -74,7 +74,7 @@ If you fetch a context again but change your policy during the setup it will aut
 | --- | --- | --- |
 | Something simple | `last_n` with `limit: 200` | Great default for short chats. |
 | Lean prompts with tools | `skip_parts` | Keeps metadata, removes noisy payloads. Good for most agents. |
-| Full control, larger batches | `budget` with `trigger_ratio: 0.7` | Pair with your own summariser. |
+| Full control, larger batches | `manual` with `trigger_ratio: 0.7` | Pair with your own summariser. |
 
 Revisit the policy when you change LLMs or expand context length.
 

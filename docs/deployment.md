@@ -5,17 +5,17 @@ sidebar_position: 3
 
 # Deployment
 
-Fastpaca is built to run in your own infrastructure.  This page covers recommended runtimes, storage, and operational knobs.
+Fastpaca is built to run in your own infrastructure. This page covers recommended runtimes, storage, and operational knobs.
 
 ---
 
 ## Hardware & storage
 
 - **CPU:** 2+ vCPUs per node (Raft + token accounting are CPU-bound).  
-- **Memory:** 4 GB RAM per node for typical workloads.  Increase if you retain very large snapshots.  
-- **Disk:** Fast SSD/NVMe for the Raft log (append-heavy).  Mount `/data` on dedicated storage.  
+- **Memory:** 4 GB RAM per node for typical workloads. Increase if you retain very large snapshots.  
+- **Disk:** Fast SSD/NVMe for the Raft log (append-heavy). Mount `/data` on dedicated storage.  
 - Set `FASTPACA_RAFT_DATA_DIR` to the mounted volume path so Raft logs survive restarts.  
-- **Network:** Low-latency links between nodes.  For production, keep Raft replicas within the same AZ or region (&lt;5 ms RTT).
+- **Network:** Low-latency links between nodes. For production, keep Raft replicas within the same AZ or region (&lt;5 ms RTT).
 
 ---
 
@@ -49,13 +49,13 @@ docker run -d \
   ghcr.io/fastpaca/fastpaca:latest
 ```
 
-Repeat with `FASTPACA_NODE_NAME=fastpaca-2/3`.  Nodes automatically discover peers through the seed list and form a Raft cluster.
+Repeat with `FASTPACA_NODE_NAME=fastpaca-2/3`. Nodes automatically discover peers through the seed list and form a Raft cluster.
 
 ### Placement guidelines
 
 - Run exactly three replicas for quorum (tolerates one node failure).  
 - Pin each replica to separate AZs only if network RTT remains low.  
-- Use Kubernetes StatefulSets, Nomad groups, or bare metal with systemd — the binary is self-contained.
+- Use Kubernetes StatefulSets, Nomad groups, or bare metal with systemd; the binary is self-contained.
 
 ---
 
@@ -105,8 +105,8 @@ Logs follow JSON structure with fields like `type`, `context_id`, and `seq`. For
 ## Scaling out
 
 - **More throughput:** Add additional nodes; Raft group assignment is deterministic and redistributed automatically.  
-- **Sharding:** Not required for most workloads — 256 Raft groups provide sufficient horizontal fan-out.  
-- **Read replicas:** Not needed; every node can serve reads.  Use Postgres replicas if you run heavy analytics.
+- **Sharding:** Not required for most workloads; 256 Raft groups provide sufficient horizontal fan-out.  
+- **Read replicas:** Not needed; every node can serve reads. Use Postgres replicas if you run heavy analytics.
 
 
 ---

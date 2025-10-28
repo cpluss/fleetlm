@@ -9,12 +9,12 @@ Understand how Fastpaca stores contexts and how you work with them day to day.
 
 ## Creating a context
 
-Fastpaca works on the concept of *context contexts*. Each context contains two things:
+Fastpaca works with contexts. Each context contains two things:
 
-1. **Message log** – what your users see and care about.
-2. **LLM context** – what the LLM care about in order to process user requests.
+1. **Message log**: what your users see and care about.
+2. **LLM context**: what the LLM cares about in order to process user requests.
 
-Contexts are created with a unique identifier that you create yourself, as long as it is globally unique it works. That way you can track & reuse contexts in your product.
+Contexts are created with a unique identifier that you choose. As long as it is globally unique, it works. That way you can track and reuse contexts in your product.
 
 ```typescript
 import { createClient } from '@fastpaca/fastpaca';
@@ -30,7 +30,7 @@ const ctx = await fastpaca.context('123456', {
 });
 ```
 
-This context acts as your soruce of truth to recognise a context in the future, to be reused across requests. Do note that budget, trigger, and policy are only necessary if you want to tune it - and changing it only changes context behaviour on _new_ contexts created.
+This context acts as your source of truth to recognise in the future and reuse across requests. Note that budget, trigger, and policy are optional; changing them only affects the behaviour of contexts you create after the change.
 
 *(For more details on how context compaction & management works see [Context Management](./context-management.md))*
 
@@ -49,7 +49,7 @@ await ctx.append({
 });
 ```
 
-Fastpaca doesn't care about the specific shape of parts, nor metadata—only that each part has a `type`. Each message is assigned a deterministic sequence number (`seq`) used to order them within a context.
+Fastpaca doesn't care about the specific shape of parts or metadata; it only requires that each part has a `type`. Each message is assigned a deterministic sequence number (`seq`) used to order them within a context.
 
 ## Calling your LLM
 
@@ -70,7 +70,7 @@ The context also stores an estimated `used_tokens` count and a `needs_compaction
 
 ## Streaming with your LLM
 
-Stream intermediary results directly to the UI while persisting them to context.
+Stream intermediate results directly to the UI while persisting them to context.
 
 ```typescript
 const { messages } = await ctx.context();
@@ -88,9 +88,9 @@ The `onFinish` callback receives `{ responseMessage }` with the properly formatt
 
 ## Getting messages
 
-Reading messages is fairly straightforward, but can be time consuming. Usually when you build products with context state your users don't see every message at all once, as some contexts can span thousands if not hundreds of thousands of messages. Fetching all of that is slow, regardless of what system you use.
+Reading messages is straightforward but can be time-consuming. Usually, users don't see every message all at once, as some contexts can span thousands if not hundreds of thousands of messages. Fetching all of that is slow, regardless of what system you use.
 
-Fastpaca takes this into account and allows you to fetch partial messages based on their sequence numbers, which is used to fetch messages the user can actually see.
+Fastpaca takes this into account and lets you fetch partial messages based on sequence numbers, which is what you actually render.
 
 ```typescript
 const ctx = await fastpaca.context('12345');
@@ -98,7 +98,7 @@ const ctx = await fastpaca.context('12345');
 // Fetch the last ~50 messages (from the tail)
 const latest = await ctx.getTail({ offset: 0, limit: 50 });
 
-// In case your user starts to scroll you may add UI elements to fetch more
+// If the user scrolls, fetch the next page
 const onePageUp = await ctx.getTail({ offset: 50, limit: 50 });
 ```
 

@@ -6,12 +6,12 @@ sidebar_position: 0
 
 # [Fastpaca](https://fastpaca.com)
 
-**Context infra for LLM apps.** Fastpaca keeps full history and maintains your LLM context window in one backend service. 
+**Context infra for LLM apps.** Fastpaca keeps full history and maintains your LLM context window in one backend service.
 
-- **[Quick Start](./usage/quickstart.md)** – ship a context endpoint in minutes  
-- **[Getting Started](./usage/getting-started.md)** – understand how the pieces fit  
-- **[API Reference](./api/rest.md)** – REST & websocket surfaces
-* **[View source](https://github.com/fastpaca/fastpaca)** - view the source code
+- **[Quick Start](./usage/quickstart.md)** - ship a context endpoint in minutes  
+- **[Getting Started](./usage/getting-started.md)** - understand how the pieces fit  
+- **[API Reference](./api/rest.md)** - REST & websocket surfaces
+* **[View source](https://github.com/fastpaca/fastpaca)**
 
 ---
 
@@ -20,7 +20,7 @@ sidebar_position: 0
 - **Users need to see every message.**
 - **LLMs can only see a limited context window.**
 
-Fastpaca bridges that gap with an append-only history, context compaction, and streaming — all inside one backend service. You stay focused on prompts, tools, UI, and business logic. 
+Fastpaca bridges that gap with an append-only history, context compaction, and streaming, all inside one backend service. You stay focused on prompts, tools, UI, and business logic.
 
 *(Curious how it’s built? See the [architecture](./architecture.md).)*
 
@@ -28,7 +28,7 @@ Fastpaca bridges that gap with an append-only history, context compaction, and s
 
 ## How Fastpaca Works
 
-1. **Choose a budget & context policy** – every context sets its token budget and compaction policy up front.
+1. **Choose a budget & context policy**: every context sets its token budget and compaction policy up front.
    ```ts
    const ctx = await fastpaca.context('chat_42', {
      budget: 1_000_000,
@@ -36,14 +36,14 @@ Fastpaca bridges that gap with an append-only history, context compaction, and s
      policy: { strategy: 'last_n', config: { limit: 400 } }
    });
    ```
-2. **Append from your backend** – Any message from your LLMs or your users.
+2. **Append from your backend**: any message from your LLMs or your users.
    ```ts
    await ctx.append({
      role: 'user',
      parts: [{ type: 'text', text: 'What changed in the latest release?' }]
    });
    ```
-3. **Call your LLM** – Fetch the compacted context and hand it to your LLM.
+3. **Call your LLM**: fetch the compacted context and hand it to your LLM.
    ```ts
    const { messages } = await ctx.context();
    return streamText({
@@ -55,7 +55,7 @@ Fastpaca bridges that gap with an append-only history, context compaction, and s
      },
    });
    ```
-4. (optional) **Compact on your terms** – when the policy is set to `manual`.
+4. (optional) **Compact on your terms**: when the policy is set to `manual`.
    ```ts
    const { needs_compaction, messages } = await ctx.context();
    if (needs_compaction) {
@@ -73,16 +73,16 @@ Need the mental model? Go to [Context Management](./usage/context-management.md)
 
 ## Why Teams Pick Fastpaca
 
-- **Stack agnostic** – Bring your own framework. Works natively with ai-sdk v5 (messages are structurally compatible), but ai-sdk is not required. Use LangChain, raw OpenAI/Anthropic calls, whatever you fancy.
-- **Horizontally scalable** – Distributed consensus, idempotent appends, automatic failover. Scale nodes horizontally without risk.
-- **Token-smart** – Enforce token budgets with built-in compaction policies. Stay within limits automatically.
-- **Self-hosted** – Single container by default.
+- **Stack agnostic**: bring your own framework. Works natively with ai-sdk v5 (messages are structurally compatible), but ai-sdk is not required. Use LangChain, raw OpenAI/Anthropic calls, whatever you fancy.
+- **Horizontally scalable**: distributed consensus, idempotent appends, automatic failover. Scale nodes horizontally without risk.
+- **Token-smart**: enforce token budgets with built-in compaction policies. Stay within limits automatically.
+- **Self-hosted**: single container by default.
 
-Context context state that doesn’t fall over.
+Context state that doesn’t fall over.
 
 ---
 
-## What fastpaca is not
+## What Fastpaca is not
 
 - **Not a vector DB** - bring your own to complement your LLM.
 - **Not generic chat infrastructure** - built specifically for LLMs.

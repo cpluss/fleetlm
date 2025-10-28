@@ -29,7 +29,7 @@ const ctx = await fastpaca.context('123456', {
 });
 ```
 
-`context(id)` never creates IDs for you—you decide what to use so you can continue the same context later.
+`context(id)` never creates IDs for you; you decide what to use so you can continue the same context later.
 
 ## 2. Append messages
 
