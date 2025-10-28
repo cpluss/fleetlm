@@ -5,7 +5,7 @@ TypeScript client for Fastpaca - context infrastructure for LLM apps.
 ## Installation
 
 ```bash
-npm install fastpaca
+npm install @fastpaca/fastpaca
 ```
 
 ## Usage
