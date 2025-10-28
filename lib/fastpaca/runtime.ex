@@ -193,7 +193,8 @@ defmodule Fastpaca.Runtime do
   # Archival acknowledgements (tiered storage integration point)
   # ---------------------------------------------------------------------------
 
-  @spec ack_archived(String.t(), non_neg_integer()) :: {:ok, map()} | {:error, term()} | {:timeout, term()}
+  @spec ack_archived(String.t(), non_neg_integer()) ::
+          {:ok, map()} | {:error, term()} | {:timeout, term()}
   def ack_archived(id, upto_seq) when is_binary(id) and is_integer(upto_seq) and upto_seq >= 0 do
     group = RaftManager.group_for_context(id)
 
@@ -203,7 +204,8 @@ defmodule Fastpaca.Runtime do
   end
 
   @doc false
-  def ack_archived_local(id, upto_seq) when is_binary(id) and is_integer(upto_seq) and upto_seq >= 0 do
+  def ack_archived_local(id, upto_seq)
+      when is_binary(id) and is_integer(upto_seq) and upto_seq >= 0 do
     with {:ok, server_id, lane, group} <- locate(id),
          :ok <- ensure_group_started(group) do
       case :ra.process_command(

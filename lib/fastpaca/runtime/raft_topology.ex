@@ -350,7 +350,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
     :ok
   end
 
-  defp add_member(group_id, ref, {server_id, node} = member) do
+  defp add_member(group_id, ref, {_server_id, node} = member) do
     Logger.debug("RaftTopology: adding #{inspect(node)} to group #{group_id}")
 
     # Ensure the group is started on the target node first

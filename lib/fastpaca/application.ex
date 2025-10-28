@@ -9,6 +9,8 @@ defmodule Fastpaca.Application do
 
     children =
       [
+        # PromEx metrics
+        Fastpaca.Observability.PromEx,
         pubsub_spec(),
         Fastpaca.Runtime.Supervisor,
         FastpacaWeb.Endpoint,

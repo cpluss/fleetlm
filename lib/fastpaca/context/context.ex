@@ -65,6 +65,7 @@ defmodule Fastpaca.Context do
   @spec new(String.t(), Config.t(), keyword()) :: t()
   def new(id, %Config{} = config, opts \\ []) do
     now = Keyword.get(opts, :timestamp, NaiveDateTime.utc_now())
+
     tail_keep =
       opts[:tail_keep] || Application.get_env(:fastpaca, :tail_keep, 1_000)
 

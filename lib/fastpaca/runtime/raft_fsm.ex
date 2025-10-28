@@ -125,7 +125,21 @@ defmodule Fastpaca.Runtime.RaftFSM do
       new_lane = %{lane | contexts: Map.put(lane.contexts, context_id, updated_context)}
       new_state = put_in(state.lanes[lane_id], new_lane)
 
-      {new_state, {:reply, {:ok, %{archived_seq: updated_context.archived_seq, trimmed: trimmed}}}}
+      # Emit telemetry about archival lag and trim
+      tail_size = length(updated_context.message_log.entries)
+
+      Fastpaca.Observability.Telemetry.archive_ack_applied(
+        context_id,
+        updated_context.last_seq,
+        updated_context.archived_seq,
+        trimmed,
+        updated_context.retention.tail_keep,
+        tail_size,
+        updated_context.llm_context.token_count
+      )
+
+      {new_state,
+       {:reply, {:ok, %{archived_seq: updated_context.archived_seq, trimmed: trimmed}}}}
     else
       {:error, reason} -> {state, {:reply, {:error, reason}}}
     end
@@ -144,6 +158,25 @@ defmodule Fastpaca.Runtime.RaftFSM do
     with {:ok, lane} <- Map.fetch(state.lanes, lane_id),
          {:ok, context} <- fetch_context(lane, context_id) do
       Context.messages_tail(context, offset, limit)
+    else
+      _ -> []
+    end
+  end
+
+  @doc """
+  Query unarchived messages (seq > archived_seq) up to `limit`.
+
+  Returns messages in chronological order (oldest to newest in the result).
+  """
+  def query_unarchived(state, lane_id, context_id, limit) do
+    with {:ok, lane} <- Map.fetch(state.lanes, lane_id),
+         {:ok, %Context{} = context} <- fetch_context(lane, context_id) do
+      context.message_log
+      |> Map.get(:entries, [])
+      # entries are newest-first; take while strictly newer than archive boundary
+      |> Enum.take_while(fn %{seq: seq} -> seq > context.archived_seq end)
+      |> Enum.reverse()
+      |> Enum.take(limit)
     else
       _ -> []
     end
@@ -200,10 +233,18 @@ defmodule Fastpaca.Runtime.RaftFSM do
         }
       end)
 
+    archive_event =
+      {
+        :mod_call,
+        Fastpaca.Archive,
+        :append_messages,
+        [context_id, messages]
+      }
+
     if flag == :compact do
-      message_events ++ [broadcast_compaction(context_id, context)]
+      message_events ++ [broadcast_compaction(context_id, context), archive_event]
     else
-      message_events
+      message_events ++ [archive_event]
     end
   end
 

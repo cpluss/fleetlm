@@ -7,9 +7,20 @@ defmodule Fastpaca.Runtime.Supervisor do
 
   @impl true
   def init(_arg) do
-    flusher_children =
-      if Application.get_env(:fastpaca, :runtime_flusher_enabled, true) do
-        [Fastpaca.Runtime.Flusher]
+    archive_children =
+      if archive_enabled?() do
+        adapter_opts =
+          case System.get_env("FASTPACA_POSTGRES_URL") || System.get_env("DATABASE_URL") do
+            nil -> nil
+            url -> [adapter: Fastpaca.Archive.Adapter.Postgres, adapter_opts: [url: url]]
+          end
+
+        base = [flush_interval_ms: archive_interval()]
+
+        case adapter_opts do
+          nil -> []
+          opts -> [{Fastpaca.Archive, base ++ opts}]
+        end
       else
         []
       end
@@ -24,8 +35,27 @@ defmodule Fastpaca.Runtime.Supervisor do
         Fastpaca.Runtime.RaftTopology,
         # Graceful drain coordinator for SIGTERM handling
         Fastpaca.Runtime.DrainCoordinator
-      ] ++ flusher_children
+      ] ++ archive_children
 
     Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  defp archive_interval do
+    case Application.get_env(:fastpaca, :archive_flush_interval_ms) ||
+           System.get_env("FASTPACA_ARCHIVE_FLUSH_INTERVAL_MS") do
+      nil -> 5_000
+      val when is_integer(val) -> val
+      val when is_binary(val) -> String.to_integer(val)
+    end
+  end
+
+  defp archive_enabled? do
+    from_env =
+      case System.get_env("FASTPACA_ARCHIVER_ENABLED") do
+        nil -> false
+        val -> val not in ["", "false", "0", "no", "off"]
+      end
+
+    Application.get_env(:fastpaca, :archive_enabled, false) || from_env
   end
 end

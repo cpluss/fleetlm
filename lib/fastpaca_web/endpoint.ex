@@ -24,5 +24,10 @@ defmodule FastpacaWeb.Endpoint do
   plug Plug.MethodOverride
   plug Plug.Head
   plug Plug.Session, @session_options
+  # Expose Prometheus metrics at /metrics via PromEx
+  plug PromEx.Plug,
+    prom_ex_module: Fastpaca.Observability.PromEx,
+    auth_strategy: :none
+
   plug FastpacaWeb.Router
 end
