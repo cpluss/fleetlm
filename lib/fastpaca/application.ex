@@ -13,13 +13,19 @@ defmodule Fastpaca.Application do
         Fastpaca.Observability.PromEx,
         # Ecto Repo for archive storage (only if archiving is enabled)
         repo_spec(),
+        # PubSub before runtime
         pubsub_spec(),
-        Fastpaca.Runtime.Supervisor,
-        FastpacaWeb.Endpoint,
-        dns_cluster_spec()
+        # DNS / clustering
+        dns_cluster_spec(),
+        # Runtime (Raft etc.)
+        Fastpaca.Runtime.Supervisor
       ]
       |> Enum.concat(cluster_children(topologies))
       |> Enum.reject(&is_nil/1)
+      |> Enum.concat([
+        # Endpoint last
+        FastpacaWeb.Endpoint
+      ])
 
     opts = [strategy: :one_for_one, name: Fastpaca.Supervisor]
     Supervisor.start_link(children, opts)

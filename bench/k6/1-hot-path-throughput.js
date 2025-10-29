@@ -79,6 +79,9 @@ export function setup() {
   console.log(`Pipeline depth: ${pipelineDepth}`);
   console.log(`Ramp: ${rampDuration} → Steady: ${steadyDuration} → Down: ${rampDownDuration}`);
 
+  // Wait for cluster to be ready before creating contexts
+  lib.waitForClusterReady(90);
+
   const contexts = {};
 
   for (let vuId = 1; vuId <= maxVUs; vuId++) {

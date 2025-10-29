@@ -23,8 +23,6 @@ defmodule Fastpaca.Runtime.RaftManager do
   @num_groups 256
   @num_lanes 16
   @replication_factor 3
-  @join_backoff_base_ms 100
-  @join_backoff_max_ms 5_000
 
   @doc false
   def num_groups, do: @num_groups
@@ -126,7 +124,10 @@ defmodule Fastpaca.Runtime.RaftManager do
       )
 
       if am_bootstrap do
-        bootstrap_cluster(group_id, cluster_name, machine, server_ids, {server_id, my_node})
+        # Ensure only one node bootstraps this group across the cluster
+        :global.trans({:raft_bootstrap, group_id}, fn ->
+          bootstrap_cluster(group_id, cluster_name, machine, server_ids, {server_id, my_node})
+        end, [Node.self()], 10_000)
       else
         # Retry join until bootstrap node creates cluster
         join_cluster_with_retry(group_id, server_id, cluster_name, machine,
@@ -173,22 +174,19 @@ defmodule Fastpaca.Runtime.RaftManager do
 
   defp join_cluster_with_retry(group_id, server_id, cluster_name, machine,
          retries: retries,
-         attempts: attempts
+         attempts: _attempts
        ) do
     case join_cluster(group_id, server_id, cluster_name, machine) do
       :ok ->
         :ok
 
       {:error, :enoent} ->
-        # Cluster doesn't exist yet, retry with capped exponential backoff
-        exponent = round(:math.pow(2, attempts))
-        backoff_ms = min(@join_backoff_max_ms, @join_backoff_base_ms * exponent)
-        Logger.warning("RaftManager: Cluster doesn't exist yet, retrying in #{backoff_ms}ms")
-        Process.sleep(backoff_ms)
+        # Cluster doesn't exist yet, retry with small backoff
+        Process.sleep(100)
 
         join_cluster_with_retry(group_id, server_id, cluster_name, machine,
           retries: retries - 1,
-          attempts: attempts + 1
+          attempts: 0
         )
 
       {:error, reason} ->
@@ -206,16 +204,17 @@ defmodule Fastpaca.Runtime.RaftManager do
     data_dir = Path.join([data_dir_root, "group_#{group_id}", node_name])
     File.mkdir_p!(data_dir)
 
-    server_conf = %{
-      id: {server_id, my_node},
-      uid: "raft_group_#{group_id}_#{node_name}",
-      cluster_name: cluster_name,
-      log_init_args: %{
-        uid: "raft_log_#{group_id}_#{node_name}",
-        data_dir: data_dir
-      },
-      machine: machine
-    }
+    # No cluster token enforcement
+      server_conf = %{
+        id: {server_id, my_node},
+        uid: "raft_group_#{group_id}_#{node_name}",
+        cluster_name: cluster_name,
+        log_init_args: %{
+          uid: "raft_log_#{group_id}_#{node_name}",
+          data_dir: data_dir
+        },
+        machine: machine
+      }
 
     case :ra.start_server(:default, server_conf) do
       :ok ->
@@ -228,6 +227,11 @@ defmodule Fastpaca.Runtime.RaftManager do
       {:error, {:already_started, _}} ->
         :ok
 
+      # Handle supervisor shutdown when child already started
+      {:error, {:shutdown, {:failed_to_start_child, _, {:already_started, _}}}} ->
+        Logger.debug("RaftManager: Group #{group_id} already running locally")
+        :ok
+
       {:error, reason} ->
         Logger.error("RaftManager: Failed to join group #{group_id}: #{inspect(reason)}")
         {:error, reason}
@@ -238,4 +242,6 @@ defmodule Fastpaca.Runtime.RaftManager do
   def machine(group_id) do
     {:module, RaftFSM, %{group_id: group_id}}
   end
+
+  # (cluster token helpers removed)
 end

@@ -11,10 +11,23 @@ import { check } from 'k6';
 // Configuration
 // ============================================================================
 
-const trimmedApiUrl = (__ENV.API_URL || 'http://localhost:4000/v1').replace(/\/$/, '');
+// Support load balancing across multiple cluster nodes
+const clusterNodes = __ENV.CLUSTER_NODES
+  ? __ENV.CLUSTER_NODES.split(',').map(url => url.trim().replace(/\/$/, ''))
+  : [(__ENV.API_URL || 'http://localhost:4000/v1').replace(/\/$/, '')];
+
+let nodeIndex = 0;
+
+function getNextNode() {
+  const node = clusterNodes[nodeIndex % clusterNodes.length];
+  nodeIndex++;
+  return node;
+}
 
 export const config = {
-  apiUrl: trimmedApiUrl,
+  apiUrl: clusterNodes[0], // Default for backward compatibility
+  getNextNode: getNextNode,
+  clusterNodes: clusterNodes,
   runId: __ENV.RUN_ID || `${Date.now()}-${Math.floor(Math.random() * 10000)}`,
   defaultTokenBudget: Number(__ENV.TOKEN_BUDGET || 1_000_000),
   defaultTriggerRatio: Number(__ENV.TRIGGER_RATIO || 0.7),
@@ -41,13 +54,46 @@ const defaultPolicy = (() => {
 // Context helpers
 // ============================================================================
 
-function buildUrl(path, params = {}) {
+function buildUrl(path, params = {}, useLoadBalancer = true) {
   const query = Object.entries(params)
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
     .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
     .join('&');
 
-  return query ? `${config.apiUrl}${path}?${query}` : `${config.apiUrl}${path}`;
+  // Use load balancer if enabled and multiple nodes available
+  const baseUrl = (useLoadBalancer && clusterNodes.length > 1) ? getNextNode() : config.apiUrl;
+
+  return query ? `${baseUrl}${path}?${query}` : `${baseUrl}${path}`;
+}
+
+export function waitForClusterReady(timeoutSeconds = 60) {
+  const startTime = Date.now();
+  const timeoutMs = timeoutSeconds * 1000;
+
+  console.log(`Waiting for ${clusterNodes.length} node(s) to be ready...`);
+
+  while (Date.now() - startTime < timeoutMs) {
+    let allReady = true;
+
+    for (const node of clusterNodes) {
+      const res = http.get(`${node.replace('/v1', '')}/health/ready`, { timeout: '5s' });
+      if (res.status !== 200) {
+        allReady = false;
+        break;
+      }
+    }
+
+    if (allReady) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`✓ All ${clusterNodes.length} node(s) ready after ${elapsed}s`);
+      return true;
+    }
+
+    // Wait 1s before retry
+    http.get('https://httpbin.test.k6.io/delay/1');
+  }
+
+  throw new Error(`Cluster did not become ready within ${timeoutSeconds}s`);
 }
 
 export function contextId(prefix, vuId, extra = '') {

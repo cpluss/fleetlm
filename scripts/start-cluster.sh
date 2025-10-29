@@ -22,8 +22,8 @@ fi
 # Create logs directory
 mkdir -p logs
 
-# Clean any stale Raft data
-rm -rf priv/raft/*
+# Clean any stale Raft data (both priv/raft and node directories)
+rm -rf priv/raft/* node*@127.0.0.1 2>/dev/null || true
 
 echo -e "${GREEN}Raft data cleaned${NC}"
 echo ""
@@ -32,27 +32,27 @@ echo ""
 CLUSTER_NODES="node1@127.0.0.1,node2@127.0.0.1,node3@127.0.0.1,node4@127.0.0.1,node5@127.0.0.1"
 
 echo -e "${GREEN}Starting node1@127.0.0.1 on port 4000...${NC}"
-CLUSTER_NODES="$CLUSTER_NODES" PORT=4000 elixir --name node1@127.0.0.1 -S mix phx.server > logs/node1.log 2>&1 &
+FASTPACA_ARCHIVER_ENABLED=true CLUSTER_NODES="$CLUSTER_NODES" PORT=4000 elixir --name node1@127.0.0.1 -S mix phx.server > logs/node1.log 2>&1 &
 NODE1_PID=$!
 echo "  PID: $NODE1_PID"
 
 echo -e "${GREEN}Starting node2@127.0.0.1 on port 4001...${NC}"
-CLUSTER_NODES="$CLUSTER_NODES" PORT=4001 elixir --name node2@127.0.0.1 -S mix phx.server > logs/node2.log 2>&1 &
+FASTPACA_ARCHIVER_ENABLED=true CLUSTER_NODES="$CLUSTER_NODES" PORT=4001 elixir --name node2@127.0.0.1 -S mix phx.server > logs/node2.log 2>&1 &
 NODE2_PID=$!
 echo "  PID: $NODE2_PID"
 
 echo -e "${GREEN}Starting node3@127.0.0.1 on port 4002...${NC}"
-CLUSTER_NODES="$CLUSTER_NODES" PORT=4002 elixir --name node3@127.0.0.1 -S mix phx.server > logs/node3.log 2>&1 &
+FASTPACA_ARCHIVER_ENABLED=true CLUSTER_NODES="$CLUSTER_NODES" PORT=4002 elixir --name node3@127.0.0.1 -S mix phx.server > logs/node3.log 2>&1 &
 NODE3_PID=$!
 echo "  PID: $NODE3_PID"
 
 echo -e "${GREEN}Starting node4@127.0.0.1 on port 4003...${NC}"
-CLUSTER_NODES="$CLUSTER_NODES" PORT=4003 elixir --name node4@127.0.0.1 -S mix phx.server > logs/node4.log 2>&1 &
+FASTPACA_ARCHIVER_ENABLED=true CLUSTER_NODES="$CLUSTER_NODES" PORT=4003 elixir --name node4@127.0.0.1 -S mix phx.server > logs/node4.log 2>&1 &
 NODE4_PID=$!
 echo "  PID: $NODE4_PID"
 
 echo -e "${GREEN}Starting node5@127.0.0.1 on port 4004...${NC}"
-CLUSTER_NODES="$CLUSTER_NODES" PORT=4004 elixir --name node5@127.0.0.1 -S mix phx.server > logs/node5.log 2>&1 &
+FASTPACA_ARCHIVER_ENABLED=true CLUSTER_NODES="$CLUSTER_NODES" PORT=4004 elixir --name node5@127.0.0.1 -S mix phx.server > logs/node5.log 2>&1 &
 NODE5_PID=$!
 echo "  PID: $NODE5_PID"
 

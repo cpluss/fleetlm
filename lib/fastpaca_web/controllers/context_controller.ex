@@ -72,8 +72,9 @@ defmodule FastpacaWeb.ContextController do
            Runtime.append_messages(id, [{role, parts, metadata, count}], if_version: if_version) do
       Fastpaca.Observability.Telemetry.message_appended(source, count, id, role)
 
-      json(conn, %{seq: reply.seq, version: reply.version, token_estimate: reply.token_count})
+      conn
       |> put_status(:created)
+      |> json(%{seq: reply.seq, version: reply.version, token_estimate: reply.token_count})
     end
   end
 

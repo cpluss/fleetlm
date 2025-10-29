@@ -107,16 +107,45 @@ defmodule Fastpaca.Context do
 
     {new_llm_context, flag} =
       if exceeds_trigger?(llm_context.token_count, context.config) do
+        # Handle both atom and string keys from deserialization
         {:ok, new_llm_context, flag} =
-          case context.config.policy.strategy do
+          case Map.get(context.config.policy, :strategy) ||
+                 Map.get(context.config.policy, "strategy") do
             :skip_parts ->
-              Fastpaca.Context.Policies.SkipParts.apply(llm_context, context.config.policy.config)
+              Fastpaca.Context.Policies.SkipParts.apply(
+                llm_context,
+                get_policy_config(context.config.policy)
+              )
+
+            "skip_parts" ->
+              Fastpaca.Context.Policies.SkipParts.apply(
+                llm_context,
+                get_policy_config(context.config.policy)
+              )
 
             :manual ->
-              Fastpaca.Context.Policies.Manual.apply(llm_context, context.config.policy.config)
+              Fastpaca.Context.Policies.Manual.apply(
+                llm_context,
+                get_policy_config(context.config.policy)
+              )
+
+            "manual" ->
+              Fastpaca.Context.Policies.Manual.apply(
+                llm_context,
+                get_policy_config(context.config.policy)
+              )
 
             :last_n ->
-              Fastpaca.Context.Policies.LastN.apply(llm_context, context.config.policy.config)
+              Fastpaca.Context.Policies.LastN.apply(
+                llm_context,
+                get_policy_config(context.config.policy)
+              )
+
+            "last_n" ->
+              Fastpaca.Context.Policies.LastN.apply(
+                llm_context,
+                get_policy_config(context.config.policy)
+              )
           end
 
         {new_llm_context, flag}
@@ -182,6 +211,28 @@ defmodule Fastpaca.Context do
        do: token_count > trunc(budget * ratio)
 
   defp exceeds_trigger?(_, _), do: false
+
+  # Handle both atom and string keys from JSON deserialization
+  defp get_policy_config(policy) do
+    config = Map.get(policy, :config) || Map.get(policy, "config") || %{}
+
+    # Normalize config keys to atoms for policy modules
+    try do
+      case config do
+        %{} = map when map_size(map) > 0 ->
+          Map.new(config, fn
+            {k, v} when is_binary(k) -> {String.to_existing_atom(k), v}
+            {k, v} -> {k, v}
+          end)
+
+        _ ->
+          %{}
+      end
+    rescue
+      # If atom doesn't exist, return as-is
+      ArgumentError -> config
+    end
+  end
 
   @doc """
   Apply an archive acknowledgement up to `upto_seq`, trimming the log while

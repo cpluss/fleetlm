@@ -67,7 +67,6 @@ defmodule Fastpaca.Runtime.RaftTopology do
     |> Enum.filter(&(&1[:status] == :ready))
     |> Enum.map(& &1[:node])
     |> Enum.reject(&is_nil/1)
-    |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
     |> Enum.sort()
   end
@@ -78,8 +77,8 @@ defmodule Fastpaca.Runtime.RaftTopology do
   """
   def all_nodes do
     Presence.list(@presence_topic)
-    |> Enum.flat_map(fn {_key, %{metas: metas}} -> metas end)
-    |> Enum.filter(&(Map.get(&1, :status) != :draining))
+    |> Enum.map(fn {_key, %{metas: metas}} -> metas end)
+    |> List.flatten()
     |> Enum.map(& &1[:node])
     |> Enum.reject(&is_nil/1)
     |> Enum.uniq()
@@ -123,7 +122,8 @@ defmodule Fastpaca.Runtime.RaftTopology do
     {:ok,
      %{
        status: :joining,
-       rebalance_timer: nil
+       rebalance_timer: nil,
+       formation: true
      }}
   end
 
@@ -143,17 +143,17 @@ defmodule Fastpaca.Runtime.RaftTopology do
   end
 
   @impl true
-  def handle_info(:check_readiness, state) do
-    # Wait for cluster to form before starting groups (avoid single-node clusters!)
+  def handle_info(:check_readiness, %{formation: true} = state) do
+    # During initial formation, wait for a minimal quorum of nodes, not full CLUSTER_NODES.
     expected_nodes = parse_expected_cluster_size()
     current_cluster = [Node.self() | Node.list()] |> length()
+    replication_factor = 3
+    min_quorum = min(expected_nodes, replication_factor)
 
-    if current_cluster < expected_nodes do
+    if current_cluster < min_quorum do
       Logger.debug(
-        "RaftTopology: waiting for cluster (#{current_cluster}/#{expected_nodes} nodes connected)"
+        "RaftTopology: waiting for cluster (#{current_cluster}/#{min_quorum} nodes connected)"
       )
-
-      # Wait for other nodes to start before we accept traffic so we get replication
       Process.send_after(self(), :check_readiness, @readiness_interval_ms)
       {:noreply, state}
     else
@@ -179,7 +179,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
         Logger.debug("RaftTopology: joined #{length(my_groups)} groups; marking ready")
         mark_ready()
         schedule_rebalance(state, immediate: true)
-        {:noreply, %{state | status: :ready}}
+        {:noreply, %{state | status: :ready, formation: false}}
       else
         Logger.debug(
           "RaftTopology: joined #{Enum.count(my_groups, &joined_group?/1)}/#{length(my_groups)} groups"
@@ -189,6 +189,12 @@ defmodule Fastpaca.Runtime.RaftTopology do
         {:noreply, %{state | status: :joining}}
       end
     end
+  end
+
+  # After initial formation, never gate on expected cluster size again.
+  @impl true
+  def handle_info(:check_readiness, state) do
+    {:noreply, state}
   end
 
   @impl true
@@ -260,6 +266,8 @@ defmodule Fastpaca.Runtime.RaftTopology do
         do: group_id
   end
 
+  # (no sentinel groups)
+
   defp group_running?(group_id) do
     Process.whereis(RaftManager.server_id(group_id)) != nil
   end
@@ -318,7 +326,14 @@ defmodule Fastpaca.Runtime.RaftTopology do
 
         # Add members first, then wait for commit, then remove
         unless Enum.empty?(to_add) do
-          Enum.each(to_add, fn member -> add_member(group_id, ref, member) end)
+          # Determine current leader; propose membership on the leader when known
+          leader_target =
+            case :ra.members(ref) do
+              {:ok, _cur, leader_ref} when not is_nil(leader_ref) -> leader_ref
+              _ -> ref
+            end
+
+          Enum.each(to_add, fn member -> add_member(group_id, leader_target, member) end)
 
           # Poll until adds are committed (no blind sleeps!)
           case wait_for_membership_change(ref, desired, timeout_ms: 10000) do
@@ -332,8 +347,15 @@ defmodule Fastpaca.Runtime.RaftTopology do
           end
         end
 
-        # Only remove after adds are fully committed
-        Enum.each(to_remove, fn member -> remove_member(group_id, ref, member) end)
+        # Only remove after adds are fully committed (robust guard)
+        # Re-evaluate leader before removals
+        leader_for_remove =
+          case :ra.members(ref) do
+            {:ok, _cur2, leader2} when not is_nil(leader2) -> leader2
+            _ -> ref
+          end
+
+        Enum.each(to_remove, fn member -> remove_member(group_id, leader_for_remove, member) end)
 
       {:error, :noproc} ->
         :ok
@@ -350,14 +372,14 @@ defmodule Fastpaca.Runtime.RaftTopology do
     :ok
   end
 
-  defp add_member(group_id, ref, {_server_id, node} = member) do
+  defp add_member(group_id, leader_ref, {server_id, node} = member) do
     Logger.debug("RaftTopology: adding #{inspect(node)} to group #{group_id}")
 
-    # Ensure the group is started on the target node first
-    :rpc.call(node, RaftManager, :start_group, [group_id])
+    # Ensure group is started on the target first
+    _ = :rpc.call(node, RaftManager, :start_group, [group_id])
 
-    # Use server reference (not cluster name atom)
-    case :ra.add_member(ref, member) do
+    # Propose on leader (or fallback ref)
+    case :ra.add_member(leader_ref, member) do
       {:ok, _members, _leader} ->
         Logger.debug("RaftTopology: added #{inspect(node)} to group #{group_id}")
         :ok
@@ -379,11 +401,10 @@ defmodule Fastpaca.Runtime.RaftTopology do
     end
   end
 
-  defp remove_member(group_id, ref, {server_id, node} = member) do
+  defp remove_member(group_id, leader_ref, {server_id, node} = member) do
     Logger.debug("RaftTopology: removing #{inspect(node)} from group #{group_id}")
 
-    # Use server reference (not cluster name atom)
-    case :ra.remove_member(ref, member) do
+    case :ra.remove_member(leader_ref, member) do
       {:ok, _members, _leader} ->
         Logger.debug("RaftTopology: removed #{inspect(node)} from group #{group_id}")
         :rpc.call(node, :ra, :stop_server, [:default, {server_id, node}])
