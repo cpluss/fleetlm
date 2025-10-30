@@ -24,12 +24,9 @@ Context budgeting and compaction for LLM apps. Keep long conversations fast and 
 
 > _Enforces a per-conversation token budget before requests hit your LLM._
 
-- [Quick start](./usage/quickstart.md)
-- [Getting started](./usage/getting-started.md)
-- [How it Works](./architecture.md)
-- [Policies](./usage/context-management.md)
-- [Self-hosting](./deployment.md)
-- [API Reference](./api/rest.md)
+- [Documentation](https://docs.fastpaca.com/usage/gettingstarted)
+- [Quick start](https://docs.fastpaca.com/usage/quickstart)
+- [API Reference](https://docs.fastpaca.com/api/rest)
 
 ## Long conversations get expensive and slow
 
