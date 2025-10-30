@@ -76,6 +76,13 @@ Append a message.
 - `token_count` (optional): when provided, the server uses it verbatim. If omitted, the server computes an approximate value.
 - `if_version` (optional): Enforces optimistic concurrency control. The server returns `409 Conflict` if the current context version does not match the supplied value. Use this to prevent race conditions when multiple clients append simultaneously.
 
+Token fields at a glance:
+- `token_count` is per-message and optional on input.
+- `token_estimate` is the per-message count echoed back on append (equals `token_count` when you provided it).
+- `used_tokens` is reported by the context endpoint and represents the current estimated input tokens in the LLM context.
+
+See “Key Terms” in Getting Started for a quick primer.
+
 ### GET `/v1/contexts/:id/tail`
 
 Retrieve messages with tail-based pagination (newest to oldest). Designed for backward iteration from recent messages, ideal for infinite scroll, mobile apps, and future tiered storage.
@@ -143,11 +150,11 @@ while (true) {
 
 ### GET `/v1/contexts/:id/context`
 
-Returns the current LLM context (the slice you send to your LLM).
+Returns the current LLM context (the input slice you send to your model).
 
 Query parameters:
 
-- `budget_tokens` (optional): temporarily override the configured budget.  
+- `budget_tokens` (optional): temporarily override the configured input token budget.  
 - `if_version` (optional): fail with `409` if the snapshot changed since the supplied version.
 
 ```json title="Response"
@@ -167,7 +174,7 @@ Query parameters:
 
 ### POST `/v1/contexts/:id/compact`
 
-Rewrite the LLM context snapshot in full. The raw message log remains untouched for replay/audit. This is an all-or-nothing replacement of the current LLM window.
+Rewrite the LLM context snapshot in full. The raw message log remains untouched for replay/audit. This is an all-or-nothing replacement of the current LLM context snapshot.
 
 ```json title="Request body"
 {

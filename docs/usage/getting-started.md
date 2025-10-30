@@ -7,6 +7,25 @@ sidebar_position: 2
 
 Understand how Fastpaca stores contexts and how you work with them day to day.
 
+## Key Terms
+
+- Context: A named conversation or thread that contains all messages and the current LLM context.
+- Message log: The complete, append-only history users see. Never rewritten.
+- LLM context: The input slice you send to your model (built from the log and kept under a token budget).
+- Snapshot: The stored representation of the LLM context (e.g., summary + live tail) used to serve reads quickly.
+- Token budget: The maximum input tokens allowed in the LLM context for this context.
+- Trigger ratio: When reached, Fastpaca flags that compaction should run to stay under budget.
+- Compaction: Updating the cached LLM context (snapshot); history remains intact.
+
+Token fields
+- token_count: Optional per-message token count you provide on append.
+- token_estimate: Per-message count echoed back in the append response (equals token_count when supplied).
+- used_tokens: Estimated input tokens currently in the LLM context returned by the context endpoint.
+
+Limits
+- policy.config.limit: Message-count limit (number of messages kept) used by strategies like last_n.
+- token_budget: Input token ceiling used when building the LLM context.
+
 ## Creating a context
 
 Fastpaca works with contexts. Each context contains two things:
@@ -21,7 +40,7 @@ import { createClient } from '@fastpaca/fastpaca';
 
 const fastpaca = createClient({ baseUrl: process.env.FASTPACA_URL || 'http://localhost:4000/v1' });
 const ctx = await fastpaca.context('123456', {
-  // The token budget for this context, tunable and defaults to 8k to be conservative.
+  // The input token budget for this context. Tunable and defaults to 8k.
   budget: 1_000_000,
   // Optionally tune the compaction trigger, i.e. at what point will we trigger compaction.
   trigger: 0.7,

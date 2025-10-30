@@ -5,9 +5,9 @@ sidebar_position: 3
 
 # Context Management
 
-Managing your context is key to scaling an LLM product. Users want full history, but your LLM or agent operates under a limit: you can only send a certain number of input tokens, dictated by its context window.
+Managing your context is key to scaling an LLM product. Users want full history, but your LLM or agent can only accept a limited number of input tokens, governed by the provider's context length.
 
-Sending all messages to the LLM works until you hit the input token limit. Once you reach it, you either stop processing or reduce the input so users can keep interacting as if everything is considered on each request.
+Sending all messages to the LLM works until you hit the provider’s input limit. Once you reach it, you either stop processing or reduce the input so users can keep interacting as if everything is considered on each request.
 
 ---
 
@@ -15,10 +15,10 @@ Sending all messages to the LLM works until you hit the input token limit. Once 
 
 To determine when to reduce the size of the input (messages) you send to your LLM, define:
 
-1. A **token budget**, i.e., how many tokens you can send as input to the LLM. Popular LLMs have well-defined token budgets; for example, Claude 4.5 Sonnet accepts up to 1M tokens.
-2. A **trigger ratio**, which is a percentage of the token budget at which you want to compact. If you hit the full budget (or limit), you may send too much data and your provider will reject the call.
+1. A **token budget**, i.e., how many tokens you allow as input to the LLM (input only). Popular LLMs publish context lengths; for example, Claude 4.5 Sonnet accepts up to 1M tokens.
+2. A **trigger ratio**, which is a percentage of the token budget at which you want to compact. If you hit the full provider limit, you may send too much data and your provider will reject the call.
 
-For example, with a budget of `8000` tokens and a trigger at `80%` you would trigger context compaction once the input exceeds `6400` tokens. This gives you breathing room in case the context grows larger when processing the next request without risking hitting a limit (your budget) and entering an unrecoverable state.
+For example, with a budget of `8000` tokens and a trigger at `80%` you would trigger context compaction once the input exceeds `6400` tokens. This gives you breathing room in case the context grows larger during the next request without risking hitting the provider limit and entering an unrecoverable state.
 
 ## Token budgets at a glance
 

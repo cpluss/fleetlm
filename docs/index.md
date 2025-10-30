@@ -4,97 +4,58 @@ slug: /
 sidebar_position: 0
 ---
 
-# [Fastpaca](https://fastpaca.com)
+# fastpaca
 
-**Context infra for LLM apps.** Fastpaca keeps full history and maintains your LLM context window in one backend service.
+Context budgeting and compaction for LLM apps. Keeep long conversations fast and affordable.
 
-- **[Quick Start](./usage/quickstart.md)** - ship a context endpoint in minutes  
-- **[Getting Started](./usage/getting-started.md)** - understand how the pieces fit  
-- **[API Reference](./api/rest.md)** - REST & websocket surfaces
-* **[View source](https://github.com/fastpaca/fastpaca)**
+- Set token budgets. Conversations stay within bounds.
+- You control the accuracy/cost tradeoff.
 
----
+```
+                      ╔═ fastpaca ════════════════════════╗
+╔══════════╗          ║                                   ║░
+║          ║░         ║  ┏━━━━━━━━━━━┓     ┏━━━━━━━━━━━┓  ║░
+║  client  ║░───API──▶║  ┃  Message  ┃────▶┃  Context  ┃  ║░
+║          ║░         ║  ┃  History  ┃     ┃  Policy   ┃  ║░
+╚══════════╝░         ║  ┗━━━━━━━━━━━┛     ┗━━━━━━━━━━━┛  ║░
+ ░░░░░░░░░░░░         ║                                   ║░
+                      ╚═══════════════════════════════════╝░
+                       ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
+```
 
-## Why it matters
+> _Enforces a per-conversation token budget before requests hit your LLM._
 
-- **Users need to see every message.**
-- **LLMs can only see a limited context window.**
+- [Quick start](./usage/quickstart.md)
+- [Getting started](./usage/getting-started.md)
+- [How it Works](./architecture.md)
+- [Policies](./usage/context-management.md)
+- [Self-hosting](./deployment.md)
+- [API Reference](./api/rest.md)
 
-Fastpaca bridges that gap with an append-only history, context compaction, and streaming, all inside one backend service. You stay focused on prompts, tools, UI, and business logic.
+# Long conversations get expensive and slow
 
-*(Curious how it’s built? See the [architecture](./architecture.md).)*
+- More messages = more tokens = higher cost
+- Larger context = slower responses
+- Eventually you hit the model's limit
 
----
+## What fastpaca does
 
-## How Fastpaca Works
+Enforces per-conversation token budgets with deterministic compaction.
 
-1. **Choose a budget & context policy**: every context sets its token budget and compaction policy up front.
-   ```ts
-   const ctx = await fastpaca.context('chat_42', {
-     budget: 1_000_000,
-     trigger: 0.7,
-     policy: { strategy: 'last_n', config: { limit: 400 } }
-   });
-   ```
-2. **Append from your backend**: any message from your LLMs or your users.
-   ```ts
-   await ctx.append({
-     role: 'user',
-     parts: [{ type: 'text', text: 'What changed in the latest release?' }]
-   });
-   ```
-3. **Call your LLM**: fetch the compacted context and hand it to your LLM.
-   ```ts
-   const { messages } = await ctx.context();
-   return streamText({
-     model: openai('gpt-4o-mini'),
-     messages,
-   }).toUIMessageStreamResponse({
-     onFinish: async ({ responseMessage }) => {
-       await ctx.append(responseMessage);
-     },
-   });
-   ```
-4. (optional) **Compact on your terms**: when the policy is set to `manual`.
-   ```ts
-   const { needs_compaction, messages } = await ctx.context();
-   if (needs_compaction) {
-     const { summary, remainingMessages } = await summarise(messages);
-     await ctx.compact([
-       { role: 'system', parts: [{ type: 'text', text: summary }] },
-       ...remainingMessages
-     ]);
-   }
-   ```
+- Keep full history for users
+- Compact context for the model
+- Choose your policy (`last_n`, `skip_parts`, `manual`)
 
-Need the mental model? Go to [Context Management](./usage/context-management.md). Want to hack now? Hit [Quick Start](./usage/quickstart.md).
+## Quick Start
 
----
+```ts
+const fastpaca = createClient({ baseUrl: 'http://localhost:4000/v1' });
+const ctx = await fastpaca.context('demo', { budget: 1_000_000 });
+await ctx.append({ role: 'user', parts: [{ type: 'text', text: 'Hi' }] });
+const { messages } = await ctx.context();
+```
 
-## Why Teams Pick Fastpaca
+## Background
 
-- **Stack agnostic**: bring your own framework. Works natively with ai-sdk v5 (messages are structurally compatible), but ai-sdk is not required. Use LangChain, raw OpenAI/Anthropic calls, whatever you fancy.
-- **Horizontally scalable**: distributed consensus, idempotent appends, automatic failover. Scale nodes horizontally without risk.
-- **Token-smart**: enforce token budgets with built-in compaction policies. Stay within limits automatically.
-- **Self-hosted**: single container by default.
-
-Context state that doesn’t fall over.
-
----
-
-## What Fastpaca is not
-
-- **Not a vector DB** - bring your own to complement your LLM.
-- **Not generic chat infrastructure** - built specifically for LLMs.
-- **Not an agent framework** - use it alongside whichever one you prefer.
-
----
-
-## Where to Go Next
-
-- Ship the basics: [Quick Start](./usage/quickstart.md)  
-- Understand policies: [Context Management](./usage/context-management.md)  
-- Call the API from code: [TypeScript SDK](./usage/typescript-sdk.md) & [Examples](./usage/examples.md)  
-- Learn the internals: [Architecture](./architecture.md) • [API Reference](./api/rest.md)
-
-**Use ai-sdk for inference. Use Fastpaca for context state. Bring your own LLM, framework, and frontend.**
+We kept rebuilding the same Redis + Postgres + pub/sub stack to manage conversation state and compaction. It was messy, hard to scale, and expensive to tune.  
+Fastpaca turns that pattern into a single service you can drop in.

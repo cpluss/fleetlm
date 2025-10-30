@@ -23,7 +23,7 @@ const fastpaca = createClient({
 
 // Idempotent create/update when options are provided
 const ctx = await fastpaca.context('123456', {
-  budget: 1_000_000,              // token budget for this context
+  budget: 1_000_000,              // input token budget for this context
   trigger: 0.7,                   // optional trigger ratio (defaults to 0.7)
   policy: { strategy: 'last_n', config: { limit: 400 } }
 });
@@ -119,7 +119,7 @@ This rewrites only what the LLM will see. Users still get the full message log.
 
 Notes:
 - The server computes message token counts by default; pass `tokenCount` when you have an accurate value (e.g., from your model provider).
-- Use `ctx.context({ budgetTokens: ... })` to temporarily override the budget.
+- Use `ctx.context({ budgetTokens: ... })` to temporarily override the input budget for a single call.
 
 Token usage with ai-sdk v5:
 - `streamText` and `generateText` expose `usage`/`totalUsage`. If your provider returns completion token counts, pass that as `{ tokenCount }` when appending the assistant’s response for maximum accuracy.
