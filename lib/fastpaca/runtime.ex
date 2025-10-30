@@ -297,6 +297,16 @@ defmodule Fastpaca.Runtime do
         {:error, :not_leader} ->
           try_remote(rest, fun, args, visited, [{node, :not_leader} | failures])
 
+        {:error, {:timeout, leader}} ->
+          # If a timeout returns a leader hint, try the leader next
+          rest = maybe_enqueue_leader(leader, rest, visited)
+          try_remote(rest, fun, args, visited, [{node, {:timeout, leader}} | failures])
+
+        {:timeout, leader} ->
+          # Some paths may return bare {:timeout, leader}
+          rest = maybe_enqueue_leader(leader, rest, visited)
+          try_remote(rest, fun, args, visited, [{node, {:timeout, leader}} | failures])
+
         other ->
           other
       end

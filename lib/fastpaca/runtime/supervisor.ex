@@ -25,9 +25,7 @@ defmodule Fastpaca.Runtime.Supervisor do
       [
         # Task.Supervisor for async Raft group startup
         {Task.Supervisor, name: Fastpaca.RaftTaskSupervisor},
-        # Presence replicates ready-node membership across the cluster
-        Fastpaca.Runtime.RaftTopology.Presence,
-        # Topology coordinator (monitors cluster, manages Raft membership)
+        # Topology coordinator (uses Erlang distribution, not Presence)
         Fastpaca.Runtime.RaftTopology,
         # Graceful drain coordinator for SIGTERM handling
         Fastpaca.Runtime.DrainCoordinator
