@@ -103,10 +103,29 @@ Drops reasoning traces, tool results, images — keeps the final response. Massi
 
 ## Quick Start
 
+> [!TIP]
+> [See example](./examples/nextjs-chat/README.md) for a more comprehensive look at how it looks in a real chat app!
+
+Start container, note that postgres is optional. Data will persist in memory with a TAIL for message history.
+
+```
+```bash
+docker run -d \
+  -p 4000:4000 \
+  -v fastpaca_data:/data \
+  ghcr.io/fastpaca/fastpaca:latest
+```
+
+Use our typescript SDK
+
 ```ts
+import { createClient } from '@fastpaca/fastpaca';
+
 const fastpaca = createClient({ baseUrl: 'http://localhost:4000/v1' });
 const ctx = await fastpaca.context('demo', { budget: 1_000_000 });
 await ctx.append({ role: 'user', parts: [{ type: 'text', text: 'Hi' }] });
+
+// For your LLM
 const { messages } = await ctx.context();
 ```
 
