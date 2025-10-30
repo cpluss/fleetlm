@@ -13,13 +13,13 @@ Context budgeting and compaction for LLM apps. Keeep long conversations fast and
 
 ```
                       ╔═ fastpaca ════════════════════════╗
-╔══════════╗          ║                                   ║░
-║          ║░         ║  ┏━━━━━━━━━━━┓     ┏━━━━━━━━━━━┓  ║░
-║  client  ║░───API──▶║  ┃  Message  ┃────▶┃  Context  ┃  ║░
-║          ║░         ║  ┃  History  ┃     ┃  Policy   ┃  ║░
-╚══════════╝░         ║  ┗━━━━━━━━━━━┛     ┗━━━━━━━━━━━┛  ║░
- ░░░░░░░░░░░░         ║                                   ║░
-                      ╚═══════════════════════════════════╝░
+╔══════════╗          ║                                   ║░    ╔═optional═╗          
+║          ║░         ║  ┏━━━━━━━━━━━┓     ┏━━━━━━━━━━━┓  ║░    ║          ║░         
+║  client  ║░───API──▶║  ┃  Message  ┃────▶┃  Context  ┃  ║░ ──▶║ postgres ║░
+║          ║░         ║  ┃  History  ┃     ┃  Policy   ┃  ║░    ║          ║░         
+╚══════════╝░         ║  ┗━━━━━━━━━━━┛     ┗━━━━━━━━━━━┛  ║░    ╚══════════╝░         
+ ░░░░░░░░░░░░         ║                                   ║░     ░░░░░░░░░░░░         
+                      ╚═══════════════════════════════════╝░                      
                        ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
 ```
 
@@ -30,6 +30,7 @@ Context budgeting and compaction for LLM apps. Keeep long conversations fast and
 - [How it Works](./architecture.md)
 - [Policies](./usage/context-management.md)
 - [Self-hosting](./deployment.md)
+- [Storage & Audit](./storage.md)
 - [API Reference](./api/rest.md)
 
 # Long conversations get expensive and slow

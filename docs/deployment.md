@@ -59,26 +59,24 @@ Repeat with `FASTPACA_NODE_NAME=fastpaca-2/3`. Nodes automatically discover peer
 
 ---
 
-## Optional archival (Postgres/S3)
+## Optional archival (Postgres)
 
 Fastpaca does not require external storage for correctness. Configure an archive if you need:
 
-- Long-term history beyond the Raft tail.  
+- Long‑term history beyond the Raft tail.  
 - Analytics / BI queries on the full log.  
-- Faster cold-start recovery for very old contexts.
+- Faster cold‑start recovery for very old contexts.
 
-Current release:
+The Postgres archiver is built‑in. It persists messages and then acknowledges a high‑water mark to Raft so the tail can trim older segments while retaining a safety buffer.
 
-- Raft keeps a bounded tail and an LLM window. An external archiver can write messages to Postgres/S3 and then acknowledge a high-water mark to Raft to trim older tail segments.
-- Archiver implementation and telemetry will land in a follow-up. This page reserves the knobs for that integration.
-
-Archiver environment variables:
+Archiver environment variables (auto‑migrations on boot when enabled):
 
 ```bash
--e FASTPACA_ARCHIVER_ENABLED=true
--e FASTPACA_POSTGRES_URL=postgres://user:password@host/db
--e FASTPACA_ARCHIVE_FLUSH_INTERVAL_MS=5000
--e FASTPACA_ARCHIVER_BATCH_SIZE=5000
+-e FASTPACA_ARCHIVER_ENABLED=true \
+-e DATABASE_URL=postgres://user:password@host/db \
+-e FASTPACA_ARCHIVE_FLUSH_INTERVAL_MS=5000 \
+-e FASTPACA_ARCHIVER_BATCH_SIZE=5000 \
+-e MIGRATE_ON_BOOT=true
 ```
 
 Tail retention (active now):
@@ -86,6 +84,8 @@ Tail retention (active now):
 ```bash
 -e FASTPACA_TAIL_KEEP=1000   # messages retained in Raft tail (minimum); Raft never evicts messages newer than the archived watermark
 ```
+
+See Storage & Audit for schema and audit details: ./storage.md
 
 ---
 

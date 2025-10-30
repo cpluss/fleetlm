@@ -281,8 +281,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
     my_server = {server_id, Node.self()}
 
     desired_members =
-      cluster
-      |> replicas_for_group(group_id)
+      replicas_for_group(group_id, cluster)
       |> Enum.map(&{server_id, &1})
 
     case :ra.members(my_server) do

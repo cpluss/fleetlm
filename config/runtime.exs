@@ -52,6 +52,23 @@ if raft_dir = System.get_env("FASTPACA_RAFT_DATA_DIR") do
   config :fastpaca, :raft_data_dir, raft_dir
 end
 
+# Configure Postgres Repo at runtime when archiver is enabled
+if (System.get_env("FASTPACA_ARCHIVER_ENABLED") || "") not in ["", "false", "0", "no", "off"] do
+  db_url = System.get_env("DATABASE_URL") || System.get_env("FASTPACA_POSTGRES_URL")
+
+  if db_url && db_url != "" do
+    pool_size =
+      System.get_env("DB_POOL_SIZE", "10")
+      |> String.to_integer()
+
+    config :fastpaca, Fastpaca.Repo,
+      url: db_url,
+      pool_size: pool_size,
+      queue_target: 5000,
+      queue_interval: 1000
+  end
+end
+
 if config_env() == :prod do
   # Optional: Override slot log directory (for mounting NVMe, etc)
   if slot_log_dir = System.get_env("SLOT_LOG_DIR") do
