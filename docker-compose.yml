@@ -1,29 +1,32 @@
-version: "3.9"
-
 services:
   app:
-    image: ghcr.io/cpluss/fleetlm:latest
+    # Use official image from GitHub Container Registry
+    # Note: If ghcr.io/fastpaca/fastpaca:latest is not available, use fastpaca:local
+    image: ${FASTPACA_IMAGE:-ghcr.io/fastpaca/fastpaca:latest}
     environment:
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:-xuQnOFm6sH5Qdd7x4WJv5smuG2Xf2nG0BL8rJ4yX6HnKGeTjo6n8r5hQKsxNkZWz}
-      DATABASE_URL: ecto://postgres:postgres@db/fleetlm_dev
       PHX_HOST: ${PHX_HOST:-localhost}
       PORT: 4000
-      MIGRATE_ON_BOOT: ${MIGRATE_ON_BOOT:-true}
+      # Database is optional - fastpaca runs fine with Raft storage only
+      # Uncomment DATABASE_URL to enable archiver (optional Postgres persistence)
+      # DATABASE_URL: ${DATABASE_URL:-}
+      MIGRATE_ON_BOOT: ${MIGRATE_ON_BOOT:-false}
       # DNS clustering is disabled locally; set DNS_CLUSTER_QUERY in deployments
       DNS_CLUSTER_QUERY: ${DNS_CLUSTER_QUERY:-}
-      DNS_CLUSTER_NODE_BASENAME: ${DNS_CLUSTER_NODE_BASENAME:-fleetlm}
+      DNS_CLUSTER_NODE_BASENAME: ${DNS_CLUSTER_NODE_BASENAME:-fastpaca}
       DNS_POLL_INTERVAL_MS: ${DNS_POLL_INTERVAL_MS:-5000}
-    depends_on:
-      db:
-        condition: service_healthy
     ports:
       - "4000:4000"
     restart: unless-stopped
 
+  # Optional: Enable database for archival/persistence
+  # Start with: docker compose --profile with-db up -d
   db:
     image: postgres:15
+    profiles:
+      - with-db
     environment:
-      POSTGRES_DB: fleetlm_dev
+      POSTGRES_DB: fastpaca_dev
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     healthcheck:
@@ -31,6 +34,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    ports:
+      - "5433:5432"
     volumes:
       - db-data:/var/lib/postgresql/data
     restart: unless-stopped
