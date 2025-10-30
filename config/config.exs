@@ -12,10 +12,6 @@ config :fastpaca,
   raft_data_dir: "priv/raft",
   raft_flush_interval_ms: 5000
 
-config :fastpaca, Fastpaca.Runtime.DrainCoordinator,
-  drain_timeout: :timer.seconds(5),
-  drain_grace_period: :timer.seconds(1)
-
 # Configures the endpoint
 config :fastpaca, FastpacaWeb.Endpoint,
   url: [host: "localhost"],

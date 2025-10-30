@@ -15,7 +15,7 @@ Guidance for Claude Code when collaborating on FleetLM.
 - **No per-session processes:** Completely stateless request handling. Raft state machines are the only long-lived processes.
 - **Conversation metadata in RAM:** Last sequence number cached in Raft state-no DB queries on message append.
 - **Postgres as write-behind:** Background flusher streams Raft state to DB every 5s. Batched, idempotent, non-blocking. DB failures don't stop appends.
-- **Cluster membership:** Phoenix.Presence (CRDT) tracks ready nodes. Rendezvous hashing assigns replicas deterministically. Topology coordinator rebalances when nodes join/leave.
+- **Cluster membership:** Erlang distribution (Node.list) provides strongly-consistent cluster view. Coordinator pattern (lowest node ID) manages topology. Rendezvous hashing assigns replicas deterministically. Continuous reconciliation handles node joins/leaves.
 - **Agent dispatch:** ETS queue + polling engine pattern. Webhooks via Finch (HTTP/2 pooling), JSONL streaming back to Raft.
 - **Inbox model:** One inbox per user, subscribed to metadata deltas. Many sessions per user, subscribed to raw message streams.
 

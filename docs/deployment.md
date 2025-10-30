@@ -118,9 +118,10 @@ Logs follow JSON structure with fields like `type`, `context_id`, and `seq`. For
 
 ## Scaling out
 
-- **More throughput:** Add additional nodes; Raft group assignment is deterministic and redistributed automatically.  
-- **Sharding:** Not required for most workloads; 256 Raft groups provide sufficient horizontal fan-out.  
+- **More throughput:** Add additional nodes; Raft group assignment is deterministic and redistributed automatically via coordinator pattern (lowest node ID manages topology).
+- **Sharding:** Not required for most workloads — 256 Raft groups provide sufficient horizontal fan-out.
 - **Read replicas:** Not needed; every node can serve reads. Use Postgres replicas if you run heavy analytics.
+- **Coordinator failover:** If the coordinator node fails, the next-lowest node automatically becomes coordinator. No manual intervention required.
 
 
 ---

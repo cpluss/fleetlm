@@ -27,11 +27,6 @@ config :fastpaca, :disable_agent_webhooks, true
 
 config :fastpaca, :persist_context_snapshots, false
 
-# Eliminate drain grace period in tests to reduce artificial sleeps
-config :fastpaca, Fastpaca.Runtime.DrainCoordinator,
-  drain_timeout: :timer.seconds(5),
-  drain_grace_period: 0
-
 # Raft test configuration
 config :fastpaca,
   raft_data_dir: "tmp/test_raft",

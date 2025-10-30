@@ -23,8 +23,7 @@ defmodule Fastpaca.Observability.PromEx do
   def metrics do
     [
       messages_metrics(),
-      archive_metrics(),
-      drain_metrics()
+      archive_metrics()
     ]
   end
 
@@ -143,27 +142,4 @@ defmodule Fastpaca.Observability.PromEx do
     )
   end
 
-  defp drain_metrics do
-    PromEx.build(
-      :fastpaca_drain,
-      [
-        summary("fastpaca_drain_duration_ms",
-          event_name: [:fastpaca, :runtime, :drain],
-          measurement: :elapsed_ms,
-          description: "Drain total duration",
-          unit: {:native, :millisecond}
-        ),
-        counter("fastpaca_drain_snapshots_ok_total",
-          event_name: [:fastpaca, :runtime, :drain],
-          measurement: :snapshot_ok,
-          description: "Snapshots completed successfully"
-        ),
-        counter("fastpaca_drain_snapshots_error_total",
-          event_name: [:fastpaca, :runtime, :drain],
-          measurement: :snapshot_errors,
-          description: "Snapshots failed or timed out"
-        )
-      ]
-    )
-  end
 end

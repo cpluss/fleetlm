@@ -77,11 +77,11 @@ defmodule Fastpaca.Runtime.RaftTopology do
   end
 
   @impl true
-  def handle_call(:ready?, _from, _state) do
+  def handle_call(:ready?, _from, state) do
     # Simple health: do my local groups exist?
     my_groups = compute_my_groups()
     ready = length(my_groups) > 0 and Enum.count(my_groups, &group_running?/1) >= div(length(my_groups), 2)
-    {:reply, ready, _state}
+    {:reply, ready, state}
   end
 
   @impl true
@@ -270,9 +270,6 @@ defmodule Fastpaca.Runtime.RaftTopology do
   end
 
   defp reconcile_group(group_id, cluster) do
-    server_id = RaftManager.server_id(group_id)
-    my_server = {server_id, Node.self()}
-
     ensure_group_exists(group_id, cluster)
 
     # After ensuring exists, reconcile membership
@@ -320,7 +317,7 @@ defmodule Fastpaca.Runtime.RaftTopology do
     end
   end
 
-  defp add_member(group_id, leader_ref, {server_id, node} = member) do
+  defp add_member(group_id, leader_ref, {_server_id, node} = member) do
     # Ensure group started on target
     :rpc.call(node, RaftManager, :start_group, [group_id])
 

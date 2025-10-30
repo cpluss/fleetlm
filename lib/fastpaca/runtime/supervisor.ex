@@ -26,9 +26,7 @@ defmodule Fastpaca.Runtime.Supervisor do
         # Task.Supervisor for async Raft group startup
         {Task.Supervisor, name: Fastpaca.RaftTaskSupervisor},
         # Topology coordinator (uses Erlang distribution, not Presence)
-        Fastpaca.Runtime.RaftTopology,
-        # Graceful drain coordinator for SIGTERM handling
-        Fastpaca.Runtime.DrainCoordinator
+        Fastpaca.Runtime.RaftTopology
       ] ++ archive_children
 
     Supervisor.init(children, strategy: :one_for_one)
