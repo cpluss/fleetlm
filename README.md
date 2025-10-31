@@ -5,10 +5,13 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Elixir](https://img.shields.io/badge/Elixir-1.18.4-purple.svg)](https://elixir-lang.org/)
 
-Context budgeting and compaction for LLM apps. Keep long conversations fast and affordable.
+> Keep long conversations *fast* without compromising user experience.
 
+Fastpaca provides full message history + context budgeting with compaction for LLM apps.
+
+- Store messages in fastpaca and optionally archive to postgres.
 - Set token budgets. Conversations stay within bounds.
-- You control the accuracy/cost tradeoff.
+- You control the latency/accuracy/cost tradeoff.
 
 ```
                       ╔═ fastpaca ════════════════════════╗
@@ -22,7 +25,7 @@ Context budgeting and compaction for LLM apps. Keep long conversations fast and 
                        ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
 ```
 
-> _Enforces a per-conversation token budget before requests hit your LLM._
+> _Enforces a per-conversation token budget before requests hit your LLM, without compromising user experience._
 
 - [Documentation](https://docs.fastpaca.com/)
 - [Quick start](https://docs.fastpaca.com/usage/quickstart)
@@ -30,9 +33,10 @@ Context budgeting and compaction for LLM apps. Keep long conversations fast and 
 
 ## Long conversations get expensive and slow
 
+- Users want to see full conversation history when they talk to LLMs
 - More messages = more tokens = higher cost
 - Larger context = slower responses
-- Eventually you hit the model's limit
+- Eventually you hit the LLMs limit
 
 ## What fastpaca does
 
