@@ -1,7 +1,7 @@
 {
   "name": "@fastpaca/fastpaca",
   "version": "0.1.1",
-  "description": "TypeScript client for Fastpaca - context infrastructure for LLM apps",
+  "description": "TypeScript client for Fastpaca Context Store - context infrastructure for LLM apps",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "publishConfig": {

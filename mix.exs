@@ -12,7 +12,7 @@ defmodule Fastpaca.MixProject do
       deps: deps(),
       listeners: [Phoenix.CodeReloader],
       description:
-        "FleetLM is the conversation layer between your users and your agents. Your agent is a HTTP endpoint - FleetLM provides WebSockets, message persistence, ordering, and replay so you never build chat infrastructure yourself."
+        "Fastpaca Context Store - Context budgeting and compaction for LLM apps. Manages conversation history and token budgets with deterministic compaction policies."
     ]
   end
 

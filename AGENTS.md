@@ -1,6 +1,6 @@
-# FleetLM Agents Guide
+# Fastpaca Context Store - Agent Guide
 
-FleetLM is a clustered Phoenix application that delivers real-time conversations between a human and an assigned agent. Each session has a single human participant, a single agent participant, and all runtime logic preserves that pairing.
+Fastpaca Context Store is a clustered Phoenix application that provides context management and compaction for LLM applications. It maintains conversation history and manages token budgets to keep conversations efficient.
 
 ## Ground Rules
 
@@ -19,10 +19,10 @@ FleetLM is a clustered Phoenix application that delivers real-time conversations
 
 ## Domain Assumptions
 
-- Human → agent conversations only; there is no agent → agent or group routing.
-- Every participant owns a single inbox process; sessions stream independently and are joined on demand with a `last_seq`.
-- Messages are ULID-indexed, append-only, and replayable. Runtime caches (Session tail, Inbox snapshot) are transient and rebuildable.
-- Agents integrate through debounced webhooks; rapid messages are batched using timers (default 500ms). We track webhook latency, batch efficiency, and end-to-end message timing via telemetry.
+- Messages are append-only and replayable with deterministic sequence numbers.
+- Contexts maintain both full message history and compacted LLM context windows.
+- Token budgets are enforced per-context with configurable compaction policies.
+- Raft storage provides distributed consistency with automatic replication and failover.
 
 ## Phoenix & LiveView Summary
 
@@ -38,7 +38,7 @@ FleetLM is a clustered Phoenix application that delivers real-time conversations
   @import "tailwindcss" source(none);
   @source "../css";
   @source "../js";
-  @source "../../lib/fleetlm_web";
+  @source "../../lib/fastpaca_web";
   ```
 - No inline `<script>` tags. Extend behaviour via `assets/js/app.js` and Phoenix hooks with `phx-update="ignore"` when hooks own the DOM.
 - Build micro-interactions via Tailwind utility classes and CSS transitions; avoid component libraries like daisyUI.

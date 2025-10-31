@@ -1,10 +1,10 @@
-# fastpaca
+# Fastpaca Context Store
 
-**Context infra for LLM apps.** Fastpaca keeps full history and maintains your LLM context window in one backend service. 
+**Context infra for LLM apps.** Fastpaca Context Store keeps full history and maintains your LLM context window in one backend service.
 - **Users need to see every message.**
 - **LLMs can only see a limited context window.**
 
-Fastpaca bridges that gap with an append-only history, context compaction, and streaming — all inside one backend service. You stay focused on prompts, tools, UI, and business logic. 
+Fastpaca Context Store bridges that gap with an append-only history, context compaction, and streaming — all inside one backend service. You stay focused on prompts, tools, UI, and business logic. 
 
 - [Docs](https://docs.fastpaca.com) 
 - [Quick Start](https://docs.fastpaca.com/usage/quickstart)

@@ -1,12 +1,12 @@
 ---
-title: Fastpaca
+title: Fastpaca Context Store
 slug: /
 sidebar_position: 0
 ---
 
-# fastpaca
+# Fastpaca Context Store
 
-Context budgeting and compaction for LLM apps. Keeep long conversations fast and affordable.
+Context budgeting and compaction for LLM apps. Keep long conversations fast and affordable.
 
 - Set token budgets. Conversations stay within bounds.
 - You control the accuracy/cost tradeoff.
@@ -39,7 +39,7 @@ Context budgeting and compaction for LLM apps. Keeep long conversations fast and
 - Larger context = slower responses
 - Eventually you hit the model's limit
 
-## What fastpaca does
+## What Fastpaca Context Store does
 
 Enforces per-conversation token budgets with deterministic compaction.
 
@@ -58,5 +58,5 @@ const { messages } = await ctx.context();
 
 ## Background
 
-We kept rebuilding the same Redis + Postgres + pub/sub stack to manage conversation state and compaction. It was messy, hard to scale, and expensive to tune.  
-Fastpaca turns that pattern into a single service you can drop in.
+We kept rebuilding the same Redis + Postgres + pub/sub stack to manage conversation state and compaction. It was messy, hard to scale, and expensive to tune.
+Fastpaca Context Store turns that pattern into a single service you can drop in.

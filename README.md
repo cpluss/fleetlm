@@ -1,7 +1,7 @@
-# fastpaca
+# Fastpaca Context Store
 
-[![Tests](https://github.com/fastpaca/fastpaca/actions/workflows/test.yml/badge.svg)](https://github.com/fastpaca/fastpaca/actions/workflows/test.yml)
-[![Docker Build](https://github.com/fastpaca/fastpaca/actions/workflows/docker-build.yml/badge.svg)](https://github.com/fastpaca/fastpaca/actions/workflows/docker-build.yml)
+[![Tests](https://github.com/fastpaca/context-store/actions/workflows/test.yml/badge.svg)](https://github.com/fastpaca/context-store/actions/workflows/test.yml)
+[![Docker Build](https://github.com/fastpaca/context-store/actions/workflows/docker-build.yml/badge.svg)](https://github.com/fastpaca/context-store/actions/workflows/docker-build.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Elixir](https://img.shields.io/badge/Elixir-1.18.4-purple.svg)](https://elixir-lang.org/)
 
@@ -113,7 +113,7 @@ Start container, note that postgres is optional. Data will persist in memory wit
 docker run -d \
   -p 4000:4000 \
   -v fastpaca_data:/data \
-  ghcr.io/fastpaca/fastpaca:latest
+  ghcr.io/fastpaca/context-store:latest
 ```
 
 Use our typescript SDK
@@ -152,8 +152,8 @@ Fastpaca turns that pattern into a single service you can drop in.
 
 ```bash
 # Clone and set up
-git clone https://github.com/fastpaca/fastpaca
-cd fastpaca
+git clone https://github.com/fastpaca/context-store
+cd context-store
 mix setup            # install deps, create DB, run migrations
 
 # Start server on http://localhost:4000

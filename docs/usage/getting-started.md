@@ -5,7 +5,7 @@ sidebar_position: 2
 
 # Getting Started
 
-Understand how Fastpaca stores contexts and how you work with them day to day.
+Understand how Fastpaca Context Store manages contexts and how you work with them day to day.
 
 ## Key Terms
 
@@ -28,7 +28,7 @@ Limits
 
 ## Creating a context
 
-Fastpaca works with contexts. Each context contains two things:
+Fastpaca Context Store works with contexts. Each context contains two things:
 
 1. **Message log**: what your users see and care about.
 2. **LLM context**: what the LLM cares about in order to process user requests.
@@ -68,7 +68,7 @@ await ctx.append({
 });
 ```
 
-Fastpaca doesn't care about the specific shape of parts or metadata; it only requires that each part has a `type`. Each message is assigned a deterministic sequence number (`seq`) used to order them within a context.
+The Context Store doesn't care about the specific shape of parts or metadata; it only requires that each part has a `type`. Each message is assigned a deterministic sequence number (`seq`) used to order them within a context.
 
 ## Calling your LLM
 
@@ -109,7 +109,7 @@ The `onFinish` callback receives `{ responseMessage }` with the properly formatt
 
 Reading messages is straightforward but can be time-consuming. Usually, users don't see every message all at once, as some contexts can span thousands if not hundreds of thousands of messages. Fetching all of that is slow, regardless of what system you use.
 
-Fastpaca takes this into account and lets you fetch partial messages based on sequence numbers, which is what you actually render.
+The Context Store takes this into account and lets you fetch partial messages based on sequence numbers, which is what you actually render.
 
 ```typescript
 const ctx = await fastpaca.context('12345');
@@ -125,7 +125,7 @@ const onePageUp = await ctx.getTail({ offset: 50, limit: 50 });
 
 ## Managing your own compaction
 
-Fastpaca works best when managing compaction for you so you don't need to think about it, but in case you have a product requirement where you need to manage it by yourself it is supported out of the box.
+Fastpaca Context Store works best when managing compaction for you so you don't need to think about it, but in case you have a product requirement where you need to manage it by yourself it is supported out of the box.
 
 ```typescript
 const { needs_compaction, messages } = await ctx.context();

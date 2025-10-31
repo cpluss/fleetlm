@@ -5,16 +5,16 @@ sidebar_position: 1
 
 # Quick Start
 
-## 1. Run Fastpaca
+## 1. Run Fastpaca Context Store
 
 ```bash
 docker run -d \
   -p 4000:4000 \
   -v fastpaca_data:/data \
-  ghcr.io/fastpaca/fastpaca:latest
+  ghcr.io/fastpaca/context-store:latest
 ```
 
-Fastpaca now listens on `http://localhost:4000/v1`. The container persists data under `fastpaca_data/`.
+The Context Store now listens on `http://localhost:4000/v1`. The container persists data under `fastpaca_data/`.
 
 ---
 
@@ -52,7 +52,7 @@ curl -X POST http://localhost:4000/v1/contexts/demo-chat/messages \
   }'
 ```
 
-Fastpaca replies with the assigned sequence number and version:
+The Context Store replies with the assigned sequence number and version:
 
 ```json
 { "seq": 1, "version": 1, "token_estimate": 24 }

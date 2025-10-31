@@ -5,7 +5,7 @@ sidebar_position: 3
 
 # Deployment
 
-Fastpaca is built to run in your own infrastructure. This page covers recommended runtimes, storage, and operational knobs.
+Fastpaca Context Store is built to run in your own infrastructure. This page covers recommended runtimes, storage, and operational knobs.
 
 ---
 
@@ -25,7 +25,7 @@ Fastpaca is built to run in your own infrastructure. This page covers recommende
 docker run -d \
   -p 4000:4000 \
   -v fastpaca_data:/data \
-  ghcr.io/fastpaca/fastpaca:latest
+  ghcr.io/fastpaca/context-store:latest
 ```
 
 The node serves REST on `:4000`, websockets on the same port, and Prometheus metrics on `/metrics`.
@@ -46,7 +46,7 @@ docker run -d \
   -v /var/lib/fastpaca:/data \
   -e FASTPACA_CLUSTER_SEED=fastpaca.internal:4000 \
   -e FASTPACA_NODE_NAME=fastpaca-1 \
-  ghcr.io/fastpaca/fastpaca:latest
+  ghcr.io/fastpaca/context-store:latest
 ```
 
 Repeat with `FASTPACA_NODE_NAME=fastpaca-2/3`. Nodes automatically discover peers through the seed list and form a Raft cluster.
@@ -61,7 +61,7 @@ Repeat with `FASTPACA_NODE_NAME=fastpaca-2/3`. Nodes automatically discover peer
 
 ## Optional archival (Postgres)
 
-Fastpaca does not require external storage for correctness. Configure an archive if you need:
+Fastpaca Context Store does not require external storage for correctness. Configure an archive if you need:
 
 - Long‑term history beyond the Raft tail.  
 - Analytics / BI queries on the full log.  

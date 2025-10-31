@@ -5,9 +5,9 @@ sidebar_position: 4
 
 # Architecture
 
-Fastpaca runs a Raft-backed state machine that keeps the context log, snapshot, and LLM context builder in one place. Every node exposes the same API; requests can land anywhere and are routed to the appropriate shard.
+Fastpaca Context Store runs a Raft-backed state machine that keeps the context log, snapshot, and LLM context builder in one place. Every node exposes the same API; requests can land anywhere and are routed to the appropriate shard.
 
-![Fastpaca Architecture](./img/architecture.png)
+![Fastpaca Context Store Architecture](./img/architecture.png)
 
 ## Components
 

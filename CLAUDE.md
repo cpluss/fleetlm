@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Guidance for Claude Code when collaborating on FleetLM.
+Guidance for Claude Code when collaborating on Fastpaca Context Store.
 
 ## Quick Start
 
