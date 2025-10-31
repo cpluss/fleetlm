@@ -109,7 +109,6 @@ Drops reasoning traces, tool results, images — keeps the final response. Massi
 
 Start container, note that postgres is optional. Data will persist in memory with a TAIL for message history.
 
-```
 ```bash
 docker run -d \
   -p 4000:4000 \
