@@ -2,6 +2,8 @@
 
 Minimal chat app demonstrating Fastpaca context management with ai-sdk and Next.js.
 
+![](https://fastpaca.com/images/context-store-demo.gif)
+
 ## Features
 
 - **Pure ai-sdk frontend** - Uses `useChat` hook, no Fastpaca client code needed
